@@ -71,8 +71,22 @@ describe("Allegro source generation", () => {
     expect(skill!.content).not.toContain("?mirror nil");
     expect(skill!.content).toContain('"REF DES/SILKSCREEN_TOP"');
     expect(skill!.content).toContain('"REF DES/ASSEMBLY_TOP"');
+    // REF DES 类文本取值校验（P17 实测）："REF**" 触发 SPMHUT-1 并使
+    // create symbol 报 "Symbol is missing a refdes"；必须使用纯文本占位。
+    expect(skill!.content).toContain('axlDBCreateText("REF" 0:0');
+    expect(skill!.content).not.toContain('axlDBCreateText("REF**"');
+    // axlDBRefresh 在 17.4 未定义（E2E5 实测会中断 e2a_build），必须带守卫
+    expect(skill!.content).toContain(
+      "when(isCallable('axlDBRefresh) axlDBRefresh())",
+    );
     expect(skill!.content).toContain('fprintf(statusPort "status=ok\\n")');
     expect(skill!.content).toContain("axlDBChangeDesignUnits(\"millimeters\" 4)");
+    // 空 drawing 的 extents 为 nil 时 axlDBCreatePin 必失败（P9-P12 实测），
+    // 必须先设置绘制范围
+    expect(skill!.content).toContain("axlDBChangeDesignExtents(list(");
+    expect(skill!.content.indexOf("axlDBChangeDesignExtents")).toBeLessThan(
+      skill!.content.indexOf("e2a_create_pin(\""),
+    );
     expect(skill!.content).toContain("axlExtractMap(");
     expect(skill!.content).not.toContain("axlDBGetDesign()->pins");
     expect(bundle.expectedOutputs).toContain(`${plan.footprint.info.targetPackageName}.psm`);

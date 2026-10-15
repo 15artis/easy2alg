@@ -225,7 +225,6 @@ const fillToCircles = (
     return [];
   }
   const layer = proLayerKind(asNumber(fill.layerId, 3));
-  const width = Math.max(mil2mm(asNumber(fill.width, 6)), 0.01);
   const circles: NormalizedCircle[] = [];
   for (const subPath of path) {
     if (!Array.isArray(subPath) || subPath.length < 4) {
@@ -235,10 +234,16 @@ const fillToCircles = (
       void writeLog("warn", "elibz2_fill_unsupported_shape", { shape: String(subPath[0]) });
       continue;
     }
+    // FILL 是实心区域（fillStyle=SOLID；fill.width 实测 0.2mil≈0.005mm，是无意义的描边宽度）。
+    // 模型里的圆统一为"描边圆"(center/radius/width，与 NormalizedLine 对齐)，而 SVG 与
+    // axlDBCreateCircle 的描边都居中于路径 —— 因此"半径减半的路径 + 线宽=原半径"可在预览与
+    // Allegro 中得到外径不变 (R) 的实心圆盘。若按描边圆原样输出，0.01mm 发丝线宽的圆点在
+    // 丝印上不可见（Allegro 侧还会触发最小线宽 DFM 告警）。
+    const radius = mil2mm(asNumber(subPath[3]));
     circles.push({
       center: proPoint(asNumber(subPath[1]), asNumber(subPath[2]), canvas),
-      radius: mil2mm(asNumber(subPath[3])),
-      width,
+      radius: radius / 2,
+      width: Math.max(radius, 0.01),
       layer,
     });
   }
@@ -443,8 +448,14 @@ export class Elibz2Connector {
     const extraPoints: readonly Point[] = [
       ...lines.flatMap((line) => [line.start, line.end]),
       ...circles.flatMap((circle) => [
-        { x: circle.center.x - circle.radius, y: circle.center.y - circle.radius },
-        { x: circle.center.x + circle.radius, y: circle.center.y + circle.radius },
+        {
+          x: circle.center.x - circle.radius - circle.width / 2,
+          y: circle.center.y - circle.radius - circle.width / 2,
+        },
+        {
+          x: circle.center.x + circle.radius + circle.width / 2,
+          y: circle.center.y + circle.radius + circle.width / 2,
+        },
       ]),
       ...holes.map((hole) => hole.center),
     ];

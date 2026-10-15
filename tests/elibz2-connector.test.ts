@@ -62,13 +62,15 @@ describe("elibz2 connector", () => {
     expect(silkX.some((value) => Math.abs(value - 13.5) < 0.001)).toBe(true);
     expect(silkX.some((value) => Math.abs(value + 13.5) < 0.001)).toBe(true);
     expect(footprint.circles).toHaveLength(1);
-    expect(footprint.circles[0].radius).toBeCloseTo(0.3, 3);
+    // FILL 是实心圆盘：路径半径减半 (0.15) + 线宽=原半径 (0.3)，外径仍为 0.3
+    expect(footprint.circles[0].radius).toBeCloseTo(0.15, 3);
+    expect(footprint.circles[0].width).toBeCloseTo(0.3, 3);
     expect(footprint.circles[0].layer).toBe("silkscreen");
     // pin1 圆点位于 A1 左上角外侧
     expect(footprint.circles[0].center.x).toBeCloseTo(-13.97, 3);
     expect(footprint.circles[0].center.y).toBeCloseTo(13.97, 3);
 
-    // bounds：由丝印外框 ±13.5 与 pin1 圆点（中心 13.97 ± 半径 0.3）共同决定
+    // bounds：由丝印外框 ±13.5 与 pin1 圆盘（中心 13.97 ± 外径 0.3）共同决定
     const minXM = closeTo(-14.27);
     const maxYM = closeTo(14.27);
     expect(minXM.matches(footprint.bounds.minX)).toBe(true);
@@ -88,15 +90,22 @@ describe("elibz2 connector", () => {
     expect(plan.checks.find((check) => check.id === "pin-count")?.severity).toBe("pass");
     expect(plan.checks.find((check) => check.id === "pin-numbers")?.severity).toBe("pass");
     expect(plan.checks.find((check) => check.id === "pad-dimensions")?.severity).toBe("pass");
-    // 回归防护: 此前 axlDBCreateCircle 把 center/radius 包进同一 list 并多传 width,
-    // 导致 Allegro 17.4 解析 SKILL 时硬崩 (PEX8748 42% 处, allegro.jrl 为空)。
+    // 回归防护（两轮教训）:
+    //  1) 正确签名 axlDBCreateCircle(l_location [f_width] [t_layer])，其中
+    //     l_location = (list X:Y R)。此前把 center/radius 拆成两个位置参数，
+    //     Allegro 对首参 caar 得到标量并报
+    //     "car: argument #1 should be a list ... - -3.05"，中断 e2a_build；
+    //     首参必须包成 (list ...)。
+    //  2) FILL 是实心圆盘（源 fill.width 仅 0.2mil，是无意义描边），输出为
+    //     "radius/2 路径 + 线宽=原半径" —— 外径仍为 0.3，丝印上为实心点。
     const bundle = createAllegroSourceBundle(plan, "C:\\Temp\\e2a-pex8748");
     const skill = bundle.sources.find((source) => source.relativePath === "build.il");
     expect(skill).toBeDefined();
     expect(skill!.content).toContain(
-      'axlDBCreateCircle(-13.97:13.97 0.3 "PACKAGE GEOMETRY/SILKSCREEN_TOP")',
+      'axlDBCreateCircle(list(-13.97:13.97 0.15) 0.3 "PACKAGE GEOMETRY/SILKSCREEN_TOP")',
     );
-    expect(skill!.content).not.toContain("axlDBCreateCircle(list(");
+    // 每个 axlDBCreateCircle 的首参都必须是 (list ...) 形式
+    expect(skill!.content).not.toMatch(/axlDBCreateCircle\((?!list\()/);
   });
 
   it("rejects unknown device uuids", async () => {

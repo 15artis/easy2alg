@@ -54,7 +54,6 @@ const executeAllegro = async (
   argumentsList: readonly string[],
   workingDirectory: string,
   processLogName: string,
-  pcbenvDirectory: string | null,
 ): Promise<void> => {
   const executableDirectory = dirname(executablePath);
   const executableParent = dirname(executableDirectory);
@@ -75,9 +74,12 @@ const executeAllegro = async (
         ...process.env,
         CDSROOT: installationRoot,
         PATH: [...cadencePaths, process.env.PATH ?? ""].join(";"),
-        ...(pcbenvDirectory === null
-          ? {}
-          : { CDS_PCBENV: pcbenvDirectory.split(sep).join("/") }),
+        // 2026-10-15 实测（S2-S14 实验链）：用户 pcbenv/allegro.ilinit 会按
+        // $EDA365_SKILL 拼接加载 EDA365_Skill_Load.il，该 SKILL 包使 Allegro 17.4
+        // 在 -nograph 批处理回放 newdrawfillin 时直接段错误（交互模式不受影响）。
+        // 把 EDA365_SKILL 指向一个确定不存在的子目录，ilinit 里 errset(loadi(...))
+        // 静默跳过即可；不动任何用户文件，GUI 侧 EDA365 工具完全不受影响。
+        EDA365_SKILL: `${join(workingDirectory, "__e2a_no_eda365__")}${sep}`,
       },
       maxBuffer: 10 * 1024 * 1024,
       windowsHide: true,
@@ -316,18 +318,6 @@ export class AllegroRunner {
     progress("preparing", 5, "正在准备封装数据和输出目录");
     const jobDirectory = await mkdtemp(join(tmpdir(), "easy2alg-"));
     await mkdir(join(jobDirectory, "padstacks"), { recursive: true });
-    // 2026-10-15 实测（PEX8748/C2040 双场景 42% 崩溃，二分实验 S2-S14）：
-    // 用户 pcbenv/allegro.ilinit 自动加载的 EDA365_Skill_Load.il 会让 Allegro 17.4
-    // 在 -nograph 批处理回放 newdrawfillin 时直接段错误（交互模式不受影响）。
-    // 因此每个作业自带一个不含用户 SKILL 的专用 pcbenv，经 CDS_PCBENV 注入；
-    // HOME 不动，license 与用户 GUI 侧的 SKILL 工具完全不受影响。
-    const pcbenvDirectory = join(jobDirectory, "pcbenv");
-    await mkdir(pcbenvDirectory, { recursive: true });
-    await writeFile(
-      join(pcbenvDirectory, "allegro.ilinit"),
-      "; Easy2ALG batch pcbenv: user SKILL autoload is intentionally not loaded here;\n; EDA365 SKILL autoload segfaults newdrawfillin under -nograph batch replay.\n",
-      "utf8",
-    );
     const bundle = createAllegroSourceBundle(plan, jobDirectory);
     await writeSources(jobDirectory, bundle.sources);
     progress("preparing", 20, "封装数据已准备完成");
@@ -363,7 +353,6 @@ export class AllegroRunner {
       ["-s", "build.scr", "-nograph"],
       jobDirectory,
       "build-process.log",
-      pcbenvDirectory,
     );
     await snapshotFile(
       join(jobDirectory, "allegro.jrl"),
@@ -391,7 +380,6 @@ export class AllegroRunner {
       ["-s", "verify.scr", "-nograph", draPath],
       jobDirectory,
       "verification-process.log",
-      pcbenvDirectory,
     );
     await snapshotFile(
       join(jobDirectory, "allegro.jrl"),
