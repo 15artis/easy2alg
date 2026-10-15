@@ -56,10 +56,14 @@ describe("Allegro source generation", () => {
     expect(skill!.content).toContain("e2a_verify");
     expect(skill!.content).toContain("?layer \"TOP\" ?type 'REGULAR");
     expect(skill!.content).toContain("axlPadstackToDisk");
+    // axlPadstackToDisk 按设计内 padstack 名写盘（P8 实测），.pad 落在作业目录根且小写
     expect(skill!.content).toContain(
-      'axlPadstackToDisk("C:/Temp/e2a-job/padstacks/',
+      `axlPadstackToDisk("${derivePadstackName(requiredFixture("C163691").pads[0]!)}")`,
     );
-    expect(skill!.content).not.toMatch(/axlPadstackToDisk\("[^"]+" "[^"]+"\)/);
+    expect(skill!.content).not.toMatch(/axlPadstackToDisk\("[^"]*\/[^"]*"\)/);
+    expect(bundle.expectedOutputs).toContain(
+      `${derivePadstackName(requiredFixture("C163691").pads[0]!).toLowerCase()}.pad`,
+    );
     expect(skill!.content).toContain(
       "axlDBCreatePin(padName location pinText rotation)",
     );

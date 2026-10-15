@@ -31,23 +31,33 @@ const skillString = (value: string): string =>
 
 const point = (value: Point): string => `${number(value.x)}:${number(value.y)}`;
 
-const padFigure = (pad: NormalizedPad): string => {
+// 2026-10-15 Allegro 17.4 探测实验（P2-P5）结论：axlDBCreatePadStack 的
+// make_axlPadStackPad ?figureSize 要求宽高与图形语义一致 —— 裸 'RECTANGLE 在
+// w==h 时报 Illegal figure size（PEX8748 BGA 全失败、C2040 EP 首个 padstack 失败的根因），
+// 方形必须用 'SQUARE；'CIRCLE/'OCTAGON 要求方形；'OBLONG_X/'OBLONG_Y/'ROUNDED_RECTANGLE
+// 方形与非方形均可。判定按 number() 格式化后的文本比较，与实际写进 SKILL 的值一致。
+const padFigure = (pad: NormalizedPad, width: number, height: number): string => {
   if (pad.shape === "circle") {
     return "'CIRCLE";
   }
   if (pad.shape === "oval") {
-    return pad.width >= pad.height ? "'OBLONG_X" : "'OBLONG_Y";
+    return number(width) >= number(height) ? "'OBLONG_X" : "'OBLONG_Y";
   }
   if (pad.shape === "roundedRectangle") {
     return "'ROUNDED_RECTANGLE";
   }
-  return "'RECTANGLE";
+  return number(width) === number(height) ? "'SQUARE" : "'RECTANGLE";
 };
 
-const padSize = (pad: NormalizedPad, scale: number, expansion: number): string => {
+const padLayerPad = (
+  pad: NormalizedPad,
+  layer: string,
+  scale: number,
+  expansion: number,
+): string => {
   const width = pad.width * scale + expansion * 2;
   const height = pad.height * scale + expansion * 2;
-  return `${number(width)}:${number(height)}`;
+  return `make_axlPadStackPad(?layer ${skillString(layer)} ?type 'REGULAR ?figure ${padFigure(pad, width, height)} ?figureSize ${number(width)}:${number(height)}${corners(pad)})`;
 };
 
 const corners = (pad: NormalizedPad): string =>
@@ -57,14 +67,11 @@ const corners = (pad: NormalizedPad): string =>
 
 const padDefinition = (
   pad: NormalizedPad,
-  padstackDirectory: string,
   solderMaskExpansionMm: number,
   pasteAreaRatio: number,
 ): string => {
   const name = derivePadstackName(pad);
-  const outputPath = join(padstackDirectory, `${name}.pad`);
   const throughHole = pad.holeWidth > 0;
-  const figure = padFigure(pad);
   const pasteScale = pad.width * pad.height > 16 ? Math.sqrt(pasteAreaRatio) : 1;
   const drillFigure =
     pad.holeHeight > pad.holeWidth + 0.001
@@ -84,16 +91,16 @@ const padDefinition = (
     : "nil";
   const layerPads = throughHole
     ? `list(
-      make_axlPadStackPad(?layer "TOP" ?type 'REGULAR ?figure ${figure} ?figureSize ${padSize(pad, 1, 0)}${corners(pad)})
-      make_axlPadStackPad(?layer "DEFAULT INTERNAL" ?type 'REGULAR ?figure ${figure} ?figureSize ${padSize(pad, 1, 0)}${corners(pad)})
-      make_axlPadStackPad(?layer "BOTTOM" ?type 'REGULAR ?figure ${figure} ?figureSize ${padSize(pad, 1, 0)}${corners(pad)})
-      make_axlPadStackPad(?layer "SOLDERMASK_TOP" ?type 'REGULAR ?figure ${figure} ?figureSize ${padSize(pad, 1, solderMaskExpansionMm)}${corners(pad)})
-      make_axlPadStackPad(?layer "SOLDERMASK_BOTTOM" ?type 'REGULAR ?figure ${figure} ?figureSize ${padSize(pad, 1, solderMaskExpansionMm)}${corners(pad)})
+      ${padLayerPad(pad, "TOP", 1, 0)}
+      ${padLayerPad(pad, "DEFAULT INTERNAL", 1, 0)}
+      ${padLayerPad(pad, "BOTTOM", 1, 0)}
+      ${padLayerPad(pad, "SOLDERMASK_TOP", 1, solderMaskExpansionMm)}
+      ${padLayerPad(pad, "SOLDERMASK_BOTTOM", 1, solderMaskExpansionMm)}
     )`
     : `list(
-      make_axlPadStackPad(?layer "TOP" ?type 'REGULAR ?figure ${figure} ?figureSize ${padSize(pad, 1, 0)}${corners(pad)})
-      make_axlPadStackPad(?layer "SOLDERMASK_TOP" ?type 'REGULAR ?figure ${figure} ?figureSize ${padSize(pad, 1, solderMaskExpansionMm)}${corners(pad)})
-      make_axlPadStackPad(?layer "PASTEMASK_TOP" ?type 'REGULAR ?figure ${figure} ?figureSize ${padSize(pad, pasteScale, 0)}${corners(pad)})
+      ${padLayerPad(pad, "TOP", 1, 0)}
+      ${padLayerPad(pad, "SOLDERMASK_TOP", 1, solderMaskExpansionMm)}
+      ${padLayerPad(pad, "PASTEMASK_TOP", pasteScale, 0)}
     )`;
   return `
   padObj = axlDBCreatePadStack(
@@ -105,7 +112,9 @@ const padDefinition = (
   unless(padObj
     error("Unable to create padstack ${name}\\n")
   )
-  unless(axlPadstackToDisk(${skillString(outputPath)})
+  ; axlPadstackToDisk 的参数是设计中的 padstack 名（P8 实测），不是文件路径；
+  ; .pad 由 Allegro 写入当前作业目录且文件名强制小写，随后由 runner 复制进库目录。
+  unless(axlPadstackToDisk(${skillString(name)})
     error("Unable to write padstack ${name}\\n")
   )`;
 };
@@ -168,7 +177,6 @@ const uniquePadstacks = (pads: readonly NormalizedPad[]): readonly NormalizedPad
 
 const buildSkillSource = (
   plan: ConversionPlan,
-  padstackDirectory: string,
   verificationPath: string,
   buildStatusPath: string,
 ): string => {
@@ -191,7 +199,6 @@ const buildSkillSource = (
     .map((pad) =>
       padDefinition(
         pad,
-        padstackDirectory,
         plan.solderMaskExpansionMm,
         plan.pasteAreaRatio,
       ),
@@ -310,7 +317,7 @@ export const createAllegroSourceBundle = (
   const skillPath = join(jobDirectory, "build.il");
   const verificationPath = join(jobDirectory, "verification.txt");
   const buildStatusPath = join(jobDirectory, "build-status.txt");
-  const padstackDirectory = join(jobDirectory, "padstacks");
+  // axlPadstackToDisk 按 padstack 名写盘（P8 实测）：.pad 落在作业目录根且文件名强制小写。
   const padstackFiles = uniquePadstacks([
     ...plan.footprint.pads,
     ...plan.footprint.holes.map((hole, index) => ({
@@ -326,7 +333,7 @@ export const createAllegroSourceBundle = (
       holeHeight: hole.diameter,
       sourceLayerId: 11,
     })),
-  ]).map((pad) => `padstacks/${derivePadstackName(pad)}.pad`);
+  ]).map((pad) => `${derivePadstackName(pad).toLowerCase()}.pad`);
   return {
     symbolName,
     sources: [
@@ -334,7 +341,6 @@ export const createAllegroSourceBundle = (
         relativePath: "build.il",
         content: buildSkillSource(
           plan,
-          padstackDirectory,
           verificationPath,
           buildStatusPath,
         ),
