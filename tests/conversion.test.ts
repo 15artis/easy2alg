@@ -71,9 +71,12 @@ describe("Allegro source generation", () => {
     expect(skill!.content).not.toContain("?mirror nil");
     expect(skill!.content).toContain('"REF DES/SILKSCREEN_TOP"');
     expect(skill!.content).toContain('"REF DES/ASSEMBLY_TOP"');
+    // 标签合成（对照用户手工件 r0603.dra 真机 dump）：位号 + 器件名，各出丝印/装配两份。
+    expect(skill!.content).toContain('"COMPONENT VALUE/SILKSCREEN_TOP"');
+    expect(skill!.content).toContain('"COMPONENT VALUE/ASSEMBLY_TOP"');
     // REF DES 类文本取值校验（P17 实测）："REF**" 触发 SPMHUT-1 并使
     // create symbol 报 "Symbol is missing a refdes"；必须使用纯文本占位。
-    expect(skill!.content).toContain('axlDBCreateText("REF" 0:0');
+    expect(skill!.content).toContain('axlDBCreateText("REF" ');
     expect(skill!.content).not.toContain('axlDBCreateText("REF**"');
     // axlDBRefresh 在 17.4 未定义（E2E5 实测会中断 e2a_build），必须带守卫
     expect(skill!.content).toContain(
@@ -120,6 +123,59 @@ describe("Allegro source generation", () => {
     expect(skill).toBeDefined();
     expect(skill!.content.match(/^  e2a_create_pin\(/gm)).toHaveLength(57);
     expect(skill!.content).toContain('fprintf(port "pins=%d\\n" length(pins))');
+  });
+
+  it("derives the assembly outline from silkscreen only when the source has none", () => {
+    const base = requiredFixture("C7593");
+    const withoutAssembly = {
+      ...base,
+      lines: base.lines.filter((line) => line.layer !== "assembly"),
+    };
+    const geometry = (content: string, layer: string) =>
+      (content.match(new RegExp(`axlDBCreate(?:Line|Circle)\\([^\\n]*"${layer}"`, "g")) ?? [])
+        .length;
+
+    // 源数据带 assembly 几何 → 原样输出，不复制丝印（demo fixture 全部属于这种）
+    const withSource = createAllegroSourceBundle(
+      createConversionPlan(requiredFixture("C7593")),
+      "C:\\Temp\\e2a-asm-a",
+    ).sources.find((source) => source.relativePath === "build.il")!;
+    expect(geometry(withSource.content, "PACKAGE GEOMETRY/ASSEMBLY_TOP")).toBe(4);
+
+    // 源数据只有丝印（elibz2 / 立创 C 编号接口都是这种）→ 把丝印几何复制到 ASSEMBLY_TOP
+    const derived = createAllegroSourceBundle(
+      createConversionPlan(withoutAssembly),
+      "C:\\Temp\\e2a-asm-b",
+    ).sources.find((source) => source.relativePath === "build.il")!;
+    expect(geometry(derived.content, "PACKAGE GEOMETRY/SILKSCREEN_TOP")).toBe(
+      geometry(derived.content, "PACKAGE GEOMETRY/ASSEMBLY_TOP"),
+    );
+    expect(geometry(derived.content, "PACKAGE GEOMETRY/ASSEMBLY_TOP")).toBeGreaterThan(0);
+  });
+
+  it("keeps label text inside the design extents", () => {
+    const plan = createConversionPlan(requiredFixture("C163691"));
+    const bundle = createAllegroSourceBundle(plan, "C:\\Temp\\e2a-extents");
+    const skill = bundle.sources.find((source) => source.relativePath === "build.il")!;
+    const match = skill!.content.match(
+      /axlDBChangeDesignExtents\(list\((-?[\d.]+):(-?[\d.]+) (-?[\d.]+):(-?[\d.]+)\)\)/,
+    );
+    expect(match).not.toBeNull();
+    const [minX, minY, maxX, maxY] = match!.slice(1).map(Number) as [
+      number,
+      number,
+      number,
+      number,
+    ];
+    // E2E9 真机实测回归：extents 不覆盖标签包围盒时，axlDBCreateText 报
+    // ERROR(SPMHA1-73): Text line is outside of the extents 并静默丢弃文本，
+    // 而 build-status 仍写 status=ok。21 字符封装名居中后半宽 6.3mm，必须落在范围内。
+    const nameHalfWidth = (plan.footprint.info.targetPackageName.length * 0.6) / 2;
+    expect(nameHalfWidth).toBeGreaterThan(Math.max(Math.abs(minX), maxX) * 0.5);
+    expect(maxX).toBeGreaterThan(nameHalfWidth);
+    expect(minX).toBeLessThan(-nameHalfWidth);
+    expect(maxY).toBeGreaterThan(plan.footprint.bounds.maxY + 1 + 0.7);
+    expect(minY).toBeLessThan(plan.footprint.bounds.minY - 1 - 0.3);
   });
 
   it("fails instead of reporting completion when Allegro is unavailable", async () => {
