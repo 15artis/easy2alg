@@ -13,7 +13,7 @@ import {
   LocalLibraryDeviceSummarySchema,
   NormalizedFootprintSchema,
 } from "../../shared/schemas";
-import { computeBounds, roundMm } from "../conversion/geometry";
+import { computeBounds, enlargePin1Markers, roundMm } from "../conversion/geometry";
 import { deriveTargetPackageName } from "../conversion/naming";
 import { writeLog } from "../logging";
 
@@ -439,6 +439,9 @@ export class Elibz2Connector {
         circles.push(...fillToCircles(line.data, canvas));
       }
     }
+    // FILL 圆点在本例中就是 pin-1 角标，源尺寸 0.6mm 在大器件上不可见（见
+    // geometry.enlargePin1Markers 注释）。放大后再算 bounds，预览与实机一致。
+    const visibleCircles = enlargePin1Markers(circles, pads);
 
     const rawLcscId = String(attributes["Supplier Part"] ?? "").toUpperCase();
     const lcscId = /^C\d+$/.test(rawLcscId) ? rawLcscId : synthesizeLcscId(device.uuid);
@@ -447,7 +450,7 @@ export class Elibz2Connector {
     );
     const extraPoints: readonly Point[] = [
       ...lines.flatMap((line) => [line.start, line.end]),
-      ...circles.flatMap((circle) => [
+      ...visibleCircles.flatMap((circle) => [
         {
           x: circle.center.x - circle.radius - circle.width / 2,
           y: circle.center.y - circle.radius - circle.width / 2,
@@ -476,7 +479,7 @@ export class Elibz2Connector {
       pads,
       holes,
       lines,
-      circles,
+      circles: visibleCircles,
       sourceOrigin: { x: canvas.originX, y: canvas.originY },
       bounds: computeBounds(pads, extraPoints),
       model3d: null,

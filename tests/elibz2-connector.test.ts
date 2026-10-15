@@ -62,17 +62,19 @@ describe("elibz2 connector", () => {
     expect(silkX.some((value) => Math.abs(value - 13.5) < 0.001)).toBe(true);
     expect(silkX.some((value) => Math.abs(value + 13.5) < 0.001)).toBe(true);
     expect(footprint.circles).toHaveLength(1);
-    // FILL 是实心圆盘：路径半径减半 (0.15) + 线宽=原半径 (0.3)，外径仍为 0.3
-    expect(footprint.circles[0].radius).toBeCloseTo(0.15, 3);
-    expect(footprint.circles[0].width).toBeCloseTo(0.3, 3);
+    // FILL 是实心圆盘：源外径 0.6mm（半径 0.3）。放大到"本体短边 5%"的可见尺寸
+    // （PEX8748 焊盘跨度 25.49mm → 目标外径 1.2745mm）。实心盘的模型编码为
+    // radius=外径/4、width=外径/2（描边外沿 = radius + width/2 = 外径/2）。
+    expect(footprint.circles[0].radius).toBeCloseTo(0.318625, 5);
+    expect(footprint.circles[0].width).toBeCloseTo(0.63725, 5);
     expect(footprint.circles[0].layer).toBe("silkscreen");
     // pin1 圆点位于 A1 左上角外侧
     expect(footprint.circles[0].center.x).toBeCloseTo(-13.97, 3);
     expect(footprint.circles[0].center.y).toBeCloseTo(13.97, 3);
 
-    // bounds：由丝印外框 ±13.5 与 pin1 圆盘（中心 13.97 ± 外径 0.3）共同决定
-    const minXM = closeTo(-14.27);
-    const maxYM = closeTo(14.27);
+    // bounds：由丝印外框 ±13.5 与 pin1 圆盘（中心 13.97 ± 外径 1.2745 的一半）共同决定
+    const minXM = closeTo(-14.60725);
+    const maxYM = closeTo(14.60725);
     expect(minXM.matches(footprint.bounds.minX)).toBe(true);
     expect(maxYM.matches(footprint.bounds.maxY)).toBe(true);
     expect(footprint.bounds.maxX).toBeCloseTo(13.5, 3);
@@ -97,12 +99,17 @@ describe("elibz2 connector", () => {
     //     "car: argument #1 should be a list ... - -3.05"，中断 e2a_build；
     //     首参必须包成 (list ...)。
     //  2) FILL 是实心圆盘（源 fill.width 仅 0.2mil，是无意义描边），输出为
-    //     "radius/2 路径 + 线宽=原半径" —— 外径仍为 0.3，丝印上为实心点。
+    //     "radius/2 路径 + 线宽=原半径"；源外径 0.3mm 太小不可见（用户反馈
+    //     2026-10-15），按本体短边 5% 放大到外径 1.2745mm。
     const bundle = createAllegroSourceBundle(plan, "C:\\Temp\\e2a-pex8748");
     const skill = bundle.sources.find((source) => source.relativePath === "build.il");
     expect(skill).toBeDefined();
     expect(skill!.content).toContain(
-      'axlDBCreateCircle(list(-13.97:13.97 0.15) 0.3 "PACKAGE GEOMETRY/SILKSCREEN_TOP")',
+      'axlDBCreateCircle(list(-13.97:13.97 0.31862) 0.63725 "PACKAGE GEOMETRY/SILKSCREEN_TOP")',
+    );
+    // ASSEMBLY 层同样复制一份（外径一致）
+    expect(skill!.content).toContain(
+      'axlDBCreateCircle(list(-13.97:13.97 0.31862) 0.63725 "PACKAGE GEOMETRY/ASSEMBLY_TOP")',
     );
     // 每个 axlDBCreateCircle 的首参都必须是 (list ...) 形式
     expect(skill!.content).not.toMatch(/axlDBCreateCircle\((?!list\()/);
