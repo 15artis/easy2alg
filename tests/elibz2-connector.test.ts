@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { Elibz2Connector } from "../src/main/connectors/elibz2-connector";
+import { createAllegroSourceBundle } from "../src/main/conversion/allegro-skill";
 import { createConversionPlan } from "../src/main/conversion/validate";
 
 const fixturePath = fileURLToPath(new URL("./fixtures/pex8748.elibz2", import.meta.url));
@@ -87,6 +88,15 @@ describe("elibz2 connector", () => {
     expect(plan.checks.find((check) => check.id === "pin-count")?.severity).toBe("pass");
     expect(plan.checks.find((check) => check.id === "pin-numbers")?.severity).toBe("pass");
     expect(plan.checks.find((check) => check.id === "pad-dimensions")?.severity).toBe("pass");
+    // 回归防护: 此前 axlDBCreateCircle 把 center/radius 包进同一 list 并多传 width,
+    // 导致 Allegro 17.4 解析 SKILL 时硬崩 (PEX8748 42% 处, allegro.jrl 为空)。
+    const bundle = createAllegroSourceBundle(plan, "C:\\Temp\\e2a-pex8748");
+    const skill = bundle.sources.find((source) => source.relativePath === "build.il");
+    expect(skill).toBeDefined();
+    expect(skill!.content).toContain(
+      'axlDBCreateCircle(-13.97:13.97 0.3 "PACKAGE GEOMETRY/SILKSCREEN_TOP")',
+    );
+    expect(skill!.content).not.toContain("axlDBCreateCircle(list(");
   });
 
   it("rejects unknown device uuids", async () => {

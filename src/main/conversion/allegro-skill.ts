@@ -133,8 +133,12 @@ const circleLayerName = (circle: NormalizedCircle): string =>
 const lineCommand = (line: NormalizedLine): string =>
   `  axlDBCreateLine(list(${point(line.start)} ${point(line.end)}) ${number(line.width)} ${skillString(layerName(line))})`;
 
+// axlDBCreateCircle 签名: (o_xy r_radius [s_layer [t_parent]])
+// center 是独立的点字面量 x:y, radius 是独立数字; 该 API 无线宽参数,
+// 圆使用目标层的默认线宽 (此前把 radius/width 一起包进 list 导致 Allegro 解析
+// SKILL 时硬崩 —— 见 2026-10-15 PEX8748 42% 崩溃, allegro.jrl 为空)。
 const circleCommand = (circle: NormalizedCircle): string =>
-  `  axlDBCreateCircle(list(${point(circle.center)} ${number(circle.radius)}) ${number(circle.width)} ${skillString(circleLayerName(circle))})`;
+  `  axlDBCreateCircle(${point(circle.center)} ${number(circle.radius)} ${skillString(circleLayerName(circle))})`;
 
 const pinCommand = (pad: NormalizedPad): string => {
   const rotation = ((pad.rotation % 360) + 360) % 360;
