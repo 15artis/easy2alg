@@ -40,6 +40,7 @@ import type {
   AllegroVersion,
   AppSettings,
   ConversionPlan,
+  ConversionResult,
   GenerationProgress,
   HistoryEntry,
   LocalLibraryDeviceSummary,
@@ -49,7 +50,16 @@ import type {
   QueueItem,
 } from "../../shared/schemas";
 import { createMockApi } from "./mock-api";
+import { PanZoom } from "./PanZoom";
+import { SymbolPreview } from "./SymbolPreview";
 import { selectRunnableItems, shouldOfferRegeneration } from "./selection";
+import {
+  applySymbolEdits,
+  EMPTY_SYMBOL_EDITS,
+  hasSymbolEdits,
+  type SymbolEdits,
+} from "../../shared/symbol-edit";
+import { sanitizeLibraryName } from "../../shared/naming";
 
 type Page = "convert" | "history" | "settings";
 
@@ -120,6 +130,26 @@ type OlbOutcome =
   | { readonly status: "ok"; readonly result: OlbWriteResult }
   | { readonly status: "failed"; readonly message: string };
 
+/** 单个器件上用户做过的调整：输出改名 + 原理图符号元素位移。 */
+type DeviceEdit = {
+  readonly pcbName: string | null;
+  readonly symbolName: string | null;
+  readonly symbolEdits: SymbolEdits;
+};
+
+const EMPTY_DEVICE_EDIT: DeviceEdit = {
+  pcbName: null,
+  symbolName: null,
+  symbolEdits: EMPTY_SYMBOL_EDITS,
+};
+
+/** 把改名与元素位移套到符号上 —— 预览与最终写入 .olb 走的是同一条路径。 */
+const applyEdits = (symbol: NormalizedSymbol, edit: DeviceEdit): NormalizedSymbol => {
+  const name = edit.symbolName === null ? "" : sanitizeLibraryName(edit.symbolName);
+  const named = name.length === 0 ? symbol : { ...symbol, name };
+  return applySymbolEdits(named, edit.symbolEdits);
+};
+
 const libraryNameOf = (sourcePath: string): string => {
   const base = sourcePath.split(/[\\/]/).pop() ?? sourcePath;
   const dot = base.lastIndexOf(".");
@@ -144,15 +174,15 @@ const formatDate = (iso: string): string =>
     minute: "2-digit",
   }).format(new Date(iso));
 
+/** PCB 封装俯视内容（不含 <svg>，交给 PanZoom 统一承载缩放平移）。y 轴向上。 */
 const FootprintPreview = ({ footprint }: { readonly footprint: NormalizedFootprint }): ReactElement => {
   const width = Math.max(footprint.bounds.maxX - footprint.bounds.minX, 1);
   const height = Math.max(footprint.bounds.maxY - footprint.bounds.minY, 1);
   const margin = Math.max(width, height) * 0.15;
-  const viewBox = `${footprint.bounds.minX - margin} ${-footprint.bounds.maxY - margin} ${width + margin * 2} ${height + margin * 2}`;
   return (
-    <svg className="footprint-svg" viewBox={viewBox} aria-label="封装俯视预览">
+    <>
       <defs>
-        <pattern id="grid" width="1" height="1" patternUnits="userSpaceOnUse">
+        <pattern id="footprint-grid" width="1" height="1" patternUnits="userSpaceOnUse">
           <path d="M 1 0 L 0 0 0 1" fill="none" stroke="#dfe4ea" strokeWidth="0.025" />
         </pattern>
       </defs>
@@ -161,7 +191,7 @@ const FootprintPreview = ({ footprint }: { readonly footprint: NormalizedFootpri
         y={footprint.bounds.minY - margin}
         width={width + margin * 2}
         height={height + margin * 2}
-        fill="url(#grid)"
+        fill="url(#footprint-grid)"
       />
       <g transform="scale(1 -1)">
       {footprint.lines.map((line, index) => (
@@ -231,7 +261,7 @@ const FootprintPreview = ({ footprint }: { readonly footprint: NormalizedFootpri
         />
       ))}
       </g>
-    </svg>
+    </>
   );
 };
 
@@ -539,12 +569,103 @@ const ConverterPage = ({
   const [progress, setProgress] = useState<GenerationProgress | null>(null);
   const [localLoading, setLocalLoading] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  // 生成哪些产物：PCB 封装（.dra/.psm/.pad）与原理图符号（.olb）各自独立开关。
+  const [targets, setTargets] = useState<{ pcb: boolean; symbol: boolean }>({
+    pcb: true,
+    symbol: true,
+  });
+  const [previewTab, setPreviewTab] = useState<"pcb" | "sch">("pcb");
+  const [sectionIndex, setSectionIndex] = useState(0);
+  const [selectedShapeKey, setSelectedShapeKey] = useState<string | null>(null);
+  // 每个器件的手工调整（符号元素位移）与输出改名。
+  const [deviceEdits, setDeviceEdits] = useState<Readonly<Record<string, DeviceEdit>>>({});
   const progressRef = useRef<GenerationProgress | null>(null);
   const selected = queue.find((item) => item.id === selectedId) ?? queue[0] ?? null;
   const selectedPlan = selected === null ? null : (plans[selected.id] ?? null);
   const selectedOlb = selected === null ? null : (olbOutcomes[selected.id] ?? null);
   // 按钮可用性与生成目标共用同一判据，见 selection.ts 的注释。
   const runnableItems = useMemo(() => selectRunnableItems(queue, plans), [queue, plans]);
+
+  const selectedEdit = (selected === null ? undefined : deviceEdits[selected.id]) ?? EMPTY_DEVICE_EDIT;
+  const selectedSymbolEntry = selected === null ? undefined : symbols[selected.id];
+  // 预览用的是**套完命名与手工调整之后**的符号，所见即最终写入 .olb 的内容。
+  const editedSymbol = useMemo(
+    () => (selectedSymbolEntry === undefined ? null : applyEdits(selectedSymbolEntry.symbol, selectedEdit)),
+    [selectedSymbolEntry, selectedEdit],
+  );
+  const previewSection =
+    editedSymbol === null
+      ? null
+      : editedSymbol.sections[Math.min(sectionIndex, editedSymbol.sections.length - 1)];
+
+  // 勾选目标后仍要保证"有东西可生成"：只要 PCB 就要求有封装，只勾符号就要求该器件有符号。
+  const generatableItems = useMemo(
+    () =>
+      targets.pcb || targets.symbol
+        ? runnableItems.filter((item) => targets.pcb || symbols[item.id] !== undefined)
+        : [],
+    [runnableItems, symbols, targets.pcb, targets.symbol],
+  );
+
+  // 切到没有符号的器件时把分页退回 PCB，避免"分页停在符号、画布却是封装"的错位。
+  const hasSymbol = editedSymbol !== null;
+  useEffect(() => {
+    if (!hasSymbol) {
+      setPreviewTab("pcb");
+    }
+  }, [hasSymbol]);
+  const selectedKeyId = selected?.id ?? null;
+  useEffect(() => {
+    setSectionIndex(0);
+    setSelectedShapeKey(null);
+  }, [selectedKeyId]);
+
+  const updateDeviceEdit = (id: string, patch: Partial<DeviceEdit>): void => {
+    setDeviceEdits((current) => ({
+      ...current,
+      [id]: { ...EMPTY_DEVICE_EDIT, ...current[id], ...patch },
+    }));
+  };
+
+  const moveShape = (id: string, key: string, dx: number, dy: number): void => {
+    setDeviceEdits((current) => {
+      const base = current[id] ?? EMPTY_DEVICE_EDIT;
+      const previous = base.symbolEdits[key] ?? { dx: 0, dy: 0 };
+      return {
+        ...current,
+        [id]: {
+          ...base,
+          symbolEdits: {
+            ...base.symbolEdits,
+            [key]: { dx: previous.dx + dx, dy: previous.dy + dy },
+          },
+        },
+      };
+    });
+  };
+
+  /** 生成时用的封装计划：套上用户改过的 PCB 封装名。 */
+  const planFor = (id: string): ConversionPlan | null => {
+    const plan = plans[id];
+    if (plan === undefined) {
+      return null;
+    }
+    const raw = deviceEdits[id]?.pcbName ?? null;
+    const name = raw === null ? "" : sanitizeLibraryName(raw);
+    if (name.length === 0) {
+      return plan;
+    }
+    return {
+      ...plan,
+      footprint: { ...plan.footprint, info: { ...plan.footprint.info, targetPackageName: name } },
+    };
+  };
+
+  /** 生成时用的符号：套上用户改过的符号名与手工调整。 */
+  const symbolFor = (id: string): NormalizedSymbol | null => {
+    const entry = symbols[id];
+    return entry === undefined ? null : applyEdits(entry.symbol, deviceEdits[id] ?? EMPTY_DEVICE_EDIT);
+  };
 
   useEffect(
     () =>
@@ -751,98 +872,136 @@ const ConverterPage = ({
   };
 
   const generateSelected = async (): Promise<void> => {
-    const targets = runnableItems;
-    if (targets.length === 0) {
+    const items = generatableItems;
+    if (items.length === 0) {
       return;
     }
+    const wantPcb = targets.pcb;
+    const wantSymbol = targets.symbol;
     setRunning(true);
-    for (const target of targets) {
-      updateItem(target.id, { state: "loading", message: "Allegro 正在生成并检查…" });
-      const startingProgress: GenerationProgress = {
-        lcscId: target.id,
-        stage: "preparing",
-        percent: 1,
-        message: "正在提交生成任务",
-        diagnosticDirectory: null,
-        timestamp: new Date().toISOString(),
-      };
-      progressRef.current = startingProgress;
-      setProgress(startingProgress);
-      try {
-        const result = await api.generate(plans[target.id]!);
-        // 本地库器件顺带写原理图符号库：封装成功即视为这一步的前提已满足，
-        // OLB 失败只提示、不推翻已完成的封装结果。
-        const symbolEntry = symbols[target.id];
-        if (symbolEntry === undefined) {
-          updateItem(target.id, { state: "generated", message: result.message });
-        } else {
-          updateItem(target.id, {
-            state: "loading",
-            message: "正在写入原理图符号库（.olb）…",
+    for (const item of items) {
+      const plan = planFor(item.id);
+      const symbol = wantSymbol ? symbolFor(item.id) : null;
+      const entry = symbols[item.id];
+      const notes: string[] = [];
+      let pcbFailure: string | null = null;
+      let pcbResult: ConversionResult | null = null;
+
+      updateItem(item.id, {
+        state: "loading",
+        message: wantPcb ? "Allegro 正在生成并检查…" : "正在写入原理图符号库（.olb）…",
+      });
+
+      // ① PCB 封装（.dra/.psm/.pad）
+      if (wantPcb && plan !== null) {
+        const startingProgress: GenerationProgress = {
+          lcscId: item.id,
+          stage: "preparing",
+          percent: 1,
+          message: "正在提交生成任务",
+          diagnosticDirectory: null,
+          timestamp: new Date().toISOString(),
+        };
+        progressRef.current = startingProgress;
+        setProgress(startingProgress);
+        try {
+          pcbResult = await api.generate(plan);
+          notes.push(pcbResult.message);
+        } catch (error) {
+          const previousProgress = progressRef.current;
+          const reportedFailure =
+            previousProgress?.lcscId === item.id && previousProgress.stage === "failed"
+              ? previousProgress
+              : null;
+          pcbFailure = reportedFailure?.message ?? errorMessage(error);
+        }
+      }
+
+      // ② 原理图符号（.olb）—— 与封装相互独立：封装失败也不该拦着符号落库。
+      if (wantSymbol && symbol !== null && entry !== undefined) {
+        updateItem(item.id, { state: "loading", message: "正在写入原理图符号库（.olb）…" });
+        try {
+          const olb = await api.writeOlb({
+            symbol,
+            libraryPath: settings.olbLibraryPath,
+            libraryName: entry.libraryName,
           });
-          try {
-            const olb = await api.writeOlb({
-              symbol: symbolEntry.symbol,
-              libraryPath: settings.olbLibraryPath,
-              libraryName: symbolEntry.libraryName,
-            });
-            setOlbOutcomes((current) => ({
-              ...current,
-              [target.id]: { status: "ok", result: olb },
-            }));
-            updateItem(target.id, {
-              state: "generated",
-              message: `${result.message}${olb.message}`,
-            });
-          } catch (olbError) {
-            const message = errorMessage(olbError);
-            setOlbOutcomes((current) => ({
-              ...current,
-              [target.id]: { status: "failed", message },
-            }));
-            updateItem(target.id, {
-              state: "generated",
-              message: `${result.message} 原理图符号库未写入：${message}`,
-            });
+          setOlbOutcomes((current) => ({ ...current, [item.id]: { status: "ok", result: olb } }));
+          notes.push(olb.message);
+        } catch (error) {
+          const message = errorMessage(error);
+          setOlbOutcomes((current) => ({
+            ...current,
+            [item.id]: { status: "failed", message },
+          }));
+          notes.push(`原理图符号库未写入：${message}`);
+          if (pcbFailure === null) {
+            pcbFailure = message;
           }
         }
-        onGenerated({ ...result, id: `${result.lcscId}-${result.completedAt}` });
-      } catch (error) {
-        const previousProgress = progressRef.current;
-        const reportedFailure =
-          previousProgress?.lcscId === target.id &&
-          previousProgress.stage === "failed"
-            ? previousProgress
-            : null;
-        const message = reportedFailure?.message ?? errorMessage(error);
-        updateItem(target.id, {
+      }
+
+      if (pcbFailure !== null) {
+        updateItem(item.id, {
           state: "generationFailed",
-          message: `上次生成失败，可直接重试：${message}`,
+          message: `上次生成失败，可直接重试：${pcbFailure}`,
         });
-        const failedProgress: GenerationProgress =
-          reportedFailure ?? {
-            lcscId: target.id,
+        if (wantPcb && pcbResult === null) {
+          const previousProgress = progressRef.current;
+          const failedProgress: GenerationProgress = {
+            lcscId: item.id,
             stage: "failed",
             percent:
-              previousProgress?.lcscId === target.id
-                ? Math.min(previousProgress.percent, 99)
-                : 1,
-            message,
-            diagnosticDirectory: null,
+              previousProgress?.lcscId === item.id ? Math.min(previousProgress.percent, 99) : 1,
+            message: pcbFailure,
+            diagnosticDirectory: previousProgress?.lcscId === item.id ? previousProgress.diagnosticDirectory : null,
             timestamp: new Date().toISOString(),
           };
-        progressRef.current = failedProgress;
-        setProgress(failedProgress);
+          progressRef.current = failedProgress;
+          setProgress(failedProgress);
+        }
+      } else {
+        updateItem(item.id, { state: "generated", message: notes.join("") });
+      }
+      if (pcbResult !== null) {
+        onGenerated({ ...pcbResult, id: `${pcbResult.lcscId}-${pcbResult.completedAt}` });
       }
     }
     setRunning(false);
   };
 
-  const readyCount = runnableItems.length;
-  const retryCount = runnableItems.filter(
-    (item) => item.state === "generationFailed",
-  ).length;
-  const regenerateOnly = shouldOfferRegeneration(runnableItems);
+  const readyCount = generatableItems.length;
+  const retryCount = generatableItems.filter((item) => item.state === "generationFailed").length;
+  const regenerateOnly = shouldOfferRegeneration(generatableItems);
+  const wantsNothing = !targets.pcb && !targets.symbol;
+  const pcbBlocked = targets.pcb && allegroInstall === null;
+  const generateDisabled = readyCount === 0 || running || wantsNothing || pcbBlocked;
+  const generateTitle = running
+    ? "正在生成…"
+    : wantsNothing
+      ? "至少勾选一种生成内容"
+      : readyCount === 0
+        ? runnableItems.length > 0
+          ? "勾选的器件没有原理图符号数据（立创编号链路只有封装）"
+          : "先在左侧勾选至少一个已读取的器件"
+        : pcbBlocked
+          ? "生成 PCB 封装需要先检测到 Allegro"
+          : retryCount > 0 || regenerateOnly
+            ? "对勾选的器件再跑一次"
+            : "对勾选的器件生成所选内容";
+  const generateLabel = running
+    ? "正在生成…"
+    : wantsNothing
+      ? "未选择生成内容"
+      : pcbBlocked
+        ? "未检测到 Allegro"
+        : `${retryCount > 0 || regenerateOnly ? "重新" : ""}${
+            targets.pcb && targets.symbol
+              ? "生成并验证"
+              : targets.pcb
+                ? "生成 PCB 封装"
+                : "写入原理图符号"
+          }`;
   return (
     <>
     <main className="workbench">
@@ -928,45 +1087,147 @@ const ConverterPage = ({
       <section className="main-stage">
         <header className="stage-heading">
           <div><h2>封装预览</h2><span>{selected?.id ?? ""} · {selected?.footprint?.info.sourcePackageName ?? "请选择器件"}</span></div>
-          <div className="stage-tools"><button type="button">−</button><span>100%</span><button type="button">＋</button><button type="button"><Layers3 size={16} /></button></div>
+          <div className="stage-tabs" role="tablist">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={previewTab === "pcb"}
+              className={previewTab === "pcb" ? "active" : ""}
+              onClick={() => setPreviewTab("pcb")}
+              disabled={selected?.footprint === null || selected?.footprint === undefined}
+              data-testid="tab-pcb"
+            >
+              PCB 封装
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={previewTab === "sch"}
+              className={previewTab === "sch" ? "active" : ""}
+              onClick={() => setPreviewTab("sch")}
+              disabled={editedSymbol === null}
+              title={editedSymbol === null ? "该器件的源数据里没有原理图符号" : undefined}
+              data-testid="tab-sch"
+            >
+              原理图符号
+            </button>
+          </div>
+          {previewTab === "sch" && editedSymbol !== null && editedSymbol.sections.length > 1 ? (
+            <div className="stage-sections" aria-label="符号分段">
+              {editedSymbol.sections.map((section, index) => (
+                <button
+                  key={section.name}
+                  type="button"
+                  className={index === sectionIndex ? "active" : ""}
+                  onClick={() => {
+                    setSectionIndex(index);
+                    setSelectedShapeKey(null);
+                  }}
+                  title={section.name}
+                >
+                  {String.fromCharCode(65 + (index % 26))}
+                </button>
+              ))}
+            </div>
+          ) : null}
         </header>
         <div className="engineering-canvas">
-          <div className="ruler-top">−6　　　　　−4　　　　　−2　　　　　 0　　　　　 2　　　　　 4　　　　　 6 mm</div>
-          {selected?.footprint !== null && selected?.footprint !== undefined ? (
-            <FootprintPreview footprint={selected.footprint} />
+          {previewTab === "sch" && editedSymbol !== null && previewSection !== null ? (
+            <PanZoom
+              bounds={previewSection.bounds}
+              resetKey={`sch:${selected?.id ?? ""}:${sectionIndex}:${editedSymbol.sections.length}`}
+              ariaLabel="原理图符号预览"
+            >
+              {({ scale }) => (
+                <SymbolPreview
+                  symbol={editedSymbol}
+                  sectionIndex={Math.min(sectionIndex, editedSymbol.sections.length - 1)}
+                  scale={scale}
+                  edits={selectedEdit.symbolEdits}
+                  selectedKey={selectedShapeKey}
+                  onSelect={setSelectedShapeKey}
+                  onMoveShape={(key, dx, dy) => {
+                    if (selected !== null) {
+                      moveShape(selected.id, key, dx, dy);
+                    }
+                  }}
+                />
+              )}
+            </PanZoom>
+          ) : selected?.footprint !== null && selected?.footprint !== undefined ? (
+            <PanZoom
+              bounds={selected.footprint.bounds}
+              resetKey={`pcb:${selected.id}`}
+              ariaLabel="PCB 封装预览"
+            >
+              {() => <FootprintPreview footprint={selected.footprint!} />}
+            </PanZoom>
           ) : (
             <div className="empty-state large"><Box size={36} /><strong>这里会显示封装俯视图</strong><span>焊盘、丝印和外形可以在生成前确认</span></div>
           )}
-          {selected?.footprint !== null && selected?.footprint !== undefined ? (
+          {previewTab === "pcb" && selected?.footprint !== null && selected?.footprint !== undefined ? (
             <div className="canvas-legend"><span><i className="legend-pad" />铜焊盘</span><span><i className="legend-silk" />丝印</span><span><i className="legend-bound" />阻焊</span></div>
+          ) : null}
+          {previewTab === "sch" && editedSymbol !== null ? (
+            <div className="canvas-legend">
+              <span><i className="legend-silk" />本体 / 图形</span>
+              <span><i className="legend-pad" />引脚</span>
+              <span>
+                拖动文字或图形可手工调整
+                {hasSymbolEdits(selectedEdit.symbolEdits) ? (
+                  <button
+                    type="button"
+                    className="legend-reset"
+                    onClick={() => {
+                      if (selected !== null) {
+                        setDeviceEdits((current) => ({
+                          ...current,
+                          [selected.id]: { ...selectedEdit, symbolEdits: EMPTY_SYMBOL_EDITS },
+                        }));
+                        setSelectedShapeKey(null);
+                      }
+                    }}
+                  >
+                    重置调整
+                  </button>
+                ) : null}
+              </span>
+            </div>
           ) : null}
         </div>
         <footer className="stage-footer">
           <div><span>ALLEGRO 库目录</span><strong><Folder size={14} />{settings.libraryDirectory}</strong></div>
           <div className="generation-side">
-            <span>转换依据<br /><b>IPC-7352 · IPC-7525C</b></span>
+            <div className="target-toggles">
+              <label title="生成 Allegro 封装：.dra / .psm / .pad">
+                <input
+                  type="checkbox"
+                  checked={targets.pcb}
+                  onChange={(event) => setTargets((current) => ({ ...current, pcb: event.target.checked }))}
+                  data-testid="target-pcb"
+                />
+                PCB 封装
+              </label>
+              <label title="生成 OrCAD Capture 原理图符号并写入 .olb（仅本地库器件有符号数据）">
+                <input
+                  type="checkbox"
+                  checked={targets.symbol}
+                  onChange={(event) => setTargets((current) => ({ ...current, symbol: event.target.checked }))}
+                  data-testid="target-symbol"
+                />
+                原理图符号
+              </label>
+            </div>
             <button
               className="primary-button generate-main"
               type="button"
-              disabled={readyCount === 0 || running || allegroInstall === null}
+              disabled={generateDisabled}
               onClick={() => void generateSelected()}
               data-testid="generate-button"
-              title={
-                readyCount === 0
-                  ? "先在左侧勾选至少一个已读取的器件"
-                  : retryCount > 0 || regenerateOnly
-                    ? "对勾选的器件再跑一次 Allegro 生成并回读检查"
-                    : "对勾选的器件生成封装（本地库器件会同时写入 .olb）"
-              }
+              title={generateTitle}
             >
               {running ? <LoaderCircle className="spin" size={17} /> : <Play size={17} fill="currentColor" />}
-              {running
-                ? "正在生成…"
-                : allegroInstall === null
-                  ? "未检测到 Allegro"
-                  : retryCount > 0 || regenerateOnly
-                    ? "重新生成并验证"
-                    : "生成并验证"}
+              {generateLabel}
             </button>
           </div>
         </footer>
@@ -984,8 +1245,36 @@ const ConverterPage = ({
                 <div><dt>立创编号</dt><dd>{selected.footprint.info.lcscId}</dd></div>
                 <div><dt>制造商型号</dt><dd>{selected.footprint.info.manufacturerPartNumber || selected.footprint.info.name}</dd></div>
                 <div><dt>原始封装</dt><dd>{selected.footprint.info.sourcePackageName}</dd></div>
-                <div><dt>目标名称</dt><dd>{selected.footprint.info.targetPackageName}</dd></div>
+                <div><dt>目标名称</dt><dd>{selectedEdit.pcbName === null ? selected.footprint.info.targetPackageName : (sanitizeLibraryName(selectedEdit.pcbName) || selected.footprint.info.targetPackageName)}</dd></div>
               </dl>
+            </section>
+            <section className="inspector-section">
+              <h3>输出命名 <ChevronRight size={15} /></h3>
+              <div className="name-fields">
+                <label>
+                  <span>PCB 封装名 <em>.dra / .psm / .pad</em></span>
+                  <input
+                    value={selectedEdit.pcbName ?? selected.footprint.info.targetPackageName}
+                    onChange={(event) => updateDeviceEdit(selected.id, { pcbName: event.target.value })}
+                    spellCheck={false}
+                    data-testid="pcb-name"
+                  />
+                </label>
+                {selectedSymbolEntry === undefined ? null : (
+                  <label>
+                    <span>原理图符号名 <em>.olb 内的器件名</em></span>
+                    <input
+                      value={selectedEdit.symbolName ?? selectedSymbolEntry.symbol.name}
+                      onChange={(event) => updateDeviceEdit(selected.id, { symbolName: event.target.value })}
+                      spellCheck={false}
+                      data-testid="symbol-name"
+                    />
+                  </label>
+                )}
+                <p className="name-hint">
+                  仅允许 A-Z 0-9 _ -，超长会被截断；留空则用自动推导的名字。
+                </p>
+              </div>
             </section>
             <section className="inspector-section">
               <h3>自动检查 <ChevronRight size={15} /></h3>

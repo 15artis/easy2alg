@@ -1825,3 +1825,200 @@ select:focus,
 .input-actions .wide-action {
   grid-column: 1 / -1;
 }
+
+/* ---------- 预览分页 / 分区 ---------- */
+.stage-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  background: #eef2f7;
+  border-radius: 8px;
+}
+
+.stage-tabs button {
+  padding: 5px 12px;
+  color: #5f6b7d;
+  font-size: 12px;
+  font-weight: 650;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+}
+
+.stage-tabs button.active {
+  color: #172033;
+  background: white;
+  box-shadow: 0 1px 4px rgb(23 32 51 / 12%);
+}
+
+.stage-tabs button:disabled {
+  opacity: 0.42;
+}
+
+.stage-sections {
+  display: flex;
+  gap: 3px;
+}
+
+.stage-sections button {
+  width: 24px;
+  height: 24px;
+  color: #5f6b7d;
+  font-size: 11px;
+  font-weight: 700;
+  background: #f2f5f9;
+  border: 1px solid #d6dde2;
+  border-radius: 5px;
+}
+
+.stage-sections button.active {
+  color: white;
+  background: #2458d3;
+  border-color: #1d49b7;
+}
+
+/* ---------- 缩放平移画布 ---------- */
+.panzoom {
+  position: absolute;
+  inset: 14px 12px 12px;
+  cursor: grab;
+  touch-action: none;
+}
+
+.panzoom:active {
+  cursor: grabbing;
+}
+
+.panzoom-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.panzoom-controls {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  background: rgb(255 255 255 / 94%);
+  border: 1px solid #d6dde2;
+  border-radius: 8px;
+  box-shadow: 0 3px 10px rgb(23 32 51 / 10%);
+}
+
+.panzoom-controls button {
+  display: grid;
+  place-items: center;
+  min-width: 26px;
+  height: 26px;
+  color: #36434e;
+  font-size: 14px;
+  font-weight: 700;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+}
+
+.panzoom-controls button:hover {
+  background: #eef2f7;
+}
+
+.panzoom-controls span {
+  min-width: 46px;
+  color: #8791a2;
+  font-size: 11px;
+  text-align: center;
+}
+
+.panzoom-controls .panzoom-fit {
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+.canvas-legend .legend-reset {
+  margin-left: 8px;
+  padding: 2px 7px;
+  color: #1d49b7;
+  font-size: 11px;
+  background: #eef3ff;
+  border: 1px solid #cfdcfb;
+  border-radius: 5px;
+}
+
+/* ---------- 生成目标多选 ---------- */
+.target-toggles {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  color: #4a5561;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.target-toggles label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+
+.target-toggles input {
+  width: 14px;
+  height: 14px;
+  accent-color: #2458d3;
+}
+
+/* ---------- 输出命名 ---------- */
+.name-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.name-fields label {
+  display: block;
+}
+
+.name-fields label span {
+  display: block;
+  margin-bottom: 4px;
+  color: #303b44;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.name-fields label span em {
+  margin-left: 5px;
+  color: #a3adb8;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 500;
+}
+
+.name-fields input {
+  width: 100%;
+  height: 32px;
+  padding: 0 9px;
+  color: #35414b;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  background: white;
+  border: 1px solid #d8dfe4;
+  border-radius: 6px;
+  outline: 0;
+}
+
+.name-fields input:focus {
+  border-color: #66cdb3;
+  box-shadow: 0 0 0 3px rgb(0 169 130 / 8%);
+}
+
+.name-hint {
+  margin: 0;
+  color: #a3adb8;
+  font-size: 10px;
+  line-height: 1.5;
+}

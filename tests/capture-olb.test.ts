@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { Elibz2Connector } from "../src/main/connectors/elibz2-connector";
 import { buildCaptureLibraryXml } from "../src/main/conversion/capture-olb";
+import { applySymbolEdits, symbolShapeKey } from "../src/shared/symbol-edit";
 import type { NormalizedSymbol } from "../src/shared/schemas";
 
 const fixturePath = fileURLToPath(new URL("./fixtures/pex8748.elibz2", import.meta.url));
@@ -133,6 +134,36 @@ describe("capture library XML", () => {
     const sectionA = symbol!.sections[0];
     expect([boxes[0][1], boxes[0][2], boxes[0][3], boxes[0][4]]).toEqual(["0", "380", "0", "310"]);
     expect(sectionA.name).toBe("PEX8748_CS_I2C_SPI");
+  });
+
+  it("carries the user's manual shape adjustments into the written library", async () => {
+    // 预览里拖动的位移必须原样落进 .olb —— 预览与写入走的是同一个 applySymbolEdits。
+    const connector = new Elibz2Connector();
+    const symbol = await connector.loadSymbol(fixturePath, deviceUuid);
+    const textIndex = symbol!.sections[0].shapes.findIndex((shape) => shape.kind === "text");
+    expect(textIndex).toBeGreaterThanOrEqual(0);
+    const before = symbol!.sections[0].shapes[textIndex];
+    expect(before.kind).toBe("text");
+    const moved = applySymbolEdits(symbol!, {
+      [symbolShapeKey(0, textIndex)]: { dx: 25, dy: -40 },
+    });
+    const after = moved.sections[0].shapes[textIndex];
+    expect(after.kind).toBe("text");
+    if (after.kind !== "text" || before.kind !== "text") return;
+    expect(after.at).toEqual({ x: before.at.x + 25, y: before.at.y - 40 });
+    // 同一段里其它元素原地不动
+    expect(moved.sections[0].shapes[0]).toEqual(symbol!.sections[0].shapes[0]);
+
+    const xml = buildCaptureLibraryXml(moved, "C:/libs/target.OLB");
+    // CommentText 的锚点与包围盒都跟着走
+    expect(xml).toContain(
+      `locX="${after.at.x}" locY="${after.at.y}" name="${after.text}"`,
+    );
+    // 未编辑的段落不受影响
+    const untouched = buildCaptureLibraryXml(symbol!, "C:/libs/target.OLB");
+    expect(xml.match(/<SymbolPinScalar>/g)).toHaveLength(
+      untouched.match(/<SymbolPinScalar>/g)!.length,
+    );
   });
 
   it("keeps every attribute value XML-escaped", () => {

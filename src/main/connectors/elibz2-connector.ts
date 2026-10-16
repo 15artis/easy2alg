@@ -21,6 +21,10 @@ import {
 } from "../../shared/schemas";
 import { computeBounds, enlargePin1Markers, roundMm } from "../conversion/geometry";
 import { deriveTargetPackageName } from "../conversion/naming";
+import {
+  translateSymbolShape,
+  translateSymbolPoint,
+} from "../../shared/symbol-edit";
 import { writeLog } from "../logging";
 
 /**
@@ -389,24 +393,7 @@ const translatePoint = (point: Point, dx: number, dy: number): Point => ({
   y: roundMm(point.y + dy),
 });
 
-const translateShape = (
-  shape: NormalizedSymbolShape,
-  dx: number,
-  dy: number,
-): NormalizedSymbolShape => {
-  switch (shape.kind) {
-    case "rect":
-      return {
-        ...shape,
-        min: translatePoint(shape.min, dx, dy),
-        max: translatePoint(shape.max, dx, dy),
-      };
-    case "polyline":
-      return { ...shape, points: shape.points.map((point) => translatePoint(point, dx, dy)) };
-    default:
-      return { ...shape, at: translatePoint(shape.at, dx, dy) };
-  }
-};
+const translateShape = translateSymbolShape;
 
 const pinCountOf = (doc: ElibuDoc): number =>
   doc.lines.filter((line) => line.head.type === "PIN").length;
