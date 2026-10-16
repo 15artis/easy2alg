@@ -49,6 +49,7 @@ import type {
   QueueItem,
 } from "../../shared/schemas";
 import { createMockApi } from "./mock-api";
+import { selectRunnableItems, shouldOfferRegeneration } from "./selection";
 
 type Page = "convert" | "history" | "settings";
 
@@ -542,6 +543,8 @@ const ConverterPage = ({
   const selected = queue.find((item) => item.id === selectedId) ?? queue[0] ?? null;
   const selectedPlan = selected === null ? null : (plans[selected.id] ?? null);
   const selectedOlb = selected === null ? null : (olbOutcomes[selected.id] ?? null);
+  // 按钮可用性与生成目标共用同一判据，见 selection.ts 的注释。
+  const runnableItems = useMemo(() => selectRunnableItems(queue, plans), [queue, plans]);
 
   useEffect(
     () =>
@@ -748,9 +751,7 @@ const ConverterPage = ({
   };
 
   const generateSelected = async (): Promise<void> => {
-    const targets = queue.filter(
-      (item) => item.selected && item.footprint !== null && plans[item.id] !== undefined,
-    );
+    const targets = runnableItems;
     if (targets.length === 0) {
       return;
     }
@@ -837,16 +838,11 @@ const ConverterPage = ({
     setRunning(false);
   };
 
-  const readyCount = queue.filter(
-    (item) =>
-      item.selected &&
-      (item.state === "ready" ||
-        item.state === "warning" ||
-        item.state === "generationFailed"),
+  const readyCount = runnableItems.length;
+  const retryCount = runnableItems.filter(
+    (item) => item.state === "generationFailed",
   ).length;
-  const retryCount = queue.filter(
-    (item) => item.selected && item.state === "generationFailed",
-  ).length;
+  const regenerateOnly = shouldOfferRegeneration(runnableItems);
   return (
     <>
     <main className="workbench">
@@ -955,15 +951,22 @@ const ConverterPage = ({
               disabled={readyCount === 0 || running || allegroInstall === null}
               onClick={() => void generateSelected()}
               data-testid="generate-button"
+              title={
+                readyCount === 0
+                  ? "先在左侧勾选至少一个已读取的器件"
+                  : retryCount > 0 || regenerateOnly
+                    ? "对勾选的器件再跑一次 Allegro 生成并回读检查"
+                    : "对勾选的器件生成封装（本地库器件会同时写入 .olb）"
+              }
             >
               {running ? <LoaderCircle className="spin" size={17} /> : <Play size={17} fill="currentColor" />}
               {running
                 ? "正在生成…"
                 : allegroInstall === null
                   ? "未检测到 Allegro"
-                  : retryCount > 0
+                  : retryCount > 0 || regenerateOnly
                     ? "重新生成并验证"
-                  : "生成并验证"}
+                    : "生成并验证"}
             </button>
           </div>
         </footer>

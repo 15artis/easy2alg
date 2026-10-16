@@ -108,8 +108,11 @@ export type CaptureToolchain = {
 };
 
 /**
- * 从 allegro.exe 反推 tclsh。实测 17.4 布局：
- * `<root>/tools/bin/{allegro.exe, tclsh.exe, orDb_Dll_Tcl64.dll}`。
+ * 从 allegro.exe 反推 tclsh。
+ *
+ * 实测 17.4 布局：`<root>/tools/bin/{allegro.exe, tclsh.exe, orDb_Dll_Tcl64.dll}`。
+ * 但 Allegro 也可能从 `<root>/tools/pcb/bin/allegro.exe` 启动（allegro-runner 里
+ * 有同样的分叉判断），那时 tclsh 仍在 `<root>/tools/bin`，所以两条候选都要试。
  */
 export const resolveCaptureToolchain = async (
   allegroExecutablePath: string | null,
@@ -117,7 +120,17 @@ export const resolveCaptureToolchain = async (
   if (allegroExecutablePath === null) {
     return null;
   }
-  const candidates = [dirname(allegroExecutablePath), join(dirname(allegroExecutablePath), "..", "bin")];
+  const executableDirectory = dirname(allegroExecutablePath);
+  const executableParent = dirname(executableDirectory);
+  const installationRoot =
+    basename(executableParent).toLowerCase() === "pcb"
+      ? dirname(dirname(executableParent))
+      : dirname(executableParent);
+  const candidates = [
+    executableDirectory,
+    join(installationRoot, "tools", "bin"),
+    join(installationRoot, "tools", "pcb", "bin"),
+  ];
   for (const candidate of candidates) {
     const tclshPath = join(candidate, "tclsh.exe");
     const dllPath = join(candidate, "orDb_Dll_Tcl64.dll");
