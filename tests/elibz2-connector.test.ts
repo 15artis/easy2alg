@@ -145,6 +145,32 @@ describe("elibz2 connector", () => {
     expect(symbol!.pcbFootprint).toBe("PEX8748_BACA");
   });
 
+  it("anchors every section's body rect at the origin like a real OrCAD library part", async () => {
+    const connector = new Elibz2Connector();
+    const symbol = await connector.loadSymbol(fixturePath, deviceUuid);
+    // 真实库 201/211 个器件的本体矩形左下角正好在 (0,0)；源数据是以原点为中心的，
+    // 不平移的话符号会整体偏在 Capture 编辑器的左上角（用户 2026-10-16 反馈）。
+    for (const section of symbol!.sections) {
+      const rect = section.shapes.find((shape) => shape.kind === "rect");
+      expect(rect).toBeDefined();
+      if (rect?.kind !== "rect") continue;
+      const minX = Math.min(rect.min.x, rect.max.x);
+      const minY = Math.min(rect.min.y, rect.max.y);
+      expect(minX).toBe(0);
+      expect(minY).toBe(0);
+    }
+    const station0 = symbol!.sections.find((section) => section.name === "PEX8748_Station0")!;
+    expect(station0.shapes.find((shape) => shape.kind === "rect")).toEqual({
+      kind: "rect",
+      min: { x: 0, y: 0 },
+      max: { x: 180, y: 400 },
+      cornerRadius: 10,
+      filled: false,
+    });
+    // 左右引脚伸到 x<0 是正常的（真实库同样如此），整体 bounds 允许越出本体
+    expect(station0.bounds).toEqual({ minX: -10, minY: -10, maxX: 190, maxY: 410 });
+  });
+
   it("maps pin geometry to Capture hotpt/start and reads attributes via parentId", async () => {
     const connector = new Elibz2Connector();
     const symbol = await connector.loadSymbol(fixturePath, deviceUuid);
@@ -152,40 +178,33 @@ describe("elibz2 connector", () => {
     // rotation=270 的引脚朝本体方向 +y（已用本体 RECT 下边缘交叉验证）
     const bottom = station0.pins.find((pin) => pin.number === "Y4")!;
     expect(bottom.name).toBe("REXT_A0");
-    expect(bottom.connection).toEqual({ x: -60, y: -210 });
-    expect(bottom.body).toEqual({ x: -60, y: -200 });
+    expect(bottom.connection).toEqual({ x: 30, y: -10 });
+    expect(bottom.body).toEqual({ x: 30, y: 0 });
     expect(bottom.length).toBe(10);
     // rotation=0 朝 +x
     const left = station0.pins.find((pin) => pin.number === "AE5")!;
     expect(left.name).toBe("PEX_PETp0");
-    expect(left.connection).toEqual({ x: -100, y: -190 });
-    expect(left.body).toEqual({ x: -90, y: -190 });
+    expect(left.connection).toEqual({ x: -10, y: 10 });
+    expect(left.body).toEqual({ x: 0, y: 10 });
     // rotation=180 朝 -x
     const right = station0.pins.find((pin) => pin.name === "PEX_PETp8")!;
-    expect(right.connection).toEqual({ x: 100, y: -190 });
-    expect(right.body).toEqual({ x: 90, y: -190 });
+    expect(right.connection).toEqual({ x: 190, y: 10 });
+    expect(right.body).toEqual({ x: 180, y: 10 });
     // rotation=90 朝 -y
     const top = station0.pins.find((pin) => pin.name === "PEX_REFCLKp")!;
-    expect(top.connection).toEqual({ x: -50, y: 210 });
-    expect(top.body).toEqual({ x: -50, y: 200 });
+    expect(top.connection).toEqual({ x: 40, y: 410 });
+    expect(top.body).toEqual({ x: 40, y: 400 });
   });
 
   it("carries section graphics (body rect, divider line, labels)", async () => {
     const connector = new Elibz2Connector();
     const symbol = await connector.loadSymbol(fixturePath, deviceUuid);
     const station0 = symbol!.sections.find((section) => section.name === "PEX8748_Station0")!;
-    expect(station0.shapes.find((shape) => shape.kind === "rect")).toEqual({
-      kind: "rect",
-      min: { x: -90, y: -200 },
-      max: { x: 90, y: 200 },
-      cornerRadius: 10,
-      filled: false,
-    });
     expect(station0.shapes.find((shape) => shape.kind === "polyline")).toEqual({
       kind: "polyline",
       points: [
-        { x: -90, y: 0 },
-        { x: 90, y: 0 },
+        { x: 0, y: 200 },
+        { x: 180, y: 200 },
       ],
       closed: false,
     });
@@ -193,9 +212,7 @@ describe("elibz2 connector", () => {
     expect(
       station0.shapes
         .filter((shape) => shape.kind === "text")
-        .map((shape) => (shape.kind === "text" ? shape.text : "")),
-    ).toEqual(["PEX8748", "Station 0"]);
-    // 本体包围盒连引脚一起算（源 BBOX 是 y 反序的屏幕序 [-90,200,90,-200]）
-    expect(station0.bounds).toEqual({ minX: -100, minY: -210, maxX: 100, maxY: 210 });
+        .map((shape) => (shape.kind === "text" ? `${shape.text}@${shape.at.x},${shape.at.y}` : "")),
+    ).toEqual(["PEX8748@52,183", "Station 0@62,234"]);
   });
 });

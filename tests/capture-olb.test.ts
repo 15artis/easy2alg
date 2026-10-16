@@ -105,6 +105,36 @@ describe("capture library XML", () => {
     expect(xml.match(/<PinNumber>/g)).toHaveLength(676);
   });
 
+  it("sets IsPinNamesRotated=1 when the section has top/bottom pins", async () => {
+    // 用户 2026-10-16 反馈：上下边引脚名被水平画出、糊成一片。Capture 的全局
+    // 旋转规则要求这种符号置 1（orcad-package-autogen 的 rotate_pin_names 同判据）。
+    const connector = new Elibz2Connector();
+    const symbol = await connector.loadSymbol(fixturePath, deviceUuid);
+    const xml = buildCaptureLibraryXml(symbol!, "C:/libs/target.OLB");
+    expect(xml.match(/<IsPinNamesRotated>\s*<Defn val="1" \/>/g)).toHaveLength(6);
+    expect(xml).not.toMatch(/<IsPinNamesRotated>\s*<Defn val="0" \/>/);
+    // 只有左右引脚的符号仍保持 0（Capture 的默认值）
+    const single = buildCaptureLibraryXml(singleSection(), "C:/libs/target.OLB");
+    expect(single).toMatch(/<IsPinNamesRotated>\s*<Defn val="0" \/>/);
+  });
+
+  it("writes SymbolBBox from the body rect, not the pin-inclusive bounds", async () => {
+    // 真实库里 SymbolBBox 就是本体矩形（UD: 0,0–110,210，而左侧引脚伸到 x=-30）。
+    const connector = new Elibz2Connector();
+    const symbol = await connector.loadSymbol(fixturePath, deviceUuid);
+    const xml = buildCaptureLibraryXml(symbol!, "C:/libs/target.OLB");
+    const boxes = [...xml.matchAll(/<SymbolBBox>\s*<Defn x1="([-\d.]+)" x2="([-\d.]+)" y1="([-\d.]+)" y2="([-\d.]+)" \/>/g)];
+    expect(boxes).toHaveLength(6);
+    // 每段本体都以 (0,0) 起算（见连接器里的锚点约定）
+    for (const box of boxes) {
+      expect(box[1]).toBe("0");
+      expect(box[3]).toBe("0");
+    }
+    const sectionA = symbol!.sections[0];
+    expect([boxes[0][1], boxes[0][2], boxes[0][3], boxes[0][4]]).toEqual(["0", "380", "0", "310"]);
+    expect(sectionA.name).toBe("PEX8748_CS_I2C_SPI");
+  });
+
   it("keeps every attribute value XML-escaped", () => {
     const symbol = singleSection();
     const withSpecialText: NormalizedSymbol = {

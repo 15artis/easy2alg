@@ -384,6 +384,30 @@ const pinBodyDirection = (rotation: number): Point => {
   return { x: Math.cos(radians), y: -Math.sin(radians) };
 };
 
+const translatePoint = (point: Point, dx: number, dy: number): Point => ({
+  x: roundMm(point.x + dx),
+  y: roundMm(point.y + dy),
+});
+
+const translateShape = (
+  shape: NormalizedSymbolShape,
+  dx: number,
+  dy: number,
+): NormalizedSymbolShape => {
+  switch (shape.kind) {
+    case "rect":
+      return {
+        ...shape,
+        min: translatePoint(shape.min, dx, dy),
+        max: translatePoint(shape.max, dx, dy),
+      };
+    case "polyline":
+      return { ...shape, points: shape.points.map((point) => translatePoint(point, dx, dy)) };
+    default:
+      return { ...shape, at: translatePoint(shape.at, dx, dy) };
+  }
+};
+
 const pinCountOf = (doc: ElibuDoc): number =>
   doc.lines.filter((line) => line.head.type === "PIN").length;
 
@@ -586,11 +610,34 @@ const parseSymbolDoc = (
             maxX: roundMm(Math.max(...xs)),
             maxY: roundMm(Math.max(...ys)),
           };
+
+    // OrCAD 本体锚点约定：真实库里 201/211 个器件的本体矩形左下角正好落在 (0,0)。
+    // Capture 符号编辑器 y 轴向下，所以屏幕上就是"本体左上角在原点、本体向右下铺开"。
+    // 源数据的本体以原点为中心（PEX8748 为 ±190/±155），不换算的话整个符号会
+    // 偏在编辑器左上角（用户 2026-10-16 反馈"需要往右往下调整、居中显示"）。
+    // 注意取的是**本体 RECT**的原点而非整体 bounds：真实库的左右引脚伸到 x<0 是正常的。
+    const bodyRect = partShapes.find((shape) => shape.kind === "rect");
+    const anchorX =
+      bodyRect === undefined ? bounds.minX : Math.min(bodyRect.min.x, bodyRect.max.x);
+    const anchorY =
+      bodyRect === undefined ? bounds.minY : Math.min(bodyRect.min.y, bodyRect.max.y);
+    const dx = -anchorX;
+    const dy = -anchorY;
+
     return {
       name: partId,
-      bounds,
-      pins: sectionPins,
-      shapes: partShapes,
+      bounds: {
+        minX: roundMm(bounds.minX + dx),
+        minY: roundMm(bounds.minY + dy),
+        maxX: roundMm(bounds.maxX + dx),
+        maxY: roundMm(bounds.maxY + dy),
+      },
+      pins: sectionPins.map((pin) => ({
+        ...pin,
+        connection: translatePoint(pin.connection, dx, dy),
+        body: translatePoint(pin.body, dx, dy),
+      })),
+      shapes: partShapes.map((shape) => translateShape(shape, dx, dy)),
     };
   });
 };

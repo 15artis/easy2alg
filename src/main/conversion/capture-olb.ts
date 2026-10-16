@@ -225,32 +225,57 @@ const displayPropCommands = (
   "      </SymbolDisplayProp>",
 ];
 
+/** 本体包围盒：优先用本体 RECT（真实库里 SymbolBBox 就是它，左右伸出的引脚不算）。 */
+const bodyBounds = (
+  section: NormalizedSymbolSection,
+): { minX: number; minY: number; maxX: number; maxY: number } => {
+  const rect = section.shapes.find((shape) => shape.kind === "rect");
+  if (rect === undefined) {
+    return section.bounds;
+  }
+  return {
+    minX: Math.min(rect.min.x, rect.max.x),
+    minY: Math.min(rect.min.y, rect.max.y),
+    maxX: Math.max(rect.min.x, rect.max.x),
+    maxY: Math.max(rect.min.y, rect.max.y),
+  };
+};
+
+const hasVerticalPins = (section: NormalizedSymbolSection): boolean =>
+  section.pins.some((pin) => Math.abs(pin.connection.x - pin.body.x) < 1e-9);
+
 const normalViewCommands = (
   symbol: NormalizedSymbol,
   section: NormalizedSymbolSection,
 ): readonly string[] => {
+  const body = bodyBounds(section);
+  // Capture 的全局引脚名旋转规则：**有上下边引脚时必须置 1**，否则副边引脚名会被
+  // 水平画出、互相叠在一起（用户 2026-10-16 截图）。没有上下边引脚时保持 0，
+  // 与 orcad-package-autogen 的 rotate_pin_names 判据一致（那里也是 template 不带
+  // 逐脚 PinDisplayProp 时才按"有没有 top/bottom 引脚"决定）。
+  const rotated = hasVerticalPins(section) ? 1 : 0;
   const commands: string[] = ["      <NormalView>", '        <Defn suffix=".Normal" />'];
-  // "Part Reference" 贴在本体下方、"Value" 贴在本体上方 —— 与用户库里的
-  // r0603.dra / STM32G431CB 的摆放习惯一致。
-  commands.push(...displayPropCommands("Part Reference", section.bounds.minX + 7, section.bounds.minY - 14));
-  commands.push(...displayPropCommands("Value", section.bounds.minX + 7, section.bounds.maxY + 4));
+  // "Part Reference" 贴在本体上方、"Value" 贴在本体下方 —— 坐标与现网库一致
+  // （y 轴在编辑器里向下，所以 minY-14 在屏幕上位于本体上侧）。
+  commands.push(...displayPropCommands("Part Reference", body.minX + 7, body.minY - 14));
+  commands.push(...displayPropCommands("Value", body.minX + 7, body.maxY + 4));
   commands.push(
     "        <SymbolColor>",
     '          <Defn val="48" />',
     "        </SymbolColor>",
     "        <SymbolBBox>",
     tag("Defn", {
-      x1: render(section.bounds.minX),
-      x2: render(section.bounds.maxX),
-      y1: render(section.bounds.minY),
-      y2: render(section.bounds.maxY),
+      x1: render(body.minX),
+      x2: render(body.maxX),
+      y1: render(body.minY),
+      y2: render(body.maxY),
     }),
     "        </SymbolBBox>",
     "        <IsPinNumbersVisible>",
     '          <Defn val="1" />',
     "        </IsPinNumbersVisible>",
     "        <IsPinNamesRotated>",
-    '          <Defn val="0" />',
+    `          <Defn val="${rotated}" />`,
     "        </IsPinNamesRotated>",
     "        <IsPinNamesVisible>",
     '          <Defn val="1" />',
