@@ -13,6 +13,7 @@ const readSettings = (): AppSettings => {
       libraryDirectory: "D:\\AllegroLibrary",
       setupCompleted: true,
       allegroExecutablePath: null,
+      olbLibraryPath: null,
     };
   }
   const parsed = JSON.parse(saved) as AppSettings;
@@ -75,6 +76,12 @@ export const createMockApi = (): Easy2AlgApi => {
     readLocalLibrary: async () => [],
     fetchLocalComponent: async () => {
       throw new Error("浏览器预览不支持本地库导入，请使用桌面版。");
+    },
+    fetchLocalSymbol: async () => null,
+    chooseOlbLibrary: async () => null,
+    createOlbLibrary: async () => null,
+    writeOlb: async () => {
+      throw new Error("浏览器预览不支持写入 OLB，请使用桌面版。");
     },
     createPlan: async (footprint) => {
       const largePad = footprint.pads.some((pad) => pad.width * pad.height > 16);

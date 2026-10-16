@@ -8,9 +8,13 @@ export const AppSettingsSchema = z.object({
   libraryDirectory: z.string().min(1),
   setupCompleted: z.boolean(),
   allegroExecutablePath: z.string().min(1).nullable().optional(),
+  // 原理图符号库（OrCAD Capture .olb）目标路径。null = 未指定，转换时在
+  // libraryDirectory/schlib 下按源库名自动新建（见 capture-writer.autoLibraryPath）。
+  olbLibraryPath: z.string().min(1).nullable().optional(),
 }).transform((settings) => ({
   ...settings,
   allegroExecutablePath: settings.allegroExecutablePath ?? null,
+  olbLibraryPath: settings.olbLibraryPath ?? null,
 }));
 export type AppSettings = z.infer<typeof AppSettingsSchema>;
 
@@ -110,6 +114,103 @@ export const NormalizedFootprintSchema = z.object({
   sourceJson: z.string(),
 });
 export type NormalizedFootprint = z.infer<typeof NormalizedFootprintSchema>;
+
+/**
+ * 原理图符号（OrCAD Capture .olb）模型。
+ *
+ * 坐标单位与 Capture 一致：1 单位 = 10 mil（0.1 英寸网格的一步）。
+ * 已实测确认源库（立创EDA专业版 SYMBOL 文档）引脚间距即为 10 单位，
+ * 两边同源，映射时 **不做任何缩放**。
+ */
+export const SymbolPinTypeSchema = z.enum([
+  "input",
+  "output",
+  "bidirectional",
+  "passive",
+  "power",
+  "openCollector",
+  "openEmitter",
+  "tristate",
+  "unspecified",
+]);
+export type SymbolPinType = z.infer<typeof SymbolPinTypeSchema>;
+
+export const NormalizedSymbolPinSchema = z.object({
+  /** 引脚名（源 "Pin Name" 属性，可为空串） */
+  name: z.string(),
+  /** 引脚号（源 "Pin Number" 属性） */
+  number: z.string().min(1),
+  /** 电气连接端（引脚外端，Capture 的 hotpt） */
+  connection: PointSchema,
+  /** 本体端（Capture 的 start） */
+  body: PointSchema,
+  length: z.number().nonnegative(),
+  type: SymbolPinTypeSchema,
+  visible: z.boolean(),
+});
+export type NormalizedSymbolPin = z.infer<typeof NormalizedSymbolPinSchema>;
+
+export const NormalizedSymbolShapeSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("rect"),
+    min: PointSchema,
+    max: PointSchema,
+    cornerRadius: z.number().nonnegative(),
+    filled: z.boolean(),
+  }),
+  z.object({
+    kind: z.literal("polyline"),
+    points: z.array(PointSchema).min(2),
+    closed: z.boolean(),
+  }),
+  z.object({
+    kind: z.literal("text"),
+    text: z.string().min(1),
+    at: PointSchema,
+    rotation: z.number().finite(),
+    height: z.number().positive(),
+  }),
+]);
+export type NormalizedSymbolShape = z.infer<typeof NormalizedSymbolShapeSchema>;
+
+export const NormalizedSymbolSectionSchema = z.object({
+  /** 段名（源 PART id，如 PEX8748_Station0） */
+  name: z.string().min(1),
+  bounds: z.object({
+    minX: z.number().finite(),
+    minY: z.number().finite(),
+    maxX: z.number().finite(),
+    maxY: z.number().finite(),
+  }),
+  pins: z.array(NormalizedSymbolPinSchema),
+  shapes: z.array(NormalizedSymbolShapeSchema),
+});
+export type NormalizedSymbolSection = z.infer<typeof NormalizedSymbolSectionSchema>;
+
+export const NormalizedSymbolSchema = z.object({
+  /** OLB 内 Package 名 */
+  name: z.string().min(1),
+  /** 位号前缀（源 "Designator"，如 "U?" → "U"） */
+  refdesPrefix: z.string().min(1),
+  /** 关联的 Allegro 封装名（Capture 的 PCB Footprint 字段） */
+  pcbFootprint: z.string(),
+  sections: z.array(NormalizedSymbolSectionSchema).min(1),
+  sourceJson: z.string(),
+});
+export type NormalizedSymbol = z.infer<typeof NormalizedSymbolSchema>;
+
+export const OlbWriteResultSchema = z.object({
+  libraryPath: z.string().min(1),
+  /** true = 本次新建了库文件（此前不存在） */
+  created: z.boolean(),
+  packageName: z.string().min(1),
+  sectionCount: z.number().int().positive(),
+  pinCount: z.number().int().nonnegative(),
+  backupPath: z.string().min(1).nullable(),
+  bytes: z.number().int().nonnegative(),
+  message: z.string().min(1),
+});
+export type OlbWriteResult = z.infer<typeof OlbWriteResultSchema>;
 
 export const CheckSeveritySchema = z.enum(["pass", "warning", "error"]);
 export type CheckSeverity = z.infer<typeof CheckSeveritySchema>;

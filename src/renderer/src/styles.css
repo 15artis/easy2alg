@@ -781,9 +781,21 @@ select:focus,
   gap: 8px;
 }
 
+.directory-row input {
+  min-width: 0;
+}
+
 .directory-row .icon-button {
   flex: 0 0 42px;
   height: 42px;
+}
+
+/* OLB 行多了「选择已有 / 新建」两个按钮，输入框让位并保证按钮文字不换行。 */
+.directory-row .secondary-button {
+  flex: none;
+  height: 42px;
+  padding: 0 12px;
+  white-space: nowrap;
 }
 
 .settings-actions {
@@ -1800,4 +1812,16 @@ select:focus,
 
 .input-actions .secondary-button {
   flex: none;
+}
+
+/* 按钮标签一律不换行：左栏两列布局下「导入本地库」在 294px 栏宽里会被压成两行。
+   该按钮独占一整行（.wide-action），其余按钮保持左右两列。 */
+.input-actions .primary-button,
+.input-actions .secondary-button {
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.input-actions .wide-action {
+  grid-column: 1 / -1;
 }

@@ -191,6 +191,7 @@ describe("Allegro source generation", () => {
           libraryDirectory,
           setupCompleted: true,
           allegroExecutablePath: null,
+          olbLibraryPath: null,
         },
         null,
         (item) => progress.push(item),

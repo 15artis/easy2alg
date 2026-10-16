@@ -7,6 +7,11 @@ import { EasyEdaConnector } from "./connectors/easyeda-connector";
 import { Elibz2Connector } from "./connectors/elibz2-connector";
 import { JsonStore } from "./connectors/json-store";
 import { AllegroRunner } from "./connectors/allegro-runner";
+import {
+  autoLibraryPath,
+  resolveCaptureToolchain,
+  writeCaptureLibrary,
+} from "./connectors/capture-writer";
 import { createConversionPlan } from "./conversion/validate";
 import { configureLogging, writeLog } from "./logging";
 import { lastWindowCloseAction } from "./lifecycle";
@@ -17,17 +22,41 @@ import {
   ConversionPlanSchema,
   HistoryEntrySchema,
   NormalizedFootprintSchema,
+  NormalizedSymbolSchema,
+  type AllegroInstall,
   type AppSettings,
   type GenerationProgress,
   type HistoryEntry,
 } from "../shared/schemas";
 
 const HistorySchema = z.array(HistoryEntrySchema);
+const OlbWriteRequestSchema = z.object({
+  symbol: NormalizedSymbolSchema,
+  libraryPath: z.string().min(1).nullable(),
+  libraryName: z.string().min(1),
+});
+
+const resolveInstall = async (
+  settings: AppSettings,
+  installs: readonly AllegroInstall[],
+  detectManual: (path: string) => Promise<AllegroInstall | null>,
+): Promise<AllegroInstall | null> => {
+  const manualInstall =
+    settings.allegroExecutablePath === null
+      ? null
+      : await detectManual(settings.allegroExecutablePath);
+  return (
+    (manualInstall?.version === settings.allegroVersion ? manualInstall : null) ??
+    installs.find((candidate) => candidate.version === settings.allegroVersion) ??
+    null
+  );
+};
 const defaultSettings = (): AppSettings => ({
   allegroVersion: "23.1",
   libraryDirectory: join(app.getPath("documents"), "AllegroLibrary"),
   setupCompleted: false,
   allegroExecutablePath: null,
+  olbLibraryPath: null,
 });
 
 const createWindow = (): BrowserWindow => {
@@ -144,6 +173,53 @@ const registerHandlers = (): void => {
         z.string().min(1).parse(deviceUuid),
       ),
   );
+  ipcMain.handle(
+    IpcChannels.fetchLocalSymbol,
+    (_event, filePath: unknown, deviceUuid: unknown) =>
+      elibz2.loadSymbol(
+        z.string().min(1).parse(filePath),
+        z.string().min(1).parse(deviceUuid),
+      ),
+  );
+  ipcMain.handle(IpcChannels.chooseOlbLibrary, async () => {
+    const result = await dialog.showOpenDialog({
+      title: "选择 OrCAD Capture 符号库（.olb）",
+      properties: ["openFile"],
+      filters: [{ name: "Capture 符号库", extensions: ["olb"] }],
+    });
+    return result.canceled ? null : (result.filePaths[0] ?? null);
+  });
+  ipcMain.handle(IpcChannels.createOlbLibrary, async (_event, rawName: unknown) => {
+    const settings = await settingsStore.read();
+    const name = z.string().min(1).parse(rawName);
+    const result = await dialog.showSaveDialog({
+      title: "新建 OrCAD Capture 符号库",
+      defaultPath: autoLibraryPath(settings.libraryDirectory, name),
+      filters: [{ name: "Capture 符号库", extensions: ["olb"] }],
+    });
+    return result.canceled || result.filePath === undefined ? null : result.filePath;
+  });
+  ipcMain.handle(IpcChannels.writeOlb, async (_event, rawRequest: unknown) => {
+    const request = OlbWriteRequestSchema.parse(rawRequest);
+    const settings = await settingsStore.read();
+    const installs = await detector.detect();
+    const install = await resolveInstall(settings, installs, (path) =>
+      detector.inspectExecutable(path, null),
+    );
+    const toolchain = await resolveCaptureToolchain(install?.executablePath ?? null);
+    if (toolchain === null) {
+      throw new Error(
+        "未找到 Cadence 的 tclsh.exe / orDb_Dll_Tcl64.dll，请在设置中确认 Allegro 程序路径。",
+      );
+    }
+    const libraryPath =
+      request.libraryPath ?? autoLibraryPath(settings.libraryDirectory, request.libraryName);
+    return writeCaptureLibrary({
+      symbol: request.symbol,
+      toolchain,
+      libraryPath,
+    });
+  });
   ipcMain.handle(IpcChannels.createPlan, (_event, rawFootprint: unknown) =>
     createConversionPlan(NormalizedFootprintSchema.parse(rawFootprint)),
   );
@@ -151,17 +227,9 @@ const registerHandlers = (): void => {
     const plan = ConversionPlanSchema.parse(rawPlan);
     const settings = await settingsStore.read();
     const installs = await detector.detect();
-    const manualInstall =
-      settings.allegroExecutablePath === null
-        ? null
-        : await detector.inspectExecutable(
-            settings.allegroExecutablePath,
-            null,
-          );
-    const install =
-      (manualInstall?.version === settings.allegroVersion ? manualInstall : null) ??
-      installs.find((candidate) => candidate.version === settings.allegroVersion) ??
-      null;
+    const install = await resolveInstall(settings, installs, (path) =>
+      detector.inspectExecutable(path, null),
+    );
     const progressState: { last: GenerationProgress | null } = { last: null };
     try {
       const result = await runner.generate(

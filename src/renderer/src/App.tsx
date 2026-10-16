@@ -5,6 +5,7 @@ import {
   ChevronRight,
   CircleHelp,
   Clock3,
+  FileCode2,
   Folder,
   FolderOpen,
   History,
@@ -43,6 +44,8 @@ import type {
   HistoryEntry,
   LocalLibraryDeviceSummary,
   NormalizedFootprint,
+  NormalizedSymbol,
+  OlbWriteResult,
   QueueItem,
 } from "../../shared/schemas";
 import { createMockApi } from "./mock-api";
@@ -66,6 +69,10 @@ const createUnavailableApi = (): Easy2AlgApi => {
     chooseLocalLibraryFile: unavailable,
     readLocalLibrary: unavailable,
     fetchLocalComponent: unavailable,
+    fetchLocalSymbol: unavailable,
+    chooseOlbLibrary: unavailable,
+    createOlbLibrary: unavailable,
+    writeOlb: unavailable,
     createPlan: unavailable,
     generate: unavailable,
     onGenerationProgress: () => () => undefined,
@@ -85,6 +92,7 @@ const emptySettings: AppSettings = {
   libraryDirectory: "",
   setupCompleted: false,
   allegroExecutablePath: null,
+  olbLibraryPath: null,
 };
 
 const AllegroVersionOptions: readonly {
@@ -100,6 +108,22 @@ const AllegroVersionOptions: readonly {
 
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
+
+type SymbolEntry = {
+  readonly symbol: NormalizedSymbol;
+  /** 未指定 OLB 时用来命名自动新建的库文件（取源 .elibz2 文件名） */
+  readonly libraryName: string;
+};
+
+type OlbOutcome =
+  | { readonly status: "ok"; readonly result: OlbWriteResult }
+  | { readonly status: "failed"; readonly message: string };
+
+const libraryNameOf = (sourcePath: string): string => {
+  const base = sourcePath.split(/[\\/]/).pop() ?? sourcePath;
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? base.slice(0, dot) : base;
+};
 
 const splitIds = (value: string): readonly string[] => [
   ...new Set(
@@ -278,6 +302,7 @@ const SetupDialog = ({
         libraryDirectory: directory,
         setupCompleted: true,
         allegroExecutablePath: manualExecutablePath,
+        olbLibraryPath: initial.olbLibraryPath,
       });
     } catch (saveError) {
       setError(errorMessage(saveError));
@@ -506,6 +531,9 @@ const ConverterPage = ({
 }): ReactElement => {
   const [input, setInput] = useState("C2040");
   const [plans, setPlans] = useState<Readonly<Record<string, ConversionPlan>>>({});
+  // 本地库导入时从同一份 .elibz2 里顺带取出的原理图符号（C 编号链路没有符号）。
+  const [symbols, setSymbols] = useState<Readonly<Record<string, SymbolEntry>>>({});
+  const [olbOutcomes, setOlbOutcomes] = useState<Readonly<Record<string, OlbOutcome>>>({});
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<GenerationProgress | null>(null);
   const [localLoading, setLocalLoading] = useState(false);
@@ -513,6 +541,7 @@ const ConverterPage = ({
   const progressRef = useRef<GenerationProgress | null>(null);
   const selected = queue.find((item) => item.id === selectedId) ?? queue[0] ?? null;
   const selectedPlan = selected === null ? null : (plans[selected.id] ?? null);
+  const selectedOlb = selected === null ? null : (olbOutcomes[selected.id] ?? null);
 
   useEffect(
     () =>
@@ -634,14 +663,32 @@ const ConverterPage = ({
       const loaded = await Promise.all(
         targets.map(async (device) => {
           try {
-            const footprint = await api.fetchLocalComponent(
-              device.sourcePath,
-              device.deviceUuid,
-            );
+            // 符号与封装来自同一份归档；符号缺失（标准版链路）不算错误，
+            // 只意味着这一次没有原理图库可生成。
+            const [footprint, symbol] = await Promise.all([
+              api.fetchLocalComponent(device.sourcePath, device.deviceUuid),
+              api
+                .fetchLocalSymbol(device.sourcePath, device.deviceUuid)
+                .catch(() => null),
+            ]);
             const plan = await api.createPlan(footprint);
-            return { id: device.lcscId, footprint, plan, error: null as string | null };
+            return {
+              id: device.lcscId,
+              footprint,
+              plan,
+              symbol,
+              libraryName: libraryNameOf(device.sourcePath),
+              error: null as string | null,
+            };
           } catch (error) {
-            return { id: device.lcscId, footprint: null, plan: null, error: errorMessage(error) };
+            return {
+              id: device.lcscId,
+              footprint: null,
+              plan: null,
+              symbol: null,
+              libraryName: libraryNameOf(device.sourcePath),
+              error: errorMessage(error),
+            };
           }
         }),
       );
@@ -674,6 +721,25 @@ const ConverterPage = ({
         }
         return { ...current, ...additions };
       });
+      setSymbols((current) => {
+        const additions: Record<string, SymbolEntry> = {};
+        for (const entry of loaded) {
+          if (entry.symbol !== null) {
+            additions[entry.id] = {
+              symbol: entry.symbol,
+              libraryName: entry.libraryName,
+            };
+          }
+        }
+        return { ...current, ...additions };
+      });
+      setOlbOutcomes((current) => {
+        const next: Record<string, OlbOutcome> = { ...current };
+        for (const entry of loaded) {
+          delete next[entry.id];
+        }
+        return next;
+      });
     } catch (error) {
       setLocalError(errorMessage(error));
     } finally {
@@ -703,7 +769,42 @@ const ConverterPage = ({
       setProgress(startingProgress);
       try {
         const result = await api.generate(plans[target.id]!);
-        updateItem(target.id, { state: "generated", message: result.message });
+        // 本地库器件顺带写原理图符号库：封装成功即视为这一步的前提已满足，
+        // OLB 失败只提示、不推翻已完成的封装结果。
+        const symbolEntry = symbols[target.id];
+        if (symbolEntry === undefined) {
+          updateItem(target.id, { state: "generated", message: result.message });
+        } else {
+          updateItem(target.id, {
+            state: "loading",
+            message: "正在写入原理图符号库（.olb）…",
+          });
+          try {
+            const olb = await api.writeOlb({
+              symbol: symbolEntry.symbol,
+              libraryPath: settings.olbLibraryPath,
+              libraryName: symbolEntry.libraryName,
+            });
+            setOlbOutcomes((current) => ({
+              ...current,
+              [target.id]: { status: "ok", result: olb },
+            }));
+            updateItem(target.id, {
+              state: "generated",
+              message: `${result.message}${olb.message}`,
+            });
+          } catch (olbError) {
+            const message = errorMessage(olbError);
+            setOlbOutcomes((current) => ({
+              ...current,
+              [target.id]: { status: "failed", message },
+            }));
+            updateItem(target.id, {
+              state: "generated",
+              message: `${result.message} 原理图符号库未写入：${message}`,
+            });
+          }
+        }
         onGenerated({ ...result, id: `${result.lcscId}-${result.completedAt}` });
       } catch (error) {
         const previousProgress = progressRef.current;
@@ -769,7 +870,7 @@ const ConverterPage = ({
               <Plus size={16} />导入清单
             </button>
             <button
-              className="secondary-button"
+              className="secondary-button wide-action"
               type="button"
               onClick={() => void importLocalLibrary()}
               disabled={localLoading}
@@ -908,6 +1009,25 @@ const ConverterPage = ({
               <h3>三维模型 <ChevronRight size={15} /></h3>
               <div className="model-row"><Check size={15} />{selected.footprint.model3d?.name ?? "源数据未提供模型"}</div>
             </section>
+            <section className="inspector-section model-section">
+              <h3>原理图符号库 <ChevronRight size={15} /></h3>
+              {selectedOlb === null ? (
+                <div className="model-row">
+                  <span className="muted">
+                    {symbols[selected.id] === undefined
+                      ? "源数据不含原理图符号"
+                      : "生成封装时会一并写入 .olb"}
+                  </span>
+                </div>
+              ) : selectedOlb.status === "ok" ? (
+                <>
+                  <div className="model-row"><Check size={15} className="green-icon" />{selectedOlb.result.message}</div>
+                  <div className="model-row"><span className="muted">{selectedOlb.result.libraryPath}</span></div>
+                </>
+              ) : (
+                <div className="model-row"><TriangleAlert size={15} className="warning-icon" />{selectedOlb.message}</div>
+              )}
+            </section>
           </div>
         )}
       </aside>
@@ -1013,6 +1133,29 @@ const SettingsPage = ({
       setError(errorMessage(chooseError));
     }
   };
+  // OLB 目标：既能挑已有库（追加），也能新建（不存在时按该路径创建）。
+  const chooseOlb = async (): Promise<void> => {
+    setError(null);
+    try {
+      const selected = await api.chooseOlbLibrary();
+      if (selected !== null) {
+        setDraft({ ...draft, olbLibraryPath: selected });
+      }
+    } catch (chooseError) {
+      setError(errorMessage(chooseError));
+    }
+  };
+  const createOlb = async (): Promise<void> => {
+    setError(null);
+    try {
+      const created = await api.createOlbLibrary("easy2alg");
+      if (created !== null) {
+        setDraft({ ...draft, olbLibraryPath: created });
+      }
+    } catch (createError) {
+      setError(errorMessage(createError));
+    }
+  };
   const save = async (): Promise<void> => {
     setError(null);
     try {
@@ -1101,6 +1244,52 @@ const SettingsPage = ({
               />
               <button type="button" className="icon-button" onClick={() => void choose()} aria-label="选择库目录">
                 <FolderOpen size={18} />
+              </button>
+            </div>
+          </div>
+        </div>
+        <div className="setting-section">
+          <div className="setting-icon"><FileCode2 size={21} /></div>
+          <div className="setting-content">
+            <label htmlFor="olb-library">原理图符号库（.olb）</label>
+            <p>填写本地库时生成的 OrCAD Capture 符号会写入此文件；留空则自动新建。</p>
+            <div className="directory-row">
+              <input
+                id="olb-library"
+                value={draft.olbLibraryPath ?? ""}
+                placeholder="未指定 · 转换时自动新建"
+                onChange={(event) =>
+                  setDraft({
+                    ...draft,
+                    olbLibraryPath:
+                      event.target.value.trim().length === 0 ? null : event.target.value,
+                  })
+                }
+              />
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => void chooseOlb()}
+                data-testid="choose-olb-library"
+              >
+                选择已有
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => void createOlb()}
+                data-testid="create-olb-library"
+              >
+                新建
+              </button>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => setDraft({ ...draft, olbLibraryPath: null })}
+                aria-label="清除 OLB 路径"
+                title="清除后将在库目录的 schlib 下自动新建"
+              >
+                <X size={18} />
               </button>
             </div>
           </div>

@@ -6,12 +6,18 @@ import type {
   NormalizedFootprint,
   NormalizedLine,
   NormalizedPad,
+  NormalizedSymbol,
+  NormalizedSymbolPin,
+  NormalizedSymbolSection,
+  NormalizedSymbolShape,
   PadShape,
   Point,
+  SymbolPinType,
 } from "../../shared/schemas";
 import {
   LocalLibraryDeviceSummarySchema,
   NormalizedFootprintSchema,
+  NormalizedSymbolSchema,
 } from "../../shared/schemas";
 import { computeBounds, enlargePin1Markers, roundMm } from "../conversion/geometry";
 import { deriveTargetPackageName } from "../conversion/naming";
@@ -119,6 +125,19 @@ const proPoint = (rawX: number, rawY: number, canvas: ProCanvas): Point => ({
   x: mil2mm(rawX - canvas.originX),
   // Pro 库文档 Y 轴向上（见文件头注释），此处禁止取反。
   y: mil2mm(rawY - canvas.originY),
+});
+
+/**
+ * 原理图符号坐标**不做单位换算**。
+ *
+ * 封装文档的坐标是 mil，需要 ×0.0254 变 mm；但 SYMBOL 文档的坐标是符号网格
+ * 单位（1 单位 = 0.1 英寸），而 OrCAD Capture 的符号坐标恰好也是同一单位
+ * （实测：两侧引脚间距 10 单位 = 0.1 英寸一步，且本机现网库里 40 脚器件的
+ * 本体高 210 单位）。两边同源，直接 1:1 传递。
+ */
+const symbolPoint = (rawX: number, rawY: number, canvas: ProCanvas): Point => ({
+  x: roundMm(rawX - canvas.originX),
+  y: roundMm(rawY - canvas.originY),
 });
 
 const padShapeFromPro = (padType: unknown, widthMm: number, heightMm: number): PadShape => {
@@ -300,6 +319,280 @@ const findFootprintDoc = (docs: readonly ElibuDoc[], footprintUuid: string): Eli
     matched ??
     [...padDocs].sort((left, right) => padCountOf(right) - padCountOf(left))[0]
   );
+};
+
+/**
+ * 原理图符号（SYMBOL 文档块）解析。
+ *
+ * 实测结构（PEX8748 样例）：CANVAS 1 + PART 6 + PIN 676 + ATTR 2028 + RECT 6
+ * + TEXT 17 + POLY 3（另有 ELE_PLACEHOLDER，仅占位计数，忽略）。
+ *  - PART   ：一个 SYMBOL 文档里的每个 PART 是一"段"（Capture 的 section）；
+ *             data.BBOX = [x1,y1,x2,y2]，y1/y2 是屏幕序（y1 > y2），需归一化。
+ *  - PIN    ：data.x/y 是**电气连接端**；rotation 决定引脚朝本体延伸的方向，
+ *             实测为顺时针：0=+x、90=-y、180=-x、270=+y，通式 (cosθ, -sinθ)。
+ *             本体端 = 连接端 + length·方向（已用 RECT 边缘交叉验证）。
+ *  - ATTR   ：每 PIN 恰好 3 个（Pin Name / Pin Number / Pin Type），
+ *             通过 data.parentId 关联到 PIN 的 **meta.id**（如 "e15"）。
+ *
+ * 坐标单位与 Capture 符号单位一致（1 单位 = 10 mil）：源库引脚间距实测 10 单位
+ * = 0.1 英寸网格一步，故 **不做换算、不缩放**。
+ */
+const symbolPinType = (raw: unknown): SymbolPinType => {
+  const normalized = String(raw ?? "").trim().toUpperCase();
+  switch (normalized) {
+    case "IN":
+    case "INPUT":
+      return "input";
+    case "OUT":
+    case "OUTPUT":
+      return "output";
+    case "BI":
+    case "BIDIRECTIONAL":
+    case "IO":
+      return "bidirectional";
+    case "PWR":
+    case "POWER":
+    case "VCC":
+    case "VDD":
+    case "VSS":
+    case "GND":
+      return "power";
+    case "OC":
+    case "OPEN_COLLECTOR":
+    case "OPENCOLLECTOR":
+      return "openCollector";
+    case "OE":
+    case "OPEN_EMITTER":
+    case "OPENEMITTER":
+      return "openEmitter";
+    case "TRISTATE":
+    case "TRI":
+    case "HIZ":
+      return "tristate";
+    case "":
+      return "unspecified";
+    default:
+      // NC / UNDEFINED / TERMINATOR 等一律落到无源，保证一定能映射到
+      // Capture 认可的类型码（见 capture-olb.ts 的 PIN_TYPE_CODE）。
+      return "passive";
+  }
+};
+
+/** 引脚由连接端朝本体延伸的方向：顺时针角度（与源 rotate 字段实测一致）。 */
+const pinBodyDirection = (rotation: number): Point => {
+  const radians = (rotation * Math.PI) / 180;
+  return { x: Math.cos(radians), y: -Math.sin(radians) };
+};
+
+const pinCountOf = (doc: ElibuDoc): number =>
+  doc.lines.filter((line) => line.head.type === "PIN").length;
+
+const findSymbolDoc = (docs: readonly ElibuDoc[]): ElibuDoc | null => {
+  const pinDocs = docs.filter((doc) => pinCountOf(doc) > 0);
+  if (pinDocs.length === 0) {
+    return null;
+  }
+  if (pinDocs.length === 1) {
+    return pinDocs[0];
+  }
+  // 多版本块取引脚最多者（与封装通道同一策略）。
+  return [...pinDocs].sort((left, right) => pinCountOf(right) - pinCountOf(left))[0];
+};
+
+const sanitizeSymbolName = (raw: string, fallback: string): string => {
+  const cleaned = raw
+    .trim()
+    .replace(/[^A-Za-z0-9_.-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return cleaned.length > 0 ? cleaned : fallback;
+};
+
+const refdesPrefixFrom = (raw: unknown): string => {
+  const letters = String(raw ?? "").toUpperCase().replace(/[^A-Z]/g, "");
+  return letters.length > 0 ? letters : "U";
+};
+
+const parseSymbolDoc = (
+  doc: ElibuDoc,
+  canvas: ProCanvas,
+): NormalizedSymbolSection[] => {
+  const partOrder: string[] = [];
+  const partBounds = new Map<string, readonly number[]>();
+  const pins = new Map<string, Record<string, unknown>>();
+  const pinAttributes = new Map<string, Map<string, Record<string, unknown>>>();
+  const shapes = new Map<string, NormalizedSymbolShape[]>();
+
+  const pushShape = (partId: string, shape: NormalizedSymbolShape): void => {
+    const list = shapes.get(partId);
+    if (list === undefined) {
+      shapes.set(partId, [shape]);
+      return;
+    }
+    list.push(shape);
+  };
+
+  for (const line of doc.lines) {
+    const data = line.data;
+    if (data === null) {
+      continue;
+    }
+    switch (line.head.type) {
+      case "PART": {
+        const id = String(line.head.id ?? "");
+        if (id.length === 0) {
+          break;
+        }
+        partOrder.push(id);
+        const bbox = data.BBOX;
+        if (Array.isArray(bbox) && bbox.length >= 4) {
+          partBounds.set(id, bbox.map((value) => asNumber(value)));
+        }
+        break;
+      }
+      case "PIN": {
+        pins.set(String(line.head.id ?? ""), data);
+        break;
+      }
+      case "ATTR": {
+        const parentId = String(data.parentId ?? "");
+        const key = String(data.key ?? "");
+        if (parentId.length === 0 || key.length === 0) {
+          break;
+        }
+        const entry = pinAttributes.get(parentId) ?? new Map<string, Record<string, unknown>>();
+        entry.set(key, data);
+        pinAttributes.set(parentId, entry);
+        break;
+      }
+      case "RECT": {
+        const partId = String(data.partId ?? "");
+        if (partId.length === 0) {
+          break;
+        }
+        const corner = asNumber(data.radiusX, 0);
+        pushShape(partId, {
+          kind: "rect",
+          min: symbolPoint(asNumber(data.dotX1), asNumber(data.dotY1), canvas),
+          max: symbolPoint(asNumber(data.dotX2), asNumber(data.dotY2), canvas),
+          cornerRadius: corner,
+          filled: data.fillColor !== null && data.fillColor !== undefined,
+        });
+        break;
+      }
+      case "POLY": {
+        const partId = String(data.partId ?? "");
+        const rawPoints = data.points;
+        if (partId.length === 0 || !Array.isArray(rawPoints) || rawPoints.length < 2) {
+          break;
+        }
+        const points = rawPoints.flatMap((item) => {
+          if (item === null || typeof item !== "object") {
+            return [];
+          }
+          const record = item as Record<string, unknown>;
+          return [symbolPoint(asNumber(record.x), asNumber(record.y), canvas)];
+        });
+        if (points.length < 2) {
+          break;
+        }
+        pushShape(partId, {
+          kind: "polyline",
+          points,
+          closed: data.closed === true,
+        });
+        break;
+      }
+      case "TEXT": {
+        const partId = String(data.partId ?? "");
+        const text = String(data.value ?? "").trim();
+        if (partId.length === 0 || text.length === 0) {
+          break;
+        }
+        pushShape(partId, {
+          kind: "text",
+          text,
+          at: symbolPoint(asNumber(data.x), asNumber(data.y), canvas),
+          rotation: asNumber(data.rotation, 0),
+          // 源 fontSize 为符号单位；缺省 12 与样例中的小标注一致。
+          height: Math.max(asNumber(data.fontSize, 12), 1),
+        });
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  return partOrder.map((partId) => {
+    const partShapes = shapes.get(partId) ?? [];
+    const sectionPins: NormalizedSymbolPin[] = [];
+    for (const [pinId, pin] of pins) {
+      if (String(pin.partId ?? "") !== partId) {
+        continue;
+      }
+      const attrs = pinAttributes.get(pinId);
+      const connection = symbolPoint(asNumber(pin.x), asNumber(pin.y), canvas);
+      const length = asNumber(pin.length, 0);
+      const direction = pinBodyDirection(asNumber(pin.rotation, 0));
+      const number = String(attrs?.get("Pin Number")?.value ?? "").trim();
+      sectionPins.push({
+        name: String(attrs?.get("Pin Name")?.value ?? "").trim(),
+        // 极少数器件不给引脚号：用段内序号兜底，避免 OLB 里出现空脚号。
+        number: number.length > 0 ? number : `${partId}#${sectionPins.length + 1}`,
+        connection,
+        body: {
+          x: roundMm(connection.x + length * direction.x),
+          y: roundMm(connection.y + length * direction.y),
+        },
+        length,
+        type: symbolPinType(attrs?.get("Pin Type")?.value),
+        visible: pin.display !== false,
+      });
+    }
+
+    const xs: number[] = [];
+    const ys: number[] = [];
+    for (const shape of partShapes) {
+      if (shape.kind === "rect") {
+        xs.push(shape.min.x, shape.max.x);
+        ys.push(shape.min.y, shape.max.y);
+      } else if (shape.kind === "polyline") {
+        for (const point of shape.points) {
+          xs.push(point.x);
+          ys.push(point.y);
+        }
+      } else {
+        xs.push(shape.at.x);
+        ys.push(shape.at.y);
+      }
+    }
+    // 本体包围盒也要覆盖引脚：否则"引脚比本体大"的符号会被裁掉引脚。
+    for (const pin of sectionPins) {
+      xs.push(pin.connection.x, pin.body.x);
+      ys.push(pin.connection.y, pin.body.y);
+    }
+    // 源 BBOX 是屏幕序 [x1,y1,x2,y2]（y1 > y2），直接取 min/max 归一化。
+    const bbox = partBounds.get(partId);
+    if (bbox !== undefined && bbox.length >= 4) {
+      xs.push(bbox[0], bbox[2]);
+      ys.push(bbox[1], bbox[3]);
+    }
+    const bounds =
+      xs.length === 0 || ys.length === 0
+        ? { minX: 0, minY: 0, maxX: 0, maxY: 0 }
+        : {
+            minX: roundMm(Math.min(...xs)),
+            minY: roundMm(Math.min(...ys)),
+            maxX: roundMm(Math.max(...xs)),
+            maxY: roundMm(Math.max(...ys)),
+          };
+    return {
+      name: partId,
+      bounds,
+      pins: sectionPins,
+      shapes: partShapes,
+    };
+  });
 };
 
 const readArchive = async (
@@ -492,5 +785,71 @@ export class Elibz2Connector {
       }),
     };
     return NormalizedFootprintSchema.parse(footprint);
+  }
+
+  /**
+   * 读取器件的原理图符号（SYMBOL 文档块）。库中没有符号数据时返回 null，
+   * 调用方应跳过 OLB 生成而不是报错 —— 标准版链路（C 编号）本来就只有封装。
+   */
+  async loadSymbol(filePath: string, deviceUuid: string): Promise<NormalizedSymbol | null> {
+    const { devices, elibuText } = await readArchive(filePath);
+    const device = devices[deviceUuid];
+    if (device === undefined) {
+      throw new Error(`本地库中未找到器件 ${deviceUuid}`);
+    }
+    const docs = splitElibuDocs(parseElibuLines(elibuText));
+    const doc = findSymbolDoc(docs);
+    if (doc === null) {
+      return null;
+    }
+    const canvasLine = doc.lines.find((line) => line.head.type === "CANVAS");
+    const canvas: ProCanvas = {
+      originX: asNumber(canvasLine?.data?.originX, 0),
+      originY: asNumber(canvasLine?.data?.originY, 0),
+    };
+    const sections = parseSymbolDoc(doc, canvas).filter(
+      (section) => section.pins.length > 0 || section.shapes.length > 0,
+    );
+    if (sections.length === 0) {
+      return null;
+    }
+
+    // 封装名沿用封装通道的推导结果，保证 OLB 里的 PCB Footprint 字段与
+    // 实际生成的 .dra 同名；封装不可读时退化为空串（不阻塞符号生成）。
+    let pcbFootprint = "";
+    try {
+      pcbFootprint = (await this.loadFootprint(filePath, deviceUuid)).info.targetPackageName;
+    } catch (error) {
+      await writeLog("warn", "elibz2_symbol_footprint_link_failed", {
+        filePath,
+        deviceUuid,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    const attributes = device.attributes ?? {};
+    const fallbackName = `SYM_${deviceUuid.slice(0, 8)}`;
+    const symbol: NormalizedSymbol = {
+      name: sanitizeSymbolName(
+        String(
+          device.display_title ??
+            device.title ??
+            attributes["Manufacturer Part"] ??
+            fallbackName,
+        ),
+        fallbackName,
+      ),
+      refdesPrefix: refdesPrefixFrom(attributes.Designator),
+      pcbFootprint,
+      sections,
+      sourceJson: JSON.stringify({
+        source: "elibz2-symbol",
+        filePath,
+        deviceUuid,
+        docTicket: doc.head.ticket ?? null,
+        sectionNames: sections.map((section) => section.name),
+      }),
+    };
+    return NormalizedSymbolSchema.parse(symbol);
   }
 }

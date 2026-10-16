@@ -5,6 +5,7 @@ import { createAllegroSourceBundle } from "../src/main/conversion/allegro-skill"
 import { createConversionPlan } from "../src/main/conversion/validate";
 
 const fixturePath = fileURLToPath(new URL("./fixtures/pex8748.elibz2", import.meta.url));
+const deviceUuid = "fc36ffe4397f472eb9c124285f536c2c";
 
 const closeTo = (expected: number, tolerance = 0.01) => ({
   expected,
@@ -120,5 +121,81 @@ describe("elibz2 connector", () => {
     await expect(connector.loadFootprint(fixturePath, "not-a-uuid")).rejects.toThrow(
       /未找到器件/,
     );
+  });
+
+  it("reads the schematic symbol as one section per PART", async () => {
+    const connector = new Elibz2Connector();
+    const symbol = await connector.loadSymbol(fixturePath, deviceUuid);
+    expect(symbol).not.toBeNull();
+    // PEX8748 是 6 段器件：CS_I2C_SPI + Station0/1/2 + VDD + VSS
+    expect(symbol!.sections.map((section) => section.name)).toEqual([
+      "PEX8748_CS_I2C_SPI",
+      "PEX8748_Station0",
+      "PEX8748_Station1",
+      "PEX8748_Station2",
+      "PEX8748_VDD",
+      "PEX8748_VSS",
+    ]);
+    const pinTotal = symbol!.sections.reduce(
+      (total, section) => total + section.pins.length,
+      0,
+    );
+    expect(pinTotal).toBe(676);
+    expect(symbol!.refdesPrefix).toBe("U");
+    expect(symbol!.pcbFootprint).toBe("PEX8748_BACA");
+  });
+
+  it("maps pin geometry to Capture hotpt/start and reads attributes via parentId", async () => {
+    const connector = new Elibz2Connector();
+    const symbol = await connector.loadSymbol(fixturePath, deviceUuid);
+    const station0 = symbol!.sections.find((section) => section.name === "PEX8748_Station0")!;
+    // rotation=270 的引脚朝本体方向 +y（已用本体 RECT 下边缘交叉验证）
+    const bottom = station0.pins.find((pin) => pin.number === "Y4")!;
+    expect(bottom.name).toBe("REXT_A0");
+    expect(bottom.connection).toEqual({ x: -60, y: -210 });
+    expect(bottom.body).toEqual({ x: -60, y: -200 });
+    expect(bottom.length).toBe(10);
+    // rotation=0 朝 +x
+    const left = station0.pins.find((pin) => pin.number === "AE5")!;
+    expect(left.name).toBe("PEX_PETp0");
+    expect(left.connection).toEqual({ x: -100, y: -190 });
+    expect(left.body).toEqual({ x: -90, y: -190 });
+    // rotation=180 朝 -x
+    const right = station0.pins.find((pin) => pin.name === "PEX_PETp8")!;
+    expect(right.connection).toEqual({ x: 100, y: -190 });
+    expect(right.body).toEqual({ x: 90, y: -190 });
+    // rotation=90 朝 -y
+    const top = station0.pins.find((pin) => pin.name === "PEX_REFCLKp")!;
+    expect(top.connection).toEqual({ x: -50, y: 210 });
+    expect(top.body).toEqual({ x: -50, y: 200 });
+  });
+
+  it("carries section graphics (body rect, divider line, labels)", async () => {
+    const connector = new Elibz2Connector();
+    const symbol = await connector.loadSymbol(fixturePath, deviceUuid);
+    const station0 = symbol!.sections.find((section) => section.name === "PEX8748_Station0")!;
+    expect(station0.shapes.find((shape) => shape.kind === "rect")).toEqual({
+      kind: "rect",
+      min: { x: -90, y: -200 },
+      max: { x: 90, y: 200 },
+      cornerRadius: 10,
+      filled: false,
+    });
+    expect(station0.shapes.find((shape) => shape.kind === "polyline")).toEqual({
+      kind: "polyline",
+      points: [
+        { x: -90, y: 0 },
+        { x: 90, y: 0 },
+      ],
+      closed: false,
+    });
+    // 引脚名/号 ATTR 的摆放位置不参与几何：Capture 会按 IsPinNamesVisible 自己排。
+    expect(
+      station0.shapes
+        .filter((shape) => shape.kind === "text")
+        .map((shape) => (shape.kind === "text" ? shape.text : "")),
+    ).toEqual(["PEX8748", "Station 0"]);
+    // 本体包围盒连引脚一起算（源 BBOX 是 y 反序的屏幕序 [-90,200,90,-200]）
+    expect(station0.bounds).toEqual({ minX: -100, minY: -210, maxX: 100, maxY: 210 });
   });
 });
