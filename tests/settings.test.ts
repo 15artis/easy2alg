@@ -27,7 +27,7 @@ describe("ui settings persistence", () => {
     expect(settings.ui.rightRailWidth).toBe(RIGHT_RAIL_DEFAULT_WIDTH);
     expect(settings.ui.collapsedSections).toEqual([]);
     expect(settings.ui.layerColors).toEqual({});
-    expect(settings.ui.localLibraryPath).toBeNull();
+    expect(settings.ui.localLibraryDir).toBeNull();
   });
 
   it("keeps a partial ui section while filling the rest", () => {
@@ -40,16 +40,34 @@ describe("ui settings persistence", () => {
     expect(settings.ui.rightRailWidth).toBe(RIGHT_RAIL_DEFAULT_WIDTH);
   });
 
-  it("round-trips layer colors and the remembered local library path", () => {
+  it("round-trips layer colors and the remembered local library directory", () => {
     const ui = {
       ...defaultUiSettings(),
       layerColors: { pads: "#ff8800", silkscreen: "#00aa55" },
-      localLibraryPath: "E:\\libs\\my.elibz2",
+      localLibraryDir: "E:\\libs",
     };
     const settings = AppSettingsSchema.parse({ ...minimal, ui });
     const again = AppSettingsSchema.parse(JSON.parse(JSON.stringify(settings)));
     expect(again.ui.layerColors).toEqual({ pads: "#ff8800", silkscreen: "#00aa55" });
-    expect(again.ui.localLibraryPath).toBe("E:\\libs\\my.elibz2");
+    expect(again.ui.localLibraryDir).toBe("E:\\libs");
+  });
+
+  it("migrates the legacy file path into its directory", () => {
+    // 0.1.20 及以前记的是文件本身；读老配置时要退化成它所在的目录
+    const migrated = AppSettingsSchema.parse({
+      ...minimal,
+      ui: { localLibraryPath: "E:\\libs\\pex8748.elibz2" },
+    });
+    expect(migrated.ui.localLibraryDir).toBe("E:\\libs");
+    // 新字段优先
+    const preferred = AppSettingsSchema.parse({
+      ...minimal,
+      ui: { localLibraryPath: "E:\\old\\x.elibz2", localLibraryDir: "D:\\new" },
+    });
+    expect(preferred.ui.localLibraryDir).toBe("D:\\new");
+    // 光秃秃的文件名（没有目录部分）→ null，不给选择框塞非法路径
+    const bare = AppSettingsSchema.parse({ ...minimal, ui: { localLibraryPath: "x.elibz2" } });
+    expect(bare.ui.localLibraryDir).toBeNull();
   });
 
   it("defaultUiSettings returns a fresh object each call", () => {

@@ -170,9 +170,12 @@ const registerHandlers = (): void => {
       ui: { ...current.ui, ...parsedPatch },
     }));
   });
-  ipcMain.handle(IpcChannels.chooseLocalLibraryFile, async () => {
+  ipcMain.handle(IpcChannels.chooseLocalLibraryFile, async (_event, rawDirectory: unknown) => {
+    // 记住的是**目录**（用户 2026-10-16 要求）：选择框直接落在上次用过的目录里
+    const defaultDirectory = z.string().min(1).nullable().parse(rawDirectory ?? null);
     const result = await dialog.showOpenDialog({
       title: "选择立创EDA专业版库文件",
+      ...(defaultDirectory === null ? {} : { defaultPath: defaultDirectory }),
       properties: ["openFile"],
       filters: [{ name: "立创EDA 库文件", extensions: ["elibz2", "epro", "epro2"] }],
     });
@@ -234,6 +237,8 @@ const registerHandlers = (): void => {
       symbol: request.symbol,
       toolchain,
       libraryPath,
+      // 必须转发：漏掉它 => 用户点了「覆盖写入」也依然返回 needsConfirm，弹窗无限重来
+      confirmOverwrite: request.confirmOverwrite,
     });
   });
   ipcMain.handle(IpcChannels.createPlan, (_event, rawFootprint: unknown) =>

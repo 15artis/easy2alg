@@ -20,10 +20,24 @@ export const UiSettingsSchema = z
     collapsedSections: z.array(z.string()).optional(),
     /** 图层 id → 用户自选颜色（#rrggbb） */
     layerColors: z.record(z.string(), z.string()).optional(),
-    /** 上次「导入本地库」选中的 .elibz2 路径，下次直接复用不用重选 */
+    /**
+     * 上次「导入本地库」选文件所在的**目录**（记住目录而不是文件：换库文件时
+     * 通常就在同一个目录里挑，不用每次从头找 —— 用户 2026-10-16 要求）。
+     */
+    localLibraryDir: z.string().min(1).nullable().optional(),
+    /** 旧字段（0.1.20 及以前记的是文件本身），读设置时迁移成它所在的目录 */
     localLibraryPath: z.string().min(1).nullable().optional(),
   })
   .optional();
+
+/** 取路径里的目录部分（兼容 / 与 \），拿不到返回 null。 */
+export const directoryOfPath = (filePath: string | null | undefined): string | null => {
+  if (filePath === null || filePath === undefined) {
+    return null;
+  }
+  const match = /^(.*)[\\/][^\\/]+$/.exec(filePath);
+  return match === null || match[1].length === 0 ? null : match[1];
+};
 
 /** 界面偏好的一套全新默认值（每次调用都返回新对象，避免共享可变引用）。 */
 export const defaultUiSettings = (): UiSettings & {
@@ -31,13 +45,13 @@ export const defaultUiSettings = (): UiSettings & {
   rightRailWidth: number;
   collapsedSections: string[];
   layerColors: Record<string, string>;
-  localLibraryPath: string | null;
+  localLibraryDir: string | null;
 } => ({
   leftRailWidth: LEFT_RAIL_DEFAULT_WIDTH,
   rightRailWidth: RIGHT_RAIL_DEFAULT_WIDTH,
   collapsedSections: [],
   layerColors: {},
-  localLibraryPath: null,
+  localLibraryDir: null,
 });
 
 export const AppSettingsSchema = z
@@ -60,7 +74,9 @@ export const AppSettingsSchema = z
       rightRailWidth: settings.ui?.rightRailWidth ?? RIGHT_RAIL_DEFAULT_WIDTH,
       collapsedSections: settings.ui?.collapsedSections ?? [],
       layerColors: settings.ui?.layerColors ?? {},
-      localLibraryPath: settings.ui?.localLibraryPath ?? null,
+      // 旧配置里存的是文件路径 → 迁移成它所在的目录
+      localLibraryDir:
+        settings.ui?.localLibraryDir ?? directoryOfPath(settings.ui?.localLibraryPath),
     },
   }));
 export type AppSettings = z.infer<typeof AppSettingsSchema>;

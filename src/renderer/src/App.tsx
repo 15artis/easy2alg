@@ -8,7 +8,6 @@ import {
   FileCode2,
   Folder,
   FolderOpen,
-  FolderSearch,
   History,
   Layers3,
   LibraryBig,
@@ -28,6 +27,7 @@ import {
   Zap,
 } from "lucide-react";
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -79,6 +79,7 @@ import {
 } from "../../shared/preview-layers";
 import {
   defaultUiSettings,
+  directoryOfPath,
   LEFT_RAIL_RANGE,
   RIGHT_RAIL_RANGE,
   type UiSettingsPatch,
@@ -746,6 +747,14 @@ const OverwriteConfirmDialog = ({
             </div>
           </dl>
           <p className="overwrite-note">
+            {request.existing.sectionCount === request.incoming.sectionCount &&
+            request.existing.pinCount === request.incoming.pinCount &&
+            request.existing.bodyWidth === request.incoming.bodyWidth ? (
+              <>
+                库里的内容与本次写入<b>一致</b>，通常不需要重写（重写只是为了确保万无一失）。
+                <br />
+              </>
+            ) : null}
             继续将<b>覆盖</b>旧内容（写入前会自动留一份 .bak 备份）。
             <br />
             如果 OrCAD Capture 正开着这个库，请先关闭它再继续，否则 Capture 会把内存里的旧内容写回去。
@@ -934,15 +943,37 @@ const ConverterPage = ({
   };
 
   /** 平移一个元素（图形或引脚）—— 拖动与方向键共用。 */
-  const moveSymbolElement = (id: string, key: string, dx: number, dy: number): void => {
-    setDeviceEdits((current) => {
-      const base = current[id] ?? EMPTY_DEVICE_EDIT;
-      return {
-        ...current,
-        [id]: { ...base, symbolEdits: accumulateOffset(base.symbolEdits, key, dx, dy) },
-      };
-    });
-  };
+  const moveSymbolElement = useCallback(
+    (id: string, key: string, dx: number, dy: number): void => {
+      setDeviceEdits((current) => {
+        const base = current[id] ?? EMPTY_DEVICE_EDIT;
+        return {
+          ...current,
+          [id]: { ...base, symbolEdits: accumulateOffset(base.symbolEdits, key, dx, dy) },
+        };
+      });
+    },
+    [],
+  );
+
+  /**
+   * 符号预览里"按住左键拖动元素"的落点。
+   * 引用必须稳定：引脚层是 memo 的，拖动时每一帧 setState 都会重渲染 App，
+   * 匿名回调会把 676 个引脚的 memo 全部打穿（拖动明显发顿）。
+   */
+  const moveSelectedElement = useCallback(
+    (key: string, dx: number, dy: number): void => {
+      if (selectedKeyId !== null) {
+        moveSymbolElement(selectedKeyId, key, dx, dy);
+      }
+    },
+    [selectedKeyId, moveSymbolElement],
+  );
+
+  /** 编辑模式下点画布空白处 = 取消选中当前元素。 */
+  const clearSymbolSelection = useCallback((): void => {
+    setSelectedShapeKey(null);
+  }, []);
 
   /** 旋转一个文本（90° 步进）。 */
   const rotateSymbolText = (id: string, key: string): void => {
@@ -1158,19 +1189,23 @@ const ConverterPage = ({
     });
   };
 
-  /** forcePick=true 时强制弹选择框（"重新选择库文件"按钮）。 */
-  const importLocalLibrary = async (forcePick = false): Promise<void> => {
+  /**
+   * 「导入本地库」：每次都弹选择框，但**默认落在上次用过的目录**。
+   *
+   * 记住的是目录而不是文件（用户 2026-10-16 要求）—— 换库文件时通常就在同一个
+   * 目录里挑，之前一进来就直接复用旧文件、反而没法换。
+   */
+  const importLocalLibrary = async (): Promise<void> => {
     setLocalError(null);
     setLocalLoading(true);
     try {
-      // 记住上次选的库文件：再次点击直接读它，不用重新选（用户 2026-10-16 要求持久化）。
-      const remembered = forcePick ? null : settings.ui.localLibraryPath;
-      const filePath = remembered ?? (await api.chooseLocalLibraryFile());
+      const filePath = await api.chooseLocalLibraryFile(settings.ui.localLibraryDir);
       if (filePath === null) {
         return;
       }
-      if (filePath !== settings.ui.localLibraryPath) {
-        onUiChange({ localLibraryPath: filePath });
+      const directory = directoryOfPath(filePath);
+      if (directory !== null && directory !== settings.ui.localLibraryDir) {
+        onUiChange({ localLibraryDir: directory });
       }
       const devices = await api.readLocalLibrary(filePath);
       if (devices.length === 0) {
@@ -1536,29 +1571,17 @@ const ConverterPage = ({
               disabled={localLoading}
               data-testid="import-local-button"
               title={
-                settings.ui.localLibraryPath === null
+                settings.ui.localLibraryDir === null
                   ? "导入立创EDA专业版导出的 .elibz2 库文件，无需立创编号"
-                  : `再次读取：${settings.ui.localLibraryPath}`
+                  : `选择框会打开上次用过的目录：${settings.ui.localLibraryDir}`
               }
             >
               <FolderOpen size={16} />{localLoading ? "解析中…" : "导入本地库"}
             </button>
-            {/* 默认复用上次记住的库文件；这个按钮强制重新挑一个 */}
-            <button
-              className="secondary-button icon-action"
-              type="button"
-              onClick={() => void importLocalLibrary(true)}
-              disabled={localLoading}
-              data-testid="import-local-pick"
-              title="重新选择 .elibz2 库文件"
-              aria-label="重新选择库文件"
-            >
-              <FolderSearch size={16} />
-            </button>
           </div>
-          {settings.ui.localLibraryPath === null ? null : (
-            <p className="local-library-hint" title={settings.ui.localLibraryPath}>
-              记住的本地库：{settings.ui.localLibraryPath.split(/[\\/]/).pop()}
+          {settings.ui.localLibraryDir === null ? null : (
+            <p className="local-library-hint" title={settings.ui.localLibraryDir}>
+              上次目录：{basenameOf(settings.ui.localLibraryDir)}
             </p>
           )}
           {localError === null ? null : (
@@ -1658,8 +1681,8 @@ const ConverterPage = ({
               }}
               title={
                 editMode
-                  ? "退出编辑（回到缩放/平移）"
-                  : "进入编辑：点选符号里的图形或引脚后拖动/用方向键调整"
+                  ? "退出编辑（回到滚轮缩放）"
+                  : "进入编辑：按住鼠标左键拖动图形/引脚即可移动（空白处按住拖动平移画布，方向键微调）"
               }
               data-testid="edit-mode-toggle"
             >
@@ -1692,7 +1715,8 @@ const ConverterPage = ({
               bounds={previewBounds!}
               resetKey={`sch:${selected?.id ?? ""}:${sectionIndex}:${editedSymbol.sections.length}`}
               ariaLabel="原理图符号预览"
-              interactive={!editMode}
+              zoomable={!editMode}
+              onBackgroundClick={editMode ? clearSymbolSelection : undefined}
             >
               {({ scale }) => (
                 <SymbolPreview
@@ -1703,11 +1727,7 @@ const ConverterPage = ({
                   editing={editMode}
                   selectedKey={selectedShapeKey}
                   onSelect={setSelectedShapeKey}
-                  onMoveElement={(key, dx, dy) => {
-                    if (selected !== null) {
-                      moveSymbolElement(selected.id, key, dx, dy);
-                    }
-                  }}
+                  onMoveElement={moveSelectedElement}
                 />
               )}
             </PanZoom>
@@ -1747,8 +1767,8 @@ const ConverterPage = ({
               <span><i className="legend-pad" />引脚</span>
               <span>
                 {editMode
-                  ? "编辑中：点选后拖动 · ←↑→↓ 平移(Shift=1 Alt=20) · 空格 旋转文本 · [ ] 字号 · Esc 取消"
-                  : "点「编辑」后可拖动/微调文字、图形与引脚"}
+                  ? "编辑中：左键按住拖动元素 · 空白处拖动平移画布 · ←↑→↓ 微调(Shift/Alt 改步长) · 空格 旋转文本 · [ ] 字号 · Esc 取消"
+                  : "点「编辑」后按住鼠标左键拖动文字、图形与引脚"}
                 {hasSymbolEdits(selectedEdit.symbolEdits) ? (
                   <button
                     type="button"

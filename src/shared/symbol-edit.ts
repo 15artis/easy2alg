@@ -49,6 +49,22 @@ export const translateSymbolShape = (
 export const symbolShapeKey = (sectionIndex: number, shapeIndex: number): string =>
   `${sectionIndex}:${shapeIndex}`;
 
+/**
+ * 把屏幕像素位移换算成符号世界单位。
+ *
+ * 预览的内容整体挂在 `scale(s)` 的 `<g>` 上，所以鼠标移动 N 像素 = 世界坐标移动
+ * N/s 单位。**拖动必须除这个 scale**，否则非 100% 缩放下"鼠标走 1 厘米、元素跑 2 厘米"。
+ * （曾漏除：图形对了、引脚忘了除 → 缩放后引脚拖动速度与图形不一致。）
+ */
+export const dragDelta = (
+  dxPx: number,
+  dyPx: number,
+  scale: number,
+): SymbolShapeOffset => {
+  const safe = scale > 0 ? scale : 1;
+  return { dx: dxPx / safe, dy: dyPx / safe };
+};
+
 export const symbolPinKey = (sectionIndex: number, pinIndex: number): string =>
   `p${sectionIndex}:${pinIndex}`;
 

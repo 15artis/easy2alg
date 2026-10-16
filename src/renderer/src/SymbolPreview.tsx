@@ -1,6 +1,14 @@
-import { memo, useRef, type PointerEvent as ReactPointerEvent, type ReactElement } from "react";
+import {
+  memo,
+  useCallback,
+  useRef,
+  type PointerEvent as ReactPointerEvent,
+  type ReactElement,
+  type RefObject,
+} from "react";
 import type { NormalizedSymbol, NormalizedSymbolPin } from "../../shared/schemas";
 import {
+  dragDelta,
   symbolPinKey,
   symbolShapeKey,
   type SymbolEdits,
@@ -20,9 +28,11 @@ import {
  * 截图的从上到下顺序完全相同），所以这里不做任何翻转 —— 预览看到的就是
  * 在 Capture 里打开的样子。
  *
- * 两种模式（用户 2026-10-16 要求二者互斥）：
- *  - 浏览（`editing=false`）：PanZoom 接管，滚轮缩放 / 拖动平移；
- *  - 编辑（`editing=true`）：PanZoom 让位，点选元素后拖动移动，键盘微调。
+ * 两种模式（用户 2026-10-16 要求"编辑"与"缩放"互斥）：
+ *  - 浏览（`editing=false`）：PanZoom 接管，滚轮缩放 / 空白处拖动平移；
+ *  - 编辑（`editing=true`）：**鼠标左键按住元素即拖动移动**（图形与引脚同一套逻辑），
+ *    空白处按住仍可平移画布（否则编辑大符号时视图动不了）；滚轮缩放让位，方向键微调。
+ *    按在元素与按在空白处是两条互斥的路径（元素侧 stopPropagation），不会同时触发。
  */
 
 const EDGE = "#2458d3";
@@ -85,6 +95,89 @@ const Label = ({
   </text>
 );
 
+type DragState = {
+  readonly key: string;
+  readonly pointerId: number;
+  lastX: number;
+  lastY: number;
+};
+
+/**
+ * 元素拖动：**按住鼠标左键拖动 = 移动元素**（用户 2026-10-16 要求）。
+ *
+ * 图形与引脚共用这一份实现，避免两边各写一遍导致行为漂移（曾经引脚那份漏除了
+ * `scale`，缩放后引脚拖动速度与图形对不上）。位移换算见 `dragDelta`。
+ *
+ * `scaleRef` 用 ref 而不是普通 prop：676 脚的器件里引脚层是 memo 的，把 scale
+ * 当 prop 传会让每级缩放都重渲染整层引脚 —— 拖动的热路径上正好不能这么干。
+ */
+const useElementDrag = (
+  editing: boolean,
+  scaleRef: RefObject<number>,
+  onSelect: (key: string) => void,
+  onMoveElement: (key: string, dx: number, dy: number) => void,
+): {
+  readonly start: (key: string) => (event: ReactPointerEvent<SVGElement>) => void;
+  readonly move: (event: ReactPointerEvent<SVGElement>) => void;
+  readonly end: (event: ReactPointerEvent<SVGElement>) => void;
+} => {
+  const dragRef = useRef<DragState | null>(null);
+
+  const start = useCallback(
+    (key: string) =>
+      (event: ReactPointerEvent<SVGElement>): void => {
+        if (!editing || event.button !== 0) {
+          return;
+        }
+        // 阻止 PanZoom 把这次按下当成平移 —— "按元素移动元素 / 按空白移动画布"靠这里分流
+        event.stopPropagation();
+        onSelect(key);
+        dragRef.current = {
+          key,
+          pointerId: event.pointerId,
+          lastX: event.clientX,
+          lastY: event.clientY,
+        };
+        event.currentTarget.setPointerCapture(event.pointerId);
+      },
+    [editing, onSelect],
+  );
+
+  const move = useCallback(
+    (event: ReactPointerEvent<SVGElement>): void => {
+      const drag = dragRef.current;
+      if (drag === null || drag.pointerId !== event.pointerId) {
+        return;
+      }
+      event.stopPropagation();
+      if (event.clientX === drag.lastX && event.clientY === drag.lastY) {
+        return;
+      }
+      const { dx, dy } = dragDelta(
+        event.clientX - drag.lastX,
+        event.clientY - drag.lastY,
+        scaleRef.current,
+      );
+      drag.lastX = event.clientX;
+      drag.lastY = event.clientY;
+      onMoveElement(drag.key, dx, dy);
+    },
+    [onMoveElement, scaleRef],
+  );
+
+  const end = useCallback((event: ReactPointerEvent<SVGElement>): void => {
+    if (dragRef.current?.pointerId !== event.pointerId) {
+      return;
+    }
+    dragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, []);
+
+  return { start, move, end };
+};
+
 /**
  * 引脚层单独 memo：手工调整只改图形元素，引脚数组引用不变（applySymbolEdits
  * 只重建被编辑的段），所以拖动时这一层能跳过大部分重渲染。
@@ -97,6 +190,7 @@ const SymbolPins = memo(
     showText,
     editing,
     selectedKey,
+    scaleRef,
     onSelect,
     onMove,
   }: {
@@ -106,54 +200,11 @@ const SymbolPins = memo(
     readonly showText: boolean;
     readonly editing: boolean;
     readonly selectedKey: string | null;
+    readonly scaleRef: RefObject<number>;
     readonly onSelect: (key: string | null) => void;
     readonly onMove: (key: string, dx: number, dy: number) => void;
   }): ReactElement => {
-    const dragRef = useRef<{
-      readonly key: string;
-      readonly pointerId: number;
-      lastX: number;
-      lastY: number;
-    } | null>(null);
-
-    const startDrag =
-      (key: string) =>
-      (event: ReactPointerEvent<SVGGElement>): void => {
-        if (!editing || event.button !== 0) {
-          return;
-        }
-        event.stopPropagation();
-        onSelect(key);
-        dragRef.current = {
-          key,
-          pointerId: event.pointerId,
-          lastX: event.clientX,
-          lastY: event.clientY,
-        };
-        event.currentTarget.setPointerCapture(event.pointerId);
-      };
-    const moveDrag = (event: ReactPointerEvent<SVGGElement>): void => {
-      const drag = dragRef.current;
-      if (drag === null || drag.pointerId !== event.pointerId) {
-        return;
-      }
-      event.stopPropagation();
-      const dx = event.clientX - drag.lastX;
-      const dy = event.clientY - drag.lastY;
-      if (dx === 0 && dy === 0) {
-        return;
-      }
-      dragRef.current = { ...drag, lastX: event.clientX, lastY: event.clientY };
-      onMove(drag.key, dx, dy);
-    };
-    const endDrag = (event: ReactPointerEvent<SVGGElement>): void => {
-      if (dragRef.current?.pointerId === event.pointerId) {
-        dragRef.current = null;
-        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-          event.currentTarget.releasePointerCapture(event.pointerId);
-        }
-      }
-    };
+    const drag = useElementDrag(editing, scaleRef, onSelect, onMove);
 
     return (
       <>
@@ -164,10 +215,10 @@ const SymbolPins = memo(
             <g
               key={`${key}-${pin.number}-${pin.connection.x}-${pin.connection.y}`}
               data-draggable={editing ? "true" : undefined}
-              onPointerDown={editing ? startDrag(key) : undefined}
-              onPointerMove={editing ? moveDrag : undefined}
-              onPointerUp={editing ? endDrag : undefined}
-              onPointerCancel={editing ? endDrag : undefined}
+              onPointerDown={editing ? drag.start(key) : undefined}
+              onPointerMove={editing ? drag.move : undefined}
+              onPointerUp={editing ? drag.end : undefined}
+              onPointerCancel={editing ? drag.end : undefined}
               style={editing ? { cursor: "move", pointerEvents: "all" } : undefined}
             >
               <line
@@ -233,71 +284,28 @@ export const SymbolPreview = ({
   readonly sectionIndex: number;
   readonly scale: number;
   readonly edits: SymbolEdits;
-  /** 编辑模式：元素可点选/拖动；浏览模式交给 PanZoom */
+  /** 编辑模式：按住左键拖动元素；浏览模式交给 PanZoom */
   readonly editing: boolean;
   readonly selectedKey: string | null;
   readonly onSelect: (key: string | null) => void;
   readonly onMoveElement: (key: string, dx: number, dy: number) => void;
 }): ReactElement => {
   const section = symbol.sections[Math.min(sectionIndex, symbol.sections.length - 1)];
-  const dragRef = useRef<{
-    readonly key: string;
-    readonly pointerId: number;
-    lastX: number;
-    lastY: number;
-  } | null>(null);
 
-  const startDrag =
-    (key: string) =>
-    (event: ReactPointerEvent<SVGElement>): void => {
-      if (!editing || event.button !== 0) {
-        return;
-      }
-      // 阻止 PanZoom 把这次按下当成平移
-      event.stopPropagation();
-      onSelect(key);
-      dragRef.current = {
-        key,
-        pointerId: event.pointerId,
-        lastX: event.clientX,
-        lastY: event.clientY,
-      };
-      event.currentTarget.setPointerCapture(event.pointerId);
-    };
+  // 拖动要除以缩放，但 scale 不能当 prop 传进 memo 的引脚层（见 useElementDrag）
+  const scaleRef = useRef(scale);
+  scaleRef.current = scale;
 
-  const moveDrag = (event: ReactPointerEvent<SVGElement>): void => {
-    const drag = dragRef.current;
-    if (drag === null || drag.pointerId !== event.pointerId) {
-      return;
-    }
-    event.stopPropagation();
-    const dx = (event.clientX - drag.lastX) / scale;
-    const dy = (event.clientY - drag.lastY) / scale;
-    if (dx === 0 && dy === 0) {
-      return;
-    }
-    drag.lastX = event.clientX;
-    drag.lastY = event.clientY;
-    onMoveElement(drag.key, dx, dy);
-  };
-
-  const endDrag = (event: ReactPointerEvent<SVGElement>): void => {
-    if (dragRef.current?.pointerId === event.pointerId) {
-      dragRef.current = null;
-      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-        event.currentTarget.releasePointerCapture(event.pointerId);
-      }
-    }
-  };
+  const drag = useElementDrag(editing, scaleRef, onSelect, onMoveElement);
 
   const dragProps = (key: string): Record<string, unknown> =>
     editing
       ? {
           "data-draggable": "true",
-          onPointerDown: startDrag(key),
-          onPointerMove: moveDrag,
-          onPointerUp: endDrag,
-          onPointerCancel: endDrag,
+          onPointerDown: drag.start(key),
+          onPointerMove: drag.move,
+          onPointerUp: drag.end,
+          onPointerCancel: drag.end,
           // pointer-events: all —— 本体框是 fill="none"，SVG 默认只命中"画出来的部分"，
           // 不加这个框内部点不中（实测 headless Chrome 里点上去落到了画布底板上）。
           style: { cursor: "move", pointerEvents: "all" },
@@ -378,6 +386,7 @@ export const SymbolPreview = ({
         showText={showPinText}
         editing={editing}
         selectedKey={selectedKey}
+        scaleRef={scaleRef}
         onSelect={onSelect}
         onMove={onMoveElement}
       />

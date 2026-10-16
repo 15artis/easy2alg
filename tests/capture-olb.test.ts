@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { Elibz2Connector } from "../src/main/connectors/elibz2-connector";
+import { inspectLibraryPart } from "../src/main/connectors/capture-writer";
 import { buildCaptureLibraryXml } from "../src/main/conversion/capture-olb";
 import { applySymbolEdits, symbolShapeKey } from "../src/shared/symbol-edit";
 import { bodyBoxOf, estimateLabelWidth, pinIsVertical, pinSideOf } from "../src/shared/symbol-labels";
@@ -241,5 +242,92 @@ describe("capture library XML", () => {
       }
     }
     expect(opens.sort()).toEqual(closes.sort());
+  });
+});
+
+/**
+ * 回读解析（inspectLibraryPart）—— 写入前探测同名器件、写入后校验内容都靠它。
+ *
+ * 样例照抄 Cadence `XMATIC_OLB2XML` 的真实导出结构（2026-10-16 用现网库导出的
+ * XML 核对过）：`<Package>` 里先是一个带 name/refdesPrefix 的器件 Defn，
+ * 后面每段一个 `<LibPart>`；**引脚 Defn 同样带 name 属性**（当年就是被它骗了，
+ * 按名字扫 `<Defn name=...>` 扫到了第一个引脚，段数/脚数全读成 1/0，
+ * 于是"写对了也报内容不一致"）。
+ */
+describe("inspectLibraryPart（回读解析）", () => {
+  const pin = (name: string, x: number): string =>
+    [
+      "        <SymbolPinScalar>",
+      `          <Defn hotptX="${x}" hotptY="0" name="${name}" position="5" startX="0" startY="0" type="0" visible="1" />`,
+      "        </SymbolPinScalar>",
+    ].join("\n");
+  const libPart = (section: string, bodyWidth: number, pins: string): string =>
+    [
+      "    <LibPart>",
+      `      <Defn CellName="${section}" />`,
+      "      <NormalView>",
+      `        <Rect><Defn fillStyle="1" hatchStyle="-1" lineStyle="0" lineWidth="0" x1="0" x2="${bodyWidth}" y1="0" y2="310"/></Rect>`,
+      "        <CommentText>",
+      '          <Defn locX="216" locY="132" name="PART" textJustification="0" x1="216" x2="278" y1="132" y2="148" />',
+      "        </CommentText>",
+      '        <SymbolBBox><Defn x1="0" x2="' + (bodyWidth + 4) + '" y1="0" y2="310"/></SymbolBBox>',
+      '        <IsPinNamesRotated><Defn val="1"/></IsPinNamesRotated>',
+      pins,
+      "      </NormalView>",
+      "      <PhysicalPart>",
+      '        <Defn />',
+      '        <PinNumber><Defn number="A1" position="0"/></PinNumber>',
+      "      </PhysicalPart>",
+      "    </LibPart>",
+    ].join("\n");
+  const library = (): string =>
+    [
+      '<?xml version="1.0" encoding="UTF-8" standalone="no" ?>',
+      '<Lib xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="olb.xsd">',
+      '  <Defn name="D:/libs/target.OLB" />',
+      "  <Package>",
+      '    <Defn alphabeticNumbering="1" isHomogeneous="0" name="BIGPART" pcbFootprint="BIGPART" pcbLib="" refdesPrefix="U" timestamp="1" timezone="0800" />',
+      libPart("BIGPARTA", 506, pin("FATAL_ERR#", -10) + "\n" + pin("PEX_INTA#", -10)),
+      libPart("BIGPARTB", 506, pin("VDD09", -10)),
+      "  </Package>",
+      "  <Package>",
+      '    <Defn alphabeticNumbering="2" isHomogeneous="1" name="SMALLPART" pcbFootprint="SMALLPART" pcbLib="" refdesPrefix="R" timestamp="2" timezone="0800" />',
+      libPart("SMALLPART", 120, pin("1", -10) + "\n" + pin("2", -10) + "\n" + pin("3", -10)),
+      "  </Package>",
+      "</Lib>",
+      "",
+    ].join("\n");
+
+  it("读多段器件的段数/脚数/本体宽度（引脚 Defn 的 name 不会骗到解析）", () => {
+    expect(inspectLibraryPart(library(), "BIGPART")).toEqual({
+      sectionCount: 2,
+      pinCount: 3,
+      bodyWidth: 506,
+    });
+  });
+
+  it("本体宽度取面积最大的 Rect，不是 SymbolBBox（后者含外伸引脚）", () => {
+    const parsed = inspectLibraryPart(library(), "BIGPART");
+    // SymbolBBox 写的是 510，本体 RECT 是 506 —— 必须报 506，否则校验恒判不一致
+    expect(parsed?.bodyWidth).toBe(506);
+  });
+
+  it("单段器件同样读得出来（不因只有一个 LibPart 而退化）", () => {
+    expect(inspectLibraryPart(library(), "SMALLPART")).toEqual({
+      sectionCount: 1,
+      pinCount: 3,
+      bodyWidth: 120,
+    });
+  });
+
+  it("库里没有这个器件时返回 null", () => {
+    expect(inspectLibraryPart(library(), "NOT_THERE")).toBeNull();
+    expect(inspectLibraryPart("", "BIGPART")).toBeNull();
+  });
+
+  it("只为某个器件统计，不把邻居的段/脚算进来", () => {
+    const parsed = inspectLibraryPart(library(), "SMALLPART");
+    expect(parsed?.sectionCount).toBe(1);
+    expect(parsed?.pinCount).toBe(3);
   });
 });

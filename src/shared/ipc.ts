@@ -38,7 +38,11 @@ export type Easy2AlgApi = {
   fetchComponent: (lcscId: string) => Promise<NormalizedFootprint>;
   /** 立创编号链路的原理图符号（同一份接口响应里的 dataStr）；没有符号时返回 null。 */
   fetchSymbol: (lcscId: string) => Promise<NormalizedSymbol | null>;
-  chooseLocalLibraryFile: () => Promise<string | null>;
+  /**
+   * 选 .elibz2 库文件。`defaultDirectory` = 上次用过的目录（选择框直接落在那里），
+   * 没有就 null。
+   */
+  chooseLocalLibraryFile: (defaultDirectory: string | null) => Promise<string | null>;
   readLocalLibrary: (filePath: string) => Promise<readonly LocalLibraryDeviceSummary[]>;
   fetchLocalComponent: (filePath: string, deviceUuid: string) => Promise<NormalizedFootprint>;
   fetchLocalSymbol: (filePath: string, deviceUuid: string) => Promise<NormalizedSymbol | null>;

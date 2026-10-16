@@ -5,6 +5,7 @@ import {
   accumulateOffset,
   accumulateRotation,
   applySymbolEdits,
+  dragDelta,
   EMPTY_SYMBOL_EDITS,
   hasSymbolEdits,
   isSymbolPinKey,
@@ -205,5 +206,28 @@ describe("symbol edit model (v0.1.20)", () => {
     }
     const small = shrunk[symbolShapeKey(0, 2)];
     expect(small.kind === "fontSize" && small.scale).toBeGreaterThanOrEqual(0.4);
+  });
+
+  /**
+   * 拖动位移必须除以预览缩放：内容挂在 scale(s) 的 <g> 上，鼠标走 N 像素
+   * 等于世界坐标走 N/s。曾经引脚那一份漏了除法 → 缩放后引脚与图形拖动不同速。
+   */
+  describe("dragDelta（屏幕像素 → 世界单位）", () => {
+    it("100% 时原样返回", () => {
+      expect(dragDelta(10, -4, 1)).toEqual({ dx: 10, dy: -4 });
+    });
+
+    it("放大 2 倍时位移减半（画面上的跟随距离才一致）", () => {
+      expect(dragDelta(10, -4, 2)).toEqual({ dx: 5, dy: -2 });
+    });
+
+    it("缩小到 25% 时位移放大 4 倍", () => {
+      expect(dragDelta(10, 4, 0.25)).toEqual({ dx: 40, dy: 16 });
+    });
+
+    it("缩放值异常（0/负）时退化为原样，不产生 Infinity", () => {
+      expect(dragDelta(10, 4, 0)).toEqual({ dx: 10, dy: 4 });
+      expect(dragDelta(10, 4, -3)).toEqual({ dx: 10, dy: 4 });
+    });
   });
 });

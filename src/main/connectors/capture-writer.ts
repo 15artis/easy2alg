@@ -183,6 +183,28 @@ const exportLibrary = async (
 };
 
 /**
+ * 把一个导出的库 XML 拆成 `<Package>` 块 —— 一个 Package = 库里一个器件。
+ *
+ * **不要用"扫 `<Defn name="...">`"的写法找器件**：引脚、图形元素自带 `name` 属性
+ * （引脚 Defn 就带 `name="FATAL_ERR#"` 这种），按名字扫会命中第一个引脚，
+ * 于是段数/脚数全读成 1/0 —— 写入后的校验因此**恒判"内容不一致"**（其实写对了），
+ * 二次确认弹窗里也永远显示"库里现有 1 段 / 0 脚"（2026-10-16 实测复现）。
+ */
+const libraryParts = (xml: string): { readonly name: string; readonly body: string }[] => {
+  const parts: { name: string; body: string }[] = [];
+  for (const match of xml.matchAll(/<Package>([\s\S]*?)<\/Package>/g)) {
+    const body = match[1];
+    // 器件的 Defn 一定同时带 name 与 refdesPrefix（我们生成的与 Cadence 导出的都如此）；
+    // 退化时退回"第一个带 name 的 Defn"。
+    const defns = [...body.matchAll(/<Defn\b([^>]*?)\/>/g)].map((item) => item[1]);
+    const nameOf = (attrs: string): string => / name="([^"]*)"/.exec(attrs)?.[1] ?? "";
+    const deviceDefn = defns.find((attrs) => /\brefdesPrefix="/.test(attrs) && nameOf(attrs).length > 0);
+    parts.push({ name: nameOf(deviceDefn ?? defns[0] ?? ""), body });
+  }
+  return parts;
+};
+
+/**
  * 从导出的库 XML 里找出某个器件的内容概览。
  *
  * 返回 null = 库里没有这个器件。**注意不能只查名字**：写入后的回读校验若只看
@@ -193,43 +215,35 @@ export const inspectLibraryPart = (
   xml: string,
   packageName: string,
 ): OlbPartSummary | null => {
-  const packageStart = xml.indexOf(`<Package>`);
-  if (packageStart < 0) {
+  const part = libraryParts(xml).find((item) => item.name === packageName);
+  if (part === undefined) {
     return null;
   }
-  const libEnd = xml.indexOf("</Lib>", packageStart);
-  const scope = xml.slice(packageStart, libEnd < 0 ? undefined : libEnd);
-  // 每个 <LibPart> 一段；Package 的 Defn 上才是器件名
-  const defnPattern = /<Defn ([^>]*name="([^"]*)"[^>]*)\/>/g;
-  const parts: { name: string; start: number; end: number }[] = [];
-  let match: RegExpExecArray | null;
-  while ((match = defnPattern.exec(scope)) !== null) {
-    parts.push({ name: match[2], start: match.index, end: match.index + match[0].length });
-  }
-  const index = parts.findIndex((part) => part.name === packageName);
-  if (index < 0) {
-    return null;
-  }
-  // 该器件的范围 = 这个 Defn 到下一个 LibPart 的 Defn（或结尾）
-  const nextDefn = parts
-    .slice(index + 1)
-    .find((part) => scope.slice(0, part.start).includes("<LibPart>"));
-  const segment =
-    nextDefn === undefined ? scope.slice(parts[index].start) : scope.slice(parts[index].start, nextDefn.start);
   return {
-    sectionCount: Math.max((segment.match(/<NormalView>/g) ?? []).length, 1),
-    pinCount: (segment.match(/<SymbolPinScalar>/g) ?? []).length,
-    bodyWidth: firstBodyWidth(segment),
+    sectionCount: Math.max((part.body.match(/<LibPart>/g) ?? []).length, 1),
+    pinCount: (part.body.match(/<SymbolPinScalar>/g) ?? []).length,
+    bodyWidth: firstSectionBodyWidth(part.body),
   };
 };
 
-/** SymbolBBox 的 x2 - x1（本体宽度），拿不到就 null。 */
-const firstBodyWidth = (segment: string): number | null => {
-  const box = /<SymbolBBox>\s*<Defn x1="([-\d.]+)" x2="([-\d.]+)"/.exec(segment);
-  if (box === null) {
+/**
+ * 本体宽度 = **第 1 段里第一个 `<Rect>`** 的宽度。
+ *
+ * 必须和生成端的 `incomingSummary`（取 `sections[0].shapes` 里第一个 rect）用同一个
+ * 定义，否则校验必然误判：
+ *  - 用 `<SymbolBBox>` 会带上外伸引脚（510 vs 506）；
+ *  - 取"全器件面积最大的 Rect"会选到另一个更宽的段（PEX8748 实测 971 vs 506）。
+ */
+const firstSectionBodyWidth = (packageBody: string): number | null => {
+  const firstLibPart = /<LibPart>([\s\S]*?)<\/LibPart>/.exec(packageBody)?.[1] ?? packageBody;
+  const attrs = /<Rect>\s*<Defn ([^>]*?)\/>/.exec(firstLibPart)?.[1];
+  if (attrs === undefined) {
     return null;
   }
-  return Number(box[2]) - Number(box[1]);
+  const num = (key: string): number =>
+    Number(new RegExp(`\\b${key}="(-?[\\d.]+)"`).exec(attrs)?.[1] ?? "NaN");
+  const [x1, x2] = [num("x1"), num("x2")];
+  return Number.isNaN(x1) || Number.isNaN(x2) ? null : Math.abs(x2 - x1);
 };
 
 export type OlbWriteOptions = {

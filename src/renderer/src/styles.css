@@ -2057,13 +2057,11 @@ select:focus,
   border-color: #c4721f;
 }
 
+/* 编辑模式下画布仍可平移（空白处按住左键拖动），所以光标保持 grab；
+ * 元素上由内联 style 覆盖成 move。缩放按钮同样保持可用——编辑时滚轮让位，
+ * 适应/复位/± 是唯一能改视图缩放的入口。 */
 .panzoom.editing {
-  cursor: default;
-}
-
-.panzoom.editing .panzoom-controls {
-  opacity: 0.35;
-  pointer-events: none;
+  cursor: grab;
 }
 
 /* ---------- 缩放平移画布 ---------- */
