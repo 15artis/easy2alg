@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { NormalizedSymbol } from "../src/shared/schemas";
 import {
+  accumulateFontSize,
+  accumulateOffset,
+  accumulateRotation,
   applySymbolEdits,
   EMPTY_SYMBOL_EDITS,
   hasSymbolEdits,
+  isSymbolPinKey,
+  parseSymbolEditKey,
+  symbolPinKey,
   symbolShapeKey,
   translateSymbolShape,
 } from "../src/shared/symbol-edit";
@@ -17,7 +23,17 @@ const symbol = (): NormalizedSymbol => ({
     {
       name: "SEC0",
       bounds: { minX: 0, minY: 0, maxX: 100, maxY: 100 },
-      pins: [],
+      pins: [
+        {
+          name: "P1",
+          number: "1",
+          connection: { x: -10, y: 20 },
+          body: { x: 0, y: 20 },
+          length: 10,
+          type: "passive" as const,
+          visible: true,
+        },
+      ],
       shapes: [
         { kind: "rect", min: { x: 0, y: 0 }, max: { x: 100, y: 100 }, cornerRadius: 0, filled: false },
         {
@@ -80,8 +96,8 @@ describe("symbol shape translation", () => {
   it("applies edits only to the addressed section/shape", () => {
     const base = symbol();
     const moved = applySymbolEdits(base, {
-      [symbolShapeKey(0, 2)]: { dx: 40, dy: -7 },
-      [symbolShapeKey(1, 0)]: { dx: 1, dy: 2 },
+      [symbolShapeKey(0, 2)]: { kind: "offset", dx: 40, dy: -7 },
+      [symbolShapeKey(1, 0)]: { kind: "offset", dx: 1, dy: 2 },
     });
     // 目标元素移动
     expect(moved.sections[0].shapes[2]).toMatchObject({ at: { x: 50, y: 13 } });
@@ -97,7 +113,7 @@ describe("symbol shape translation", () => {
     const base = symbol();
     expect(applySymbolEdits(base, EMPTY_SYMBOL_EDITS)).toBe(base);
     expect(hasSymbolEdits(EMPTY_SYMBOL_EDITS)).toBe(false);
-    expect(hasSymbolEdits({ [symbolShapeKey(0, 0)]: { dx: 0, dy: 0 } })).toBe(true);
+    expect(hasSymbolEdits({ [symbolShapeKey(0, 0)]: { kind: "offset", dx: 0, dy: 0 } })).toBe(true);
   });
 });
 
@@ -113,5 +129,81 @@ describe("library name sanitizing", () => {
 
   it("caps the length so Allegro accepts the name", () => {
     expect(sanitizeLibraryName("A".repeat(60))).toHaveLength(31);
+  });
+});
+
+describe("symbol edit model (v0.1.20)", () => {
+  it("moves a pin's connection and body together", () => {
+    const moved = applySymbolEdits(symbol(), {
+      [symbolPinKey(0, 0)]: { kind: "offset", dx: 7, dy: -3 },
+    });
+    expect(moved.sections[0].pins[0].connection).toEqual({ x: -3, y: 17 });
+    expect(moved.sections[0].pins[0].body).toEqual({ x: 7, y: 17 });
+    // 引脚长度不变
+    expect(moved.sections[0].pins[0].length).toBe(10);
+    // 图形不受影响
+    expect(moved.sections[0].shapes).toEqual(symbol().sections[0].shapes);
+  });
+
+  it("keeps pin and shape keys in separate namespaces", () => {
+    // 图形键 "0:0" 与引脚键 "p0:0" 必须互不干扰 —— 两侧都用 0 开头很容易撞
+    const moved = applySymbolEdits(symbol(), {
+      [symbolShapeKey(0, 0)]: { kind: "offset", dx: 1, dy: 1 },
+      [symbolPinKey(0, 0)]: { kind: "offset", dx: 2, dy: 2 },
+    });
+    expect(moved.sections[0].shapes[0]).toMatchObject({ min: { x: 1, y: 1 } });
+    expect(moved.sections[0].pins[0].connection).toEqual({ x: -8, y: 22 });
+    expect(isSymbolPinKey(symbolPinKey(0, 0))).toBe(true);
+    expect(parseSymbolEditKey(symbolPinKey(2, 5))).toEqual({ section: 2, index: 5 });
+    expect(parseSymbolEditKey(symbolShapeKey(3, 4))).toEqual({ section: 3, index: 4 });
+  });
+
+  it("rotates text by 90° steps and applies font scale", () => {
+    const rotated = applySymbolEdits(symbol(), {
+      [symbolShapeKey(0, 2)]: { kind: "rotate", quarterTurns: 1 },
+      [symbolShapeKey(1, 0)]: { kind: "fontSize", scale: 1.5 },
+    });
+    const text0 = rotated.sections[0].shapes[2];
+    expect(text0.kind === "text" && text0.rotation).toBe(90);
+    const text1 = rotated.sections[1].shapes[0];
+    expect(text1.kind === "text" && text1.height).toBe(18);
+  });
+
+  it("ignores rotation / font edits on non-text shapes", () => {
+    const edited = applySymbolEdits(symbol(), {
+      [symbolShapeKey(0, 0)]: { kind: "rotate", quarterTurns: 1 },
+    });
+    expect(edited.sections[0].shapes[0]).toEqual(symbol().sections[0].shapes[0]);
+  });
+
+  it("accumulates edits and clears a zero offset", () => {
+    let edits = accumulateOffset(EMPTY_SYMBOL_EDITS, symbolShapeKey(0, 0), 5, 5);
+    edits = accumulateOffset(edits, symbolShapeKey(0, 0), -5, 0);
+    expect(edits[symbolShapeKey(0, 0)]).toEqual({ kind: "offset", dx: 0, dy: 5 });
+    edits = accumulateOffset(edits, symbolShapeKey(0, 0), 0, -5);
+    // 回到原点就该把记录删掉，不然"重置调整"按钮会一直显示
+    expect(hasSymbolEdits(edits)).toBe(false);
+  });
+
+  it("wraps rotation and clamps font scale", () => {
+    let edits = EMPTY_SYMBOL_EDITS;
+    for (let i = 0; i < 4; i += 1) {
+      edits = accumulateRotation(edits, symbolShapeKey(0, 2));
+    }
+    expect(edits[symbolShapeKey(0, 2)]).toEqual({ kind: "rotate", quarterTurns: 0 });
+
+    let sized = EMPTY_SYMBOL_EDITS;
+    for (let i = 0; i < 40; i += 1) {
+      sized = accumulateFontSize(sized, symbolShapeKey(0, 2), 1.15);
+    }
+    const scale = sized[symbolShapeKey(0, 2)];
+    expect(scale.kind === "fontSize" && scale.scale).toBeLessThanOrEqual(4);
+
+    let shrunk = EMPTY_SYMBOL_EDITS;
+    for (let i = 0; i < 40; i += 1) {
+      shrunk = accumulateFontSize(shrunk, symbolShapeKey(0, 2), 1 / 1.15);
+    }
+    const small = shrunk[symbolShapeKey(0, 2)];
+    expect(small.kind === "fontSize" && small.scale).toBeGreaterThanOrEqual(0.4);
   });
 });

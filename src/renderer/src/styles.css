@@ -2028,6 +2028,44 @@ select:focus,
   border-color: #1d49b7;
 }
 
+/* ---------- 符号「编辑」模式 ---------- */
+/* 与浏览（缩放/平移）互斥：编辑开着时 PanZoom 让位，元素可点选拖动 */
+.edit-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  color: #36434e;
+  font-size: 11px;
+  font-weight: 600;
+  background: white;
+  border: 1px solid #cbd4e0;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.edit-mode-toggle:hover {
+  border-color: #2458d3;
+  color: #1d49b7;
+}
+
+.edit-mode-toggle.on {
+  color: white;
+  background: #e0862c;
+  border-color: #c4721f;
+}
+
+.panzoom.editing {
+  cursor: default;
+}
+
+.panzoom.editing .panzoom-controls {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
 /* ---------- 缩放平移画布 ---------- */
 .panzoom {
   position: absolute;

@@ -14,6 +14,7 @@ import {
   LibraryBig,
   LoaderCircle,
   PackageCheck,
+  PenLine,
   Play,
   Plus,
   RotateCcw,
@@ -61,6 +62,9 @@ import { PanZoom } from "./PanZoom";
 import { SymbolPreview } from "./SymbolPreview";
 import { selectRunnableItems, shouldOfferRegeneration } from "./selection";
 import {
+  accumulateFontSize,
+  accumulateOffset,
+  accumulateRotation,
   applySymbolEdits,
   EMPTY_SYMBOL_EDITS,
   hasSymbolEdits,
@@ -839,6 +843,11 @@ const ConverterPage = ({
   const [deviceEdits, setDeviceEdits] = useState<Readonly<Record<string, DeviceEdit>>>({});
   // 拖动侧栏时的实时宽度（松手才落盘，避免拖拽过程刷 IPC）
   const [liveRail, setLiveRail] = useState<{ readonly side: "left" | "right"; readonly width: number } | null>(null);
+  /**
+   * 「编辑」模式：与浏览（缩放/平移）互斥。开着时元素可点选拖动，
+   * 键盘快捷键生效（见 onSymbolEditorKeyDown 的注释）。
+   */
+  const [editMode, setEditMode] = useState(false);
   // 覆盖同名器件的二次确认（promise 化，生成流程里 await 它）
   const [overwriteAsk, setOverwriteAsk] = useState<{
     readonly request: Extract<OlbWriteOutcome, { status: "needsConfirm" }>;
@@ -865,6 +874,17 @@ const ConverterPage = ({
   // 引脚号排在**本体外面**（上下边引脚的脚号比引脚本身还长），包围盒要并进去，
   // 否则「适应窗口」会把它们裁掉。
   const previewBounds = previewSection === null ? null : sectionPreviewBounds(previewSection);
+
+  // 编辑模式下当前选中的是不是文本（旋转/字号只对文本有意义）
+  const selectedIsText =
+    editMode &&
+    previewSection !== null &&
+    selectedShapeKey !== null &&
+    !selectedShapeKey.startsWith("p") &&
+    previewSection.shapes[
+      Number(selectedShapeKey.split(":")[1] ?? -1)
+    ]?.kind === "text";
+
 
   // 勾选目标后仍要保证"有东西可生成"：只要 PCB 就要求有封装，只勾符号就要求该器件有符号。
   const generatableItems = useMemo(
@@ -913,22 +933,104 @@ const ConverterPage = ({
     }));
   };
 
-  const moveShape = (id: string, key: string, dx: number, dy: number): void => {
+  /** 平移一个元素（图形或引脚）—— 拖动与方向键共用。 */
+  const moveSymbolElement = (id: string, key: string, dx: number, dy: number): void => {
     setDeviceEdits((current) => {
       const base = current[id] ?? EMPTY_DEVICE_EDIT;
-      const previous = base.symbolEdits[key] ?? { dx: 0, dy: 0 };
       return {
         ...current,
-        [id]: {
-          ...base,
-          symbolEdits: {
-            ...base.symbolEdits,
-            [key]: { dx: previous.dx + dx, dy: previous.dy + dy },
-          },
-        },
+        [id]: { ...base, symbolEdits: accumulateOffset(base.symbolEdits, key, dx, dy) },
       };
     });
   };
+
+  /** 旋转一个文本（90° 步进）。 */
+  const rotateSymbolText = (id: string, key: string): void => {
+    setDeviceEdits((current) => {
+      const base = current[id] ?? EMPTY_DEVICE_EDIT;
+      return {
+        ...current,
+        [id]: { ...base, symbolEdits: accumulateRotation(base.symbolEdits, key) },
+      };
+    });
+  };
+
+  /** 缩放一个文本的字号。 */
+  const scaleSymbolText = (id: string, key: string, factor: number): void => {
+    setDeviceEdits((current) => {
+      const base = current[id] ?? EMPTY_DEVICE_EDIT;
+      return {
+        ...current,
+        [id]: { ...base, symbolEdits: accumulateFontSize(base.symbolEdits, key, factor) },
+      };
+    });
+  };
+
+  /**
+   * 编辑模式快捷键（用户 2026-10-16 要求"空格旋转、上下左右移动、更多按键"）：
+   *   ← ↑ → ↓  平移 5 单位（Shift=1 精调，Alt=20 粗调）
+   *   空格 / R  文本旋转 90°
+   *   [ / -    文本字号缩小
+   *   ] / =    文本字号放大
+   *   Esc      取消选择；再按一次退出编辑由工具栏按钮负责
+   * 只在「编辑」开着、且已选中元素时接管按键；输入框聚焦时不抢。
+   */
+  useEffect(() => {
+    if (!editMode || previewTab !== "sch" || selected === null || selectedShapeKey === null) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent): void => {
+      const target = event.target;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+        return;
+      }
+      const step = event.shiftKey ? 1 : event.altKey ? 20 : 5;
+      const deltas: Record<string, readonly [number, number]> = {
+        ArrowLeft: [-step, 0],
+        ArrowRight: [step, 0],
+        ArrowUp: [0, -step],
+        ArrowDown: [0, step],
+      };
+      if (event.key in deltas) {
+        event.preventDefault();
+        const [dx, dy] = deltas[event.key];
+        moveSymbolElement(selected.id, selectedShapeKey, dx, dy);
+        return;
+      }
+      if (event.key === " " || event.key.toLowerCase() === "r") {
+        if (!selectedIsText) {
+          return;
+        }
+        event.preventDefault();
+        rotateSymbolText(selected.id, selectedShapeKey);
+        return;
+      }
+      if ((event.key === "[" || event.key === "-") && selectedIsText) {
+        event.preventDefault();
+        scaleSymbolText(selected.id, selectedShapeKey, 1 / 1.15);
+        return;
+      }
+      if ((event.key === "]" || event.key === "=" || event.key === "+") && selectedIsText) {
+        event.preventDefault();
+        scaleSymbolText(selected.id, selectedShapeKey, 1.15);
+        return;
+      }
+      if (event.key === "Escape") {
+        setSelectedShapeKey(null);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [
+    editMode,
+    previewTab,
+    selected,
+    selectedShapeKey,
+    selectedIsText,
+    moveSymbolElement,
+    rotateSymbolText,
+    scaleSymbolText,
+  ]);
 
   /** 生成时用的封装计划：套上用户改过的 PCB 封装名。 */
   const planFor = (id: string): ConversionPlan | null => {
@@ -1546,6 +1648,25 @@ const ConverterPage = ({
               原理图符号
             </button>
           </div>
+          {previewTab === "sch" && editedSymbol !== null ? (
+            <button
+              type="button"
+              className={`edit-mode-toggle ${editMode ? "on" : ""}`}
+              onClick={() => {
+                setEditMode((current) => !current);
+                setSelectedShapeKey(null);
+              }}
+              title={
+                editMode
+                  ? "退出编辑（回到缩放/平移）"
+                  : "进入编辑：点选符号里的图形或引脚后拖动/用方向键调整"
+              }
+              data-testid="edit-mode-toggle"
+            >
+              <PenLine size={15} />
+              {editMode ? "编辑中" : "编辑"}
+            </button>
+          ) : null}
           {previewTab === "sch" && editedSymbol !== null && editedSymbol.sections.length > 1 ? (
             <div className="stage-sections" aria-label="符号分段">
               {editedSymbol.sections.map((section, index) => (
@@ -1571,6 +1692,7 @@ const ConverterPage = ({
               bounds={previewBounds!}
               resetKey={`sch:${selected?.id ?? ""}:${sectionIndex}:${editedSymbol.sections.length}`}
               ariaLabel="原理图符号预览"
+              interactive={!editMode}
             >
               {({ scale }) => (
                 <SymbolPreview
@@ -1578,11 +1700,12 @@ const ConverterPage = ({
                   sectionIndex={Math.min(sectionIndex, editedSymbol.sections.length - 1)}
                   scale={scale}
                   edits={selectedEdit.symbolEdits}
+                  editing={editMode}
                   selectedKey={selectedShapeKey}
                   onSelect={setSelectedShapeKey}
-                  onMoveShape={(key, dx, dy) => {
+                  onMoveElement={(key, dx, dy) => {
                     if (selected !== null) {
-                      moveShape(selected.id, key, dx, dy);
+                      moveSymbolElement(selected.id, key, dx, dy);
                     }
                   }}
                 />
@@ -1623,7 +1746,9 @@ const ConverterPage = ({
               <span><i className="legend-silk" />本体 / 图形</span>
               <span><i className="legend-pad" />引脚</span>
               <span>
-                拖动文字或图形可手工调整
+                {editMode
+                  ? "编辑中：点选后拖动 · ←↑→↓ 平移(Shift=1 Alt=20) · 空格 旋转文本 · [ ] 字号 · Esc 取消"
+                  : "点「编辑」后可拖动/微调文字、图形与引脚"}
                 {hasSymbolEdits(selectedEdit.symbolEdits) ? (
                   <button
                     type="button"

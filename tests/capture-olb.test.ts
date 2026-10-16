@@ -176,7 +176,7 @@ describe("capture library XML", () => {
     const before = symbol!.sections[0].shapes[textIndex];
     expect(before.kind).toBe("text");
     const moved = applySymbolEdits(symbol!, {
-      [symbolShapeKey(0, textIndex)]: { dx: 25, dy: -40 },
+      [symbolShapeKey(0, textIndex)]: { kind: "offset", dx: 25, dy: -40 },
     });
     const after = moved.sections[0].shapes[textIndex];
     expect(after.kind).toBe("text");

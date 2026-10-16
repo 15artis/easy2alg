@@ -39,12 +39,18 @@ export const PanZoom = ({
   resetKey,
   children,
   ariaLabel,
+  interactive = true,
 }: {
   readonly bounds: PanZoomBounds;
   /** 变化时自动适应窗口（切换器件 / 切换分页） */
   readonly resetKey: string;
   readonly children: (view: { readonly scale: number }) => ReactNode;
   readonly ariaLabel: string;
+  /**
+   * false = 进入「编辑」模式：滚轮缩放与拖动平移都让位给元素编辑，
+   * 与编辑操作互斥（用户 2026-10-16 要求二者不可同时触发）。
+   */
+  readonly interactive?: boolean;
 }): ReactElement => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState({ width: 900, height: 600 });
@@ -116,7 +122,7 @@ export const PanZoom = ({
   // React 的 onWheel 在部分环境是 passive，preventDefault 会被忽略 → 手挂原生监听。
   useEffect(() => {
     const element = containerRef.current;
-    if (element === null) {
+    if (element === null || !interactive) {
       return;
     }
     const handler = (event: WheelEvent): void => {
@@ -128,10 +134,10 @@ export const PanZoom = ({
     };
     element.addEventListener("wheel", handler, { passive: false });
     return () => element.removeEventListener("wheel", handler);
-  }, [zoomAt]);
+  }, [zoomAt, interactive]);
 
   const onPointerDown = (event: ReactPointerEvent<SVGSVGElement>): void => {
-    if (event.button !== 0 && event.button !== 1) {
+    if (!interactive || (event.button !== 0 && event.button !== 1)) {
       return;
     }
     const target = event.target as Element | null;
@@ -171,7 +177,7 @@ export const PanZoom = ({
 
   const percent = Math.round(view.scale * 100);
   return (
-    <div className="panzoom" ref={containerRef}>
+    <div className={`panzoom${interactive ? "" : " editing"}`} ref={containerRef}>
       <svg
         className="panzoom-svg"
         width={size.width}
