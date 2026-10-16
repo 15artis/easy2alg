@@ -1681,8 +1681,8 @@ const ConverterPage = ({
               }}
               title={
                 editMode
-                  ? "退出编辑（回到滚轮缩放）"
-                  : "进入编辑：按住鼠标左键拖动图形/引脚即可移动（空白处按住拖动平移画布，方向键微调）"
+                  ? "退出编辑模式"
+                  : "进入编辑：按住鼠标左键拖动图形/引脚即可移动（滚轮缩放、空白处拖动平移，方向键微调）"
               }
               data-testid="edit-mode-toggle"
             >
@@ -1715,7 +1715,6 @@ const ConverterPage = ({
               bounds={previewBounds!}
               resetKey={`sch:${selected?.id ?? ""}:${sectionIndex}:${editedSymbol.sections.length}`}
               ariaLabel="原理图符号预览"
-              zoomable={!editMode}
               onBackgroundClick={editMode ? clearSymbolSelection : undefined}
             >
               {({ scale }) => (
@@ -1767,8 +1766,8 @@ const ConverterPage = ({
               <span><i className="legend-pad" />引脚</span>
               <span>
                 {editMode
-                  ? "编辑中：左键按住拖动元素 · 空白处拖动平移画布 · ←↑→↓ 微调(Shift/Alt 改步长) · 空格 旋转文本 · [ ] 字号 · Esc 取消"
-                  : "点「编辑」后按住鼠标左键拖动文字、图形与引脚"}
+                  ? "编辑中：左键按住拖动元素 · 滚轮缩放 · 空白处拖动平移 · ←↑→↓ 微调(Shift/Alt 改步长) · 空格 旋转文本 · [ ] 字号 · Esc 取消"
+                  : "点「编辑」后按住鼠标左键拖动文字、图形与引脚（滚轮缩放照常可用）"}
                 {hasSymbolEdits(selectedEdit.symbolEdits) ? (
                   <button
                     type="button"

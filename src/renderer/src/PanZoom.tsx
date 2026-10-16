@@ -34,13 +34,15 @@ const DRAGGABLE_SELECTOR = "[data-draggable]";
  * 交互：滚轮以光标为中心缩放；**空白处按住鼠标左键拖动即平移**；右下角有 −/＋/适应 按钮。
  * 标了 `data-draggable` 的子元素会自行处理 pointerdown（并 stopPropagation），
  * 不会被平移抢走 —— 按在元素上是"移动元素"，按在空白处才是"移动画布"，二者不会同时触发。
+ *
+ * 缩放与平移在**编辑模式下同样可用**（用户 2026-10-16 要求"编辑时允许符号缩放"）：
+ * 鼠标手势只区分"按在什么上面"，不区分模式。
  */
 export const PanZoom = ({
   bounds,
   resetKey,
   children,
   ariaLabel,
-  zoomable = true,
   onBackgroundClick,
 }: {
   readonly bounds: PanZoomBounds;
@@ -48,12 +50,6 @@ export const PanZoom = ({
   readonly resetKey: string;
   readonly children: (view: { readonly scale: number }) => ReactNode;
   readonly ariaLabel: string;
-  /**
-   * false = 「编辑」模式：**滚轮缩放**让位给元素编辑（用户 2026-10-16 要求编辑与缩放互斥）；
-   * 平移不受影响（空白处照样左键拖动），否则编辑大符号时视图动不了。
-   * 缩放在编辑模式下仍可用右下角的 −/＋ 按钮。
-   */
-  readonly zoomable?: boolean;
   /** 在空白处按下并原地松开（没有拖动）时触发，用于取消选中。 */
   readonly onBackgroundClick?: () => void;
 }): ReactElement => {
@@ -137,7 +133,7 @@ export const PanZoom = ({
   // React 的 onWheel 在部分环境是 passive，preventDefault 会被忽略 → 手挂原生监听。
   useEffect(() => {
     const element = containerRef.current;
-    if (element === null || !zoomable) {
+    if (element === null) {
       return;
     }
     const handler = (event: WheelEvent): void => {
@@ -149,13 +145,13 @@ export const PanZoom = ({
     };
     element.addEventListener("wheel", handler, { passive: false });
     return () => element.removeEventListener("wheel", handler);
-  }, [zoomAt, zoomable]);
+  }, [zoomAt]);
 
   /** 按下到抬起之间不超过这个像素位移就算"点击空白处"（而非拖动平移）。 */
   const CLICK_SLOP = 3;
 
   const onPointerDown = (event: ReactPointerEvent<SVGSVGElement>): void => {
-    // 左键(0)与中键(1)都能拖动画布；编辑模式下同样可用（编辑与缩放互斥，但不与平移互斥）。
+    // 左键(0)与中键(1)都能拖动画布；编辑模式下同样可用（编辑与缩放/平移不互斥）
     if (event.button !== 0 && event.button !== 1) {
       return;
     }
@@ -203,7 +199,7 @@ export const PanZoom = ({
 
   const percent = Math.round(view.scale * 100);
   return (
-    <div className={`panzoom${zoomable ? "" : " editing"}`} ref={containerRef}>
+    <div className="panzoom" ref={containerRef}>
       <svg
         className="panzoom-svg"
         width={size.width}
