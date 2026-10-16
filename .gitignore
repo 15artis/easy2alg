@@ -1,7 +1,9 @@
 node_modules/
 out/
 release/
+release-out/
 coverage/
+.workbuddy/
 *.log
 .DS_Store
 .vite/
