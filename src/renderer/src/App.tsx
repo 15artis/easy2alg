@@ -14,6 +14,7 @@ import {
   LoaderCircle,
   PackageCheck,
   PenLine,
+  Redo2,
   Play,
   Plus,
   RotateCcw,
@@ -23,6 +24,7 @@ import {
   Sparkles,
   Trash2,
   TriangleAlert,
+  Undo2,
   X,
   Zap,
 } from "lucide-react";
@@ -70,6 +72,15 @@ import {
   hasSymbolEdits,
   type SymbolEdits,
 } from "../../shared/symbol-edit";
+import {
+  canRedo,
+  canUndo,
+  EMPTY_EDIT_HISTORY,
+  pushUndo,
+  redoOnce,
+  undoOnce,
+  type EditHistory,
+} from "../../shared/edit-history";
 import { sanitizeLibraryName } from "../../shared/naming";
 import {
   defaultVisibleLayers,
@@ -179,6 +190,12 @@ const applyEdits = (symbol: NormalizedSymbol, edit: DeviceEdit): NormalizedSymbo
 };
 
 const basenameOf = (filePath: string): string => filePath.split(/[\\/]/).pop() ?? filePath;
+
+/**
+ * 连续编辑（拖动 / 长按方向键）的合并窗口：停手这么久就把这一步结算成一个撤销点。
+ * 太小 → 一次拖动攒一堆撤销点；太大 → 两次独立操作被并成一步。
+ */
+const EDIT_STEP_IDLE_MS = 400;
 
 const libraryNameOf = (sourcePath: string): string => {
   const base = sourcePath.split(/[\\/]/).pop() ?? sourcePath;
@@ -935,6 +952,144 @@ const ConverterPage = ({
     });
   }, [layers]);
 
+  /**
+   * 撤销 / 重做（用户 2026-10-16 要求"编辑支持退回步骤"）。每台器件一条栈，
+   * 栈里存的是**编辑前**的 SymbolEdits 快照 —— 编辑本身不可变，退回即放回旧快照。
+   */
+  const [editHistory, setEditHistory] = useState<Record<string, EditHistory>>({});
+  const deviceEditsRef = useRef(deviceEdits);
+  deviceEditsRef.current = deviceEdits;
+  /** 正在进行的"一步"（拖动/长按方向键期间挂着，空闲后结算）。 */
+  const editStepRef = useRef<{
+    readonly deviceId: string;
+    readonly before: SymbolEdits;
+    timer: number;
+  } | null>(null);
+
+  const symbolEditsOf = useCallback(
+    (deviceId: string): SymbolEdits =>
+      deviceEditsRef.current[deviceId]?.symbolEdits ?? EMPTY_SYMBOL_EDITS,
+    [],
+  );
+
+  /**
+   * 结算未完成的一步：真改动过才压撤销栈，并把这份"改动前快照"返回给调用方。
+   *
+   * 返回值是必要的：`setEditHistory` 是异步的，撤销/重做若只看渲染期的
+   * `editHistory`，就看不到刚刚结算的这一步 —— 表现是"拖完立刻 Ctrl+Z 没反应"
+   * （必须等 400ms 合并窗口自然结算才行）。
+   */
+  const sealEditStep = useCallback((): { readonly deviceId: string; readonly before: SymbolEdits } | null => {
+    const open = editStepRef.current;
+    if (open === null) {
+      return null;
+    }
+    editStepRef.current = null;
+    window.clearTimeout(open.timer);
+    if (symbolEditsOf(open.deviceId) === open.before) {
+      return null;
+    }
+    setEditHistory((current) => ({
+      ...current,
+      [open.deviceId]: pushUndo(current[open.deviceId] ?? EMPTY_EDIT_HISTORY, open.before),
+    }));
+    return { deviceId: open.deviceId, before: open.before };
+  }, [symbolEditsOf]);
+
+  /**
+   * 改符号编辑状态（统一入口，带撤销记录）。
+   *
+   * `continuous=true` 用于拖动与长按方向键：连续改动先挂在同一个"步"里，
+   * 停手 `EDIT_STEP_IDLE_MS` 之后才结算 —— 否则一次拖动会攒出几十个撤销点，
+   * Ctrl+Z 要按到手酸。
+   */
+  const mutateSymbolEdits = useCallback(
+    (deviceId: string, mutate: (edits: SymbolEdits) => SymbolEdits, continuous: boolean): void => {
+      const before = symbolEditsOf(deviceId);
+      const next = mutate(before);
+      if (next === before) {
+        return;
+      }
+      const open = editStepRef.current;
+      if (continuous && open !== null && open.deviceId === deviceId) {
+        window.clearTimeout(open.timer);
+        open.timer = window.setTimeout(sealEditStep, EDIT_STEP_IDLE_MS);
+      } else {
+        sealEditStep();
+        if (continuous) {
+          editStepRef.current = {
+            deviceId,
+            before,
+            timer: window.setTimeout(sealEditStep, EDIT_STEP_IDLE_MS),
+          };
+        } else {
+          setEditHistory((current) => ({
+            ...current,
+            [deviceId]: pushUndo(current[deviceId] ?? EMPTY_EDIT_HISTORY, before),
+          }));
+        }
+      }
+      setDeviceEdits((current) => ({
+        ...current,
+        [deviceId]: {
+          ...(current[deviceId] ?? EMPTY_DEVICE_EDIT),
+          symbolEdits: next,
+        },
+      }));
+    },
+    [sealEditStep, symbolEditsOf],
+  );
+
+  const currentEditHistory =
+    (selectedKeyId === null ? undefined : editHistory[selectedKeyId]) ?? EMPTY_EDIT_HISTORY;
+
+  const undoEdit = useCallback((): void => {
+    const sealed = sealEditStep();
+    if (selectedKeyId === null) {
+      return;
+    }
+    // 刚结算的这一步还没进 state，先并进来，否则"拖完立刻 Ctrl+Z"会没反应
+    const stack =
+      sealed !== null && sealed.deviceId === selectedKeyId
+        ? pushUndo(currentEditHistory, sealed.before)
+        : currentEditHistory;
+    const result = undoOnce(stack, symbolEditsOf(selectedKeyId));
+    if (result === null) {
+      return;
+    }
+    setEditHistory((current) => ({ ...current, [selectedKeyId]: result.history }));
+    setDeviceEdits((current) => ({
+      ...current,
+      [selectedKeyId]: {
+        ...(current[selectedKeyId] ?? EMPTY_DEVICE_EDIT),
+        symbolEdits: result.edits,
+      },
+    }));
+  }, [currentEditHistory, sealEditStep, selectedKeyId, symbolEditsOf]);
+
+  const redoEdit = useCallback((): void => {
+    const sealed = sealEditStep();
+    if (selectedKeyId === null) {
+      return;
+    }
+    const stack =
+      sealed !== null && sealed.deviceId === selectedKeyId
+        ? pushUndo(currentEditHistory, sealed.before)
+        : currentEditHistory;
+    const result = redoOnce(stack, symbolEditsOf(selectedKeyId));
+    if (result === null) {
+      return;
+    }
+    setEditHistory((current) => ({ ...current, [selectedKeyId]: result.history }));
+    setDeviceEdits((current) => ({
+      ...current,
+      [selectedKeyId]: {
+        ...(current[selectedKeyId] ?? EMPTY_DEVICE_EDIT),
+        symbolEdits: result.edits,
+      },
+    }));
+  }, [currentEditHistory, sealEditStep, selectedKeyId, symbolEditsOf]);
+
   const updateDeviceEdit = (id: string, patch: Partial<DeviceEdit>): void => {
     setDeviceEdits((current) => ({
       ...current,
@@ -945,15 +1100,10 @@ const ConverterPage = ({
   /** 平移一个元素（图形或引脚）—— 拖动与方向键共用。 */
   const moveSymbolElement = useCallback(
     (id: string, key: string, dx: number, dy: number): void => {
-      setDeviceEdits((current) => {
-        const base = current[id] ?? EMPTY_DEVICE_EDIT;
-        return {
-          ...current,
-          [id]: { ...base, symbolEdits: accumulateOffset(base.symbolEdits, key, dx, dy) },
-        };
-      });
+      // continuous：一次拖动（或长按方向键）合并成同一个撤销点
+      mutateSymbolEdits(id, (edits) => accumulateOffset(edits, key, dx, dy), true);
     },
-    [],
+    [mutateSymbolEdits],
   );
 
   /**
@@ -975,26 +1125,14 @@ const ConverterPage = ({
     setSelectedShapeKey(null);
   }, []);
 
-  /** 旋转一个文本（90° 步进）。 */
+  /** 旋转一个文本（90° 步进）。单次操作：每按一次一个撤销点。 */
   const rotateSymbolText = (id: string, key: string): void => {
-    setDeviceEdits((current) => {
-      const base = current[id] ?? EMPTY_DEVICE_EDIT;
-      return {
-        ...current,
-        [id]: { ...base, symbolEdits: accumulateRotation(base.symbolEdits, key) },
-      };
-    });
+    mutateSymbolEdits(id, (edits) => accumulateRotation(edits, key), false);
   };
 
   /** 缩放一个文本的字号。 */
   const scaleSymbolText = (id: string, key: string, factor: number): void => {
-    setDeviceEdits((current) => {
-      const base = current[id] ?? EMPTY_DEVICE_EDIT;
-      return {
-        ...current,
-        [id]: { ...base, symbolEdits: accumulateFontSize(base.symbolEdits, key, factor) },
-      };
-    });
+    mutateSymbolEdits(id, (edits) => accumulateFontSize(edits, key, factor), false);
   };
 
   /**
@@ -1062,6 +1200,43 @@ const ConverterPage = ({
     rotateSymbolText,
     scaleSymbolText,
   ]);
+
+  /**
+   * 撤销 / 重做快捷键（用户 2026-10-16 要求"编辑支持退回步骤 + 添加快捷键"）：
+   *   Ctrl+Z            退回一步
+   *   Ctrl+Shift+Z / Ctrl+Y  前进回来
+   * 与上面那条不同：**不要求先选中元素** —— 退回一步之后往往正好是"什么都没选"的状态。
+   */
+  useEffect(() => {
+    if (!editMode || previewTab !== "sch") {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent): void => {
+      const target = event.target;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+        return;
+      }
+      if (!event.ctrlKey && !event.metaKey) {
+        return;
+      }
+      const key = event.key.toLowerCase();
+      if (key === "z") {
+        event.preventDefault();
+        if (event.shiftKey) {
+          redoEdit();
+        } else {
+          undoEdit();
+        }
+        return;
+      }
+      if (key === "y") {
+        event.preventDefault();
+        redoEdit();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [editMode, previewTab, undoEdit, redoEdit]);
 
   /** 生成时用的封装计划：套上用户改过的 PCB 封装名。 */
   const planFor = (id: string): ConversionPlan | null => {
@@ -1672,23 +1847,48 @@ const ConverterPage = ({
             </button>
           </div>
           {previewTab === "sch" && editedSymbol !== null ? (
-            <button
-              type="button"
-              className={`edit-mode-toggle ${editMode ? "on" : ""}`}
-              onClick={() => {
-                setEditMode((current) => !current);
-                setSelectedShapeKey(null);
-              }}
-              title={
-                editMode
-                  ? "退出编辑模式"
-                  : "进入编辑：按住鼠标左键拖动图形/引脚即可移动（滚轮缩放、空白处拖动平移，方向键微调）"
-              }
-              data-testid="edit-mode-toggle"
-            >
-              <PenLine size={15} />
-              {editMode ? "编辑中" : "编辑"}
-            </button>
+            <div className="edit-toolbar">
+              <button
+                type="button"
+                className={`edit-mode-toggle ${editMode ? "on" : ""}`}
+                onClick={() => {
+                  setEditMode((current) => !current);
+                  setSelectedShapeKey(null);
+                }}
+                title={
+                  editMode
+                    ? "退出编辑模式"
+                    : "进入编辑：按住鼠标左键拖动图形/引脚即可移动（滚轮缩放、空白处拖动平移，方向键微调）"
+                }
+                data-testid="edit-mode-toggle"
+              >
+                <PenLine size={15} />
+                {editMode ? "编辑中" : "编辑"}
+              </button>
+              {/* 撤销/重做：不依赖是否选中元素，编辑模式下一直可用（用户 2026-10-16 要求） */}
+              <button
+                type="button"
+                className="edit-history-button"
+                onClick={undoEdit}
+                disabled={!canUndo(currentEditHistory)}
+                title="退回一步（Ctrl+Z）"
+                aria-label="撤销"
+                data-testid="edit-undo"
+              >
+                <Undo2 size={15} />
+              </button>
+              <button
+                type="button"
+                className="edit-history-button"
+                onClick={redoEdit}
+                disabled={!canRedo(currentEditHistory)}
+                title="前进回来（Ctrl+Shift+Z 或 Ctrl+Y）"
+                aria-label="重做"
+                data-testid="edit-redo"
+              >
+                <Redo2 size={15} />
+              </button>
+            </div>
           ) : null}
           {previewTab === "sch" && editedSymbol !== null && editedSymbol.sections.length > 1 ? (
             <div className="stage-sections" aria-label="符号分段">
@@ -1766,7 +1966,7 @@ const ConverterPage = ({
               <span><i className="legend-pad" />引脚</span>
               <span>
                 {editMode
-                  ? "编辑中：左键按住拖动元素 · 滚轮缩放 · 空白处拖动平移 · ←↑→↓ 微调(Shift/Alt 改步长) · 空格 旋转文本 · [ ] 字号 · Esc 取消"
+                  ? "编辑中：左键按住拖动元素 · 滚轮缩放 · 空白处拖动平移 · ←↑→↓ 微调(Shift/Alt 改步长) · 空格 旋转文本 · [ ] 字号 · Ctrl+Z 退回一步 · Ctrl+Shift+Z 前进 · Esc 取消"
                   : "点「编辑」后按住鼠标左键拖动文字、图形与引脚（滚轮缩放照常可用）"}
                 {hasSymbolEdits(selectedEdit.symbolEdits) ? (
                   <button
@@ -1774,10 +1974,8 @@ const ConverterPage = ({
                     className="legend-reset"
                     onClick={() => {
                       if (selected !== null) {
-                        setDeviceEdits((current) => ({
-                          ...current,
-                          [selected.id]: { ...selectedEdit, symbolEdits: EMPTY_SYMBOL_EDITS },
-                        }));
+                        // 走统一入口：重置也是一步，可以 Ctrl+Z 退回来
+                        mutateSymbolEdits(selected.id, () => EMPTY_SYMBOL_EDITS, false);
                         setSelectedShapeKey(null);
                       }
                     }}

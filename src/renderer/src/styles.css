@@ -2057,6 +2057,36 @@ select:focus,
   border-color: #c4721f;
 }
 
+/* 「编辑」+ 撤销/重做 一组 */
+.edit-toolbar {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.edit-history-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  color: #36434e;
+  background: white;
+  border: 1px solid #cbd4e0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.edit-history-button:hover:not(:disabled) {
+  border-color: #2458d3;
+  color: #1d49b7;
+}
+
+.edit-history-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 /* 画布光标：默认 grab；元素上由内联 style 覆盖成 move。
  * 编辑模式下缩放/平移照常可用（用户要求"编辑时允许符号缩放"）。 */
 
