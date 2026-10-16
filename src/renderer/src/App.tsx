@@ -68,6 +68,7 @@ import {
   normalizeVisibleLayers,
   type FootprintLayerId,
 } from "../../shared/preview-layers";
+import { sectionPreviewBounds } from "../../shared/symbol-labels";
 
 type Page = "convert" | "history" | "settings";
 
@@ -708,6 +709,9 @@ const ConverterPage = ({
     editedSymbol === null
       ? null
       : editedSymbol.sections[Math.min(sectionIndex, editedSymbol.sections.length - 1)];
+  // 引脚号排在**本体外面**（上下边引脚的脚号比引脚本身还长），包围盒要并进去，
+  // 否则「适应窗口」会把它们裁掉。
+  const previewBounds = previewSection === null ? null : sectionPreviewBounds(previewSection);
 
   // 勾选目标后仍要保证"有东西可生成"：只要 PCB 就要求有封装，只勾符号就要求该器件有符号。
   const generatableItems = useMemo(
@@ -1263,7 +1267,7 @@ const ConverterPage = ({
         <div className="engineering-canvas">
           {previewTab === "sch" && editedSymbol !== null && previewSection !== null ? (
             <PanZoom
-              bounds={previewSection.bounds}
+              bounds={previewBounds!}
               resetKey={`sch:${selected?.id ?? ""}:${sectionIndex}:${editedSymbol.sections.length}`}
               ariaLabel="原理图符号预览"
             >

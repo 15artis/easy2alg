@@ -5,6 +5,7 @@ import type {
   NormalizedSymbolShape,
   SymbolPinType,
 } from "../../shared/schemas";
+import { estimateCommentWidth, pinSideOf, symbolFontHeight } from "../../shared/symbol-labels";
 
 /**
  * OrCAD Capture 库 XML（.olb 交换格式）生成器。
@@ -79,13 +80,12 @@ const sectionSuffix = (index: number): string => {
 const fontHeightFor = (sourceHeight: number): number => {
   // 源 fontSize 是符号单位（10 mil）下的字高，实测 12 对应 OrCAD 的 -9。
   // 按 0.75 折算并夹到真实库常见区间，避免出现超大字号。
-  const mapped = Math.round(sourceHeight * 0.75);
-  return Math.min(Math.max(mapped, 8), 18);
+  return symbolFontHeight(sourceHeight);
 };
 
 const commentTextCommands = (shape: Extract<NormalizedSymbolShape, { kind: "text" }>): string => {
   const height = fontHeightFor(shape.height);
-  const width = Math.max(Math.ceil(shape.text.length * height * 0.667), height);
+  const width = estimateCommentWidth(shape.text, height);
   const boxHeight = Math.round(height * 1.556);
   const lines = [
     tag("Defn", {
@@ -242,18 +242,19 @@ const bodyBounds = (
 };
 
 const hasVerticalPins = (section: NormalizedSymbolSection): boolean =>
-  section.pins.some((pin) => Math.abs(pin.connection.x - pin.body.x) < 1e-9);
+  section.pins.some((pin) => {
+    const side = pinSideOf(pin);
+    return side === "top" || side === "bottom";
+  });
 
 const normalViewCommands = (
   symbol: NormalizedSymbol,
   section: NormalizedSymbolSection,
 ): readonly string[] => {
   const body = bodyBounds(section);
-  // Capture 的全局引脚名旋转规则：**有上下边引脚时必须置 1**，否则副边引脚名会被
-  // 水平画出、互相叠在一起（用户 2026-10-16 截图）。没有上下边引脚时保持 0，
-  // 与 orcad-package-autogen 的 rotate_pin_names 判据一致（那里也是 template 不带
-  // 逐脚 PinDisplayProp 时才按"有没有 top/bottom 引脚"决定）。
-  const rotated = hasVerticalPins(section) ? 1 : 0;
+  // 全局旋转规则：**有上下边引脚时必须置 1**，否则它们的名字会被水平画出、
+  // 和相邻竖排标签糊在一起。重叠问题由 shared/symbol-layout.ts 的几何避让解决
+  // —— 逐脚 PinDisplayProp 那条路实测无效（见该文件注释）。
   const commands: string[] = ["      <NormalView>", '        <Defn suffix=".Normal" />'];
   // "Part Reference" 贴在本体上方、"Value" 贴在本体下方 —— 坐标与现网库一致
   // （y 轴在编辑器里向下，所以 minY-14 在屏幕上位于本体上侧）。
@@ -275,7 +276,7 @@ const normalViewCommands = (
     '          <Defn val="1" />',
     "        </IsPinNumbersVisible>",
     "        <IsPinNamesRotated>",
-    `          <Defn val="${rotated}" />`,
+    `          <Defn val="${hasVerticalPins(section) ? 1 : 0}" />`,
     "        </IsPinNamesRotated>",
     "        <IsPinNamesVisible>",
     '          <Defn val="1" />',

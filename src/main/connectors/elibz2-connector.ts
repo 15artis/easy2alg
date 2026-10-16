@@ -25,6 +25,7 @@ import {
   translateSymbolShape,
   translateSymbolPoint,
 } from "../../shared/symbol-edit";
+import { avoidLabelOverlapInSection } from "../../shared/symbol-layout";
 import { writeLog } from "../logging";
 
 /**
@@ -841,9 +842,13 @@ export class Elibz2Connector {
       originX: asNumber(canvasLine?.data?.originX, 0),
       originY: asNumber(canvasLine?.data?.originY, 0),
     };
-    const sections = parseSymbolDoc(doc, canvas).filter(
-      (section) => section.pins.length > 0 || section.shapes.length > 0,
-    );
+    const sections = parseSymbolDoc(doc, canvas)
+      .filter((section) => section.pins.length > 0 || section.shapes.length > 0)
+      // 引脚标签避让（用户 2026-10-16 反馈"标签叠到一起"）：Capture 的竖排引脚名
+      // 往本体内长、横排引脚名也往本体内长，两者在四角必相交。逐脚 PinDisplayProp
+      // 那条路实测被导入器静默丢弃，只能改几何 —— 见 shared/symbol-layout.ts。
+      // 放在这里而不是写 OLB 时：预览与写库必须看到同一份几何。
+      .map(avoidLabelOverlapInSection);
     if (sections.length === 0) {
       return null;
     }

@@ -1,6 +1,13 @@
 import { memo, useRef, type PointerEvent as ReactPointerEvent, type ReactElement } from "react";
-import type { NormalizedSymbol, NormalizedSymbolPin, Point } from "../../shared/schemas";
+import type { NormalizedSymbol, NormalizedSymbolPin } from "../../shared/schemas";
 import { symbolShapeKey, type SymbolEdits } from "../../shared/symbol-edit";
+import {
+  bodyBoxOf,
+  pinNameBox,
+  pinNumberBox,
+  pinSideOf,
+  type SymbolBox,
+} from "../../shared/symbol-labels";
 
 /**
  * 原理图符号预览（OrCAD Capture 符号坐标系）。
@@ -22,39 +29,82 @@ const TEXT = "#1d49b7";
 
 /** 缩得太小时不画引脚文字：676 脚的器件在 5% 缩放下文字只会糊成一片。 */
 const PIN_TEXT_MIN_SCALE = 0.12;
-const PIN_FONT = 8;
-const PIN_NUMBER_FONT = 6;
+/** 世界单位下的字号。Capture 的引脚名/号同为 height≈9，这里照抄以便预览比例一致。 */
+const PIN_FONT = 9;
 
-const pinIsVertical = (pin: NormalizedSymbolPin): boolean =>
-  Math.abs(pin.connection.x - pin.body.x) < 1e-9;
+/** 文字锚点与书写方向 —— 与 shared/symbol-labels.ts 的盒模型一一对应。 */
+type LabelPlacement = {
+  readonly x: number;
+  readonly y: number;
+  readonly rotate: number;
+  readonly anchor: "start" | "end";
+};
 
-const arrow = (dx: number, dy: number): Point => ({
-  x: Math.abs(dx) < 1e-9 ? 0 : Math.sign(dx),
-  y: Math.abs(dy) < 1e-9 ? 0 : Math.sign(dy),
-});
+/**
+ * 文字锚点与书写方向。
+ *
+ * 左右引脚的标签横排：左脚的盒子从本体左边向右展开，左脚名取盒子左端作锚点
+ * （start），右脚名取右端（end）；左右脚的**引脚号在本体外侧**，锚点规则正好相反。
+ * 上下引脚一律竖排、自下而上书写（Capture 惯例），所以锚点恒取盒子的下端。
+ */
+const placeLabel = (pin: NormalizedSymbolPin, box: SymbolBox): LabelPlacement => {
+  switch (pinSideOf(pin)) {
+    case "left":
+      return { x: box.minX, y: pin.body.y, rotate: 0, anchor: "start" };
+    case "right":
+      return { x: box.maxX, y: pin.body.y, rotate: 0, anchor: "end" };
+    default:
+      return { x: pin.body.x, y: box.maxY, rotate: -90, anchor: "start" };
+  }
+};
+
+const Label = ({
+  text,
+  placement,
+  color,
+}: {
+  readonly text: string;
+  readonly placement: LabelPlacement;
+  readonly color: string;
+}): ReactElement => (
+  <text
+    x={placement.x}
+    y={placement.y}
+    fontSize={PIN_FONT}
+    fill={color}
+    textAnchor={placement.anchor}
+    dominantBaseline="middle"
+    transform={
+      placement.rotate === 0
+        ? undefined
+        : `rotate(${placement.rotate} ${placement.x} ${placement.y})`
+    }
+  >
+    {text}
+  </text>
+);
 
 /**
  * 引脚层单独 memo：手工调整只改图形元素，引脚数组引用不变（applySymbolEdits
  * 只重建 shapes），所以拖动时这一层完全跳过重渲染 —— 676 脚器件不做这层隔离
  * 会在每次 pointermove 重建两千个 SVG 节点。
+ *
+ * 标签位置由 shared/symbol-labels.ts 的盒模型给出，与写进 .olb 后 Capture 的
+ * 画法一致（名字本体内侧、引脚号外侧、上下引脚竖排），因此预览里不重叠
+ * 就等于 Capture 里不重叠。几何避让见 shared/symbol-layout.ts。
  */
 const SymbolPins = memo(
   ({
     pins,
+    body,
     showText,
   }: {
     readonly pins: readonly NormalizedSymbolPin[];
+    readonly body: SymbolBox;
     readonly showText: boolean;
   }): ReactElement => (
     <>
       {pins.map((pin) => {
-        const vertical = pinIsVertical(pin);
-        const dir = arrow(pin.body.x - pin.connection.x, pin.body.y - pin.connection.y);
-        const gap = 5;
-        const numberOutside = { x: pin.body.x - dir.x * gap, y: pin.body.y - dir.y * gap };
-        const nameInside = { x: pin.body.x + dir.x * gap, y: pin.body.y + dir.y * gap };
-        const anchorNumber = vertical ? (dir.y > 0 ? "end" : "start") : dir.x > 0 ? "end" : "start";
-        const anchorName = vertical ? (dir.y > 0 ? "start" : "end") : dir.x > 0 ? "start" : "end";
         return (
           <g key={`pin-${pin.number}-${pin.connection.x}-${pin.connection.y}`}>
             <line
@@ -69,28 +119,16 @@ const SymbolPins = memo(
             <circle cx={pin.connection.x} cy={pin.connection.y} r={1.6} fill={PIN} />
             {showText ? (
               <>
-                <text
-                  x={numberOutside.x}
-                  y={numberOutside.y + PIN_NUMBER_FONT * 0.35}
-                  fontSize={PIN_NUMBER_FONT}
-                  fill={PIN_NUMBER}
-                  textAnchor={anchorNumber}
-                  transform={
-                    vertical ? `rotate(-90 ${numberOutside.x} ${numberOutside.y})` : undefined
-                  }
-                >
-                  {pin.number}
-                </text>
-                <text
-                  x={nameInside.x}
-                  y={nameInside.y + PIN_FONT * 0.35}
-                  fontSize={PIN_FONT}
-                  fill={PIN_NAME}
-                  textAnchor={anchorName}
-                  transform={vertical ? `rotate(-90 ${nameInside.x} ${nameInside.y})` : undefined}
-                >
-                  {pin.name}
-                </text>
+                <Label
+                  text={pin.number}
+                  placement={placeLabel(pin, pinNumberBox(pin, body))}
+                  color={PIN_NUMBER}
+                />
+                <Label
+                  text={pin.name}
+                  placement={placeLabel(pin, pinNameBox(pin, body))}
+                  color={PIN_NAME}
+                />
               </>
             ) : null}
           </g>
@@ -244,7 +282,7 @@ export const SymbolPreview = ({
         );
       })}
 
-      <SymbolPins pins={section.pins} showText={showPinText} />
+      <SymbolPins pins={section.pins} body={bodyBoxOf(section)} showText={showPinText} />
     </g>
   );
 };

@@ -163,12 +163,13 @@ describe("elibz2 connector", () => {
     expect(station0.shapes.find((shape) => shape.kind === "rect")).toEqual({
       kind: "rect",
       min: { x: 0, y: 0 },
-      max: { x: 180, y: 400 },
+      // 180 是源本体宽度；避让把上下一排竖脚挪进中段时加宽到 243（见 symbol-layout.ts）
+      max: { x: 243, y: 400 },
       cornerRadius: 10,
       filled: false,
     });
     // 左右引脚伸到 x<0 是正常的（真实库同样如此），整体 bounds 允许越出本体
-    expect(station0.bounds).toEqual({ minX: -10, minY: -10, maxX: 190, maxY: 410 });
+    expect(station0.bounds).toEqual({ minX: -10, minY: -10, maxX: 253, maxY: 410 });
   });
 
   it("maps pin geometry to Capture hotpt/start and reads attributes via parentId", async () => {
@@ -178,8 +179,9 @@ describe("elibz2 connector", () => {
     // rotation=270 的引脚朝本体方向 +y（已用本体 RECT 下边缘交叉验证）
     const bottom = station0.pins.find((pin) => pin.number === "Y4")!;
     expect(bottom.name).toBe("REXT_A0");
-    expect(bottom.connection).toEqual({ x: 30, y: -10 });
-    expect(bottom.body).toEqual({ x: 30, y: 0 });
+    // 源坐标 x=30；避让把整排上下边引脚平移了 +30（Station0 的中段居中）
+    expect(bottom.connection).toEqual({ x: 60, y: -10 });
+    expect(bottom.body).toEqual({ x: 60, y: 0 });
     expect(bottom.length).toBe(10);
     // rotation=0 朝 +x
     const left = station0.pins.find((pin) => pin.number === "AE5")!;
@@ -188,12 +190,13 @@ describe("elibz2 connector", () => {
     expect(left.body).toEqual({ x: 0, y: 10 });
     // rotation=180 朝 -x
     const right = station0.pins.find((pin) => pin.name === "PEX_PETp8")!;
-    expect(right.connection).toEqual({ x: 190, y: 10 });
-    expect(right.body).toEqual({ x: 180, y: 10 });
+    // 右侧引脚跟随加宽后的右边缘（180 → 243）
+    expect(right.connection).toEqual({ x: 253, y: 10 });
+    expect(right.body).toEqual({ x: 243, y: 10 });
     // rotation=90 朝 -y
     const top = station0.pins.find((pin) => pin.name === "PEX_REFCLKp")!;
-    expect(top.connection).toEqual({ x: 40, y: 410 });
-    expect(top.body).toEqual({ x: 40, y: 400 });
+    expect(top.connection).toEqual({ x: 70, y: 410 });
+    expect(top.body).toEqual({ x: 70, y: 400 });
   });
 
   it("carries section graphics (body rect, divider line, labels)", async () => {
@@ -204,7 +207,8 @@ describe("elibz2 connector", () => {
       kind: "polyline",
       points: [
         { x: 0, y: 200 },
-        { x: 180, y: 200 },
+        // 右端贴住本体右边缘 → 跟着加宽一起外推（否则分隔线比本体短一截）
+        { x: 243, y: 200 },
       ],
       closed: false,
     });
@@ -213,6 +217,8 @@ describe("elibz2 connector", () => {
       station0.shapes
         .filter((shape) => shape.kind === "text")
         .map((shape) => (shape.kind === "text" ? `${shape.text}@${shape.at.x},${shape.at.y}` : "")),
-    ).toEqual(["PEX8748@52,183", "Station 0@62,234"]);
+      // 源坐标是 52/62；本体加宽 63 后居中的标题各右移 30（widen/2）重新居中
+      // （见 shared/symbol-layout.ts 的 recenterTitles）
+    ).toEqual(["PEX8748@82,183", "Station 0@92,234"]);
   });
 });

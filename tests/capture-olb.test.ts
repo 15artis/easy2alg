@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { Elibz2Connector } from "../src/main/connectors/elibz2-connector";
 import { buildCaptureLibraryXml } from "../src/main/conversion/capture-olb";
 import { applySymbolEdits, symbolShapeKey } from "../src/shared/symbol-edit";
+import { bodyBoxOf, estimateLabelWidth, pinIsVertical, pinSideOf } from "../src/shared/symbol-labels";
 import type { NormalizedSymbol } from "../src/shared/schemas";
 
 const fixturePath = fileURLToPath(new URL("./fixtures/pex8748.elibz2", import.meta.url));
@@ -106,17 +107,47 @@ describe("capture library XML", () => {
     expect(xml.match(/<PinNumber>/g)).toHaveLength(676);
   });
 
-  it("sets IsPinNamesRotated=1 when the section has top/bottom pins", async () => {
-    // 用户 2026-10-16 反馈：上下边引脚名被水平画出、糊成一片。Capture 的全局
-    // 旋转规则要求这种符号置 1（orcad-package-autogen 的 rotate_pin_names 同判据）。
+  it("rotates pin names per pin direction and never emits PinDisplayProp", async () => {
+    // 回归防护（用户 2026-10-16 截图）：Capture 默认把上下引脚名竖着画进本体，
+    // 与左右引脚的横排名字在四角重叠。**逐脚 PinDisplayProp 这条路已被证伪**：
+    // 把现网库里 Cadence 自己导出的 PinDisplayProp 原样喂给 XMATIC_XML2OLB，
+    // 导入后再导出，元素数为 0（静默丢弃）。所以只留全局的 IsPinNamesRotated，
+    // 重叠改由几何避让解决（shared/symbol-layout.ts）。
     const connector = new Elibz2Connector();
     const symbol = await connector.loadSymbol(fixturePath, deviceUuid);
     const xml = buildCaptureLibraryXml(symbol!, "C:/libs/target.OLB");
+    // 六段都有上下边引脚 → 六段都置 1
     expect(xml.match(/<IsPinNamesRotated>\s*<Defn val="1" \/>/g)).toHaveLength(6);
     expect(xml).not.toMatch(/<IsPinNamesRotated>\s*<Defn val="0" \/>/);
-    // 只有左右引脚的符号仍保持 0（Capture 的默认值）
-    const single = buildCaptureLibraryXml(singleSection(), "C:/libs/target.OLB");
-    expect(single).toMatch(/<IsPinNamesRotated>\s*<Defn val="0" \/>/);
+    expect(xml).not.toContain("<PinDisplayProp>");
+  });
+
+  it("writes the de-collided geometry, not the raw source positions", async () => {
+    const connector = new Elibz2Connector();
+    const symbol = await connector.loadSymbol(fixturePath, deviceUuid);
+    const xml = buildCaptureLibraryXml(symbol!, "C:/libs/target.OLB");
+    // 第一段源本体只有 380×310，避让后加宽到 506 —— SymbolBBox 必须是加宽后的值
+    expect(bodyBoxOf(symbol!.sections[0])).toEqual({
+      minX: 0,
+      minY: 0,
+      maxX: 506,
+      maxY: 310,
+    });
+    expect(xml).toContain('<Defn x1="0" x2="506" y1="0" y2="310" />');
+    // 每个上下边引脚的连接端 x 都落在左右两条名字竖带之间的中段里
+    for (const section of symbol!.sections) {
+      const body = bodyBoxOf(section);
+      const leftDepth = section.pins
+        .filter((pin) => pinSideOf(pin) === "left")
+        .reduce((depth, pin) => Math.max(depth, estimateLabelWidth(pin.name)), 0);
+      const rightDepth = section.pins
+        .filter((pin) => pinSideOf(pin) === "right")
+        .reduce((depth, pin) => Math.max(depth, estimateLabelWidth(pin.name)), 0);
+      for (const pin of section.pins.filter(pinIsVertical)) {
+        expect(pin.connection.x).toBeGreaterThanOrEqual(body.minX + leftDepth);
+        expect(pin.connection.x).toBeLessThanOrEqual(body.maxX - rightDepth);
+      }
+    }
   });
 
   it("writes SymbolBBox from the body rect, not the pin-inclusive bounds", async () => {
@@ -132,7 +163,7 @@ describe("capture library XML", () => {
       expect(box[3]).toBe("0");
     }
     const sectionA = symbol!.sections[0];
-    expect([boxes[0][1], boxes[0][2], boxes[0][3], boxes[0][4]]).toEqual(["0", "380", "0", "310"]);
+    expect([boxes[0][1], boxes[0][2], boxes[0][3], boxes[0][4]]).toEqual(["0", "506", "0", "310"]);
     expect(sectionA.name).toBe("PEX8748_CS_I2C_SPI");
   });
 
