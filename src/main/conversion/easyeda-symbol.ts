@@ -9,6 +9,7 @@ import type {
 } from "../../shared/schemas";
 import { NormalizedSymbolSchema } from "../../shared/schemas";
 import { avoidLabelOverlapInSection } from "../../shared/symbol-layout";
+import { DEFAULT_SYMBOL_TEXT_HEIGHT } from "../../shared/symbol-labels";
 import { refdesPrefixFrom, sanitizeSymbolName } from "./naming";
 
 /**
@@ -191,9 +192,11 @@ const parseShapes = (shape: readonly string[]): ParsedSymbolShapes => {
           at: { x: numberOr(fields[2], 0), y: numberOr(fields[3], 0) },
           rotation: numberOr(fields[4], 0),
           // 源字号形如 "11.5pt"；符号单位下 1pt ≈ 1.33 单位。
+          // 下限 = 符号文本的默认字号（用户 2026-10-16 要求 7，原先是 6）：
+          // 源数据给的字号过小时兜底用这个值，免得画出一行看不见的小字。
           height: Math.max(
             Number.parseFloat(fields[7] ?? "12") * 1.33 || 12,
-            6,
+            DEFAULT_SYMBOL_TEXT_HEIGHT,
           ),
         });
         break;

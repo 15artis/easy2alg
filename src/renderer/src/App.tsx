@@ -1916,6 +1916,11 @@ const ConverterPage = ({
               resetKey={`sch:${selected?.id ?? ""}:${sectionIndex}:${editedSymbol.sections.length}`}
               ariaLabel="原理图符号预览"
               onBackgroundClick={editMode ? clearSymbolSelection : undefined}
+              onBackgroundDrag={
+                editMode && selectedShapeKey !== null && selectedKeyId !== null
+                  ? (dx, dy) => moveSymbolElement(selectedKeyId, selectedShapeKey, dx, dy)
+                  : undefined
+              }
             >
               {({ scale }) => (
                 <SymbolPreview
@@ -1961,12 +1966,12 @@ const ConverterPage = ({
             </div>
           ) : null}
           {previewTab === "sch" && editedSymbol !== null ? (
-            <div className="canvas-legend">
+            <div className="canvas-legend symbol-legend">
               <span><i className="legend-silk" />本体 / 图形</span>
               <span><i className="legend-pad" />引脚</span>
               <span>
                 {editMode
-                  ? "编辑中：左键按住拖动元素 · 滚轮缩放 · 空白处拖动平移 · ←↑→↓ 微调(Shift/Alt 改步长) · 空格 旋转文本 · [ ] 字号 · Ctrl+Z 退回一步 · Ctrl+Shift+Z 前进 · Esc 取消"
+                  ? "编辑中：左键按住元素移动 · 已选中时按住空白处拖动继续移动它 · 滚轮缩放 · 中键拖动平移 · ←↑→↓ 微调(Shift/Alt 改步长) · 空格 旋转文本 · [ ] 字号 · Ctrl+Z 退回一步 · Ctrl+Shift+Z 前进 · Esc 取消"
                   : "点「编辑」后按住鼠标左键拖动文字、图形与引脚（滚轮缩放照常可用）"}
                 {hasSymbolEdits(selectedEdit.symbolEdits) ? (
                   <button

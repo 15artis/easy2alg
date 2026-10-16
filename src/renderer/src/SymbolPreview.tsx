@@ -15,6 +15,7 @@ import {
 } from "../../shared/symbol-edit";
 import {
   bodyBoxOf,
+  estimateLabelWidth,
   pinNameBox,
   pinNumberBox,
   pinSideOf,
@@ -306,11 +307,12 @@ export const SymbolPreview = ({
           onPointerMove: drag.move,
           onPointerUp: drag.end,
           onPointerCancel: drag.end,
-          // pointer-events: all —— 本体框是 fill="none"，SVG 默认只命中"画出来的部分"，
-          // 不加这个框内部点不中（实测 headless Chrome 里点上去落到了画布底板上）。
-          style: { cursor: "move", pointerEvents: "all" },
+          // 注意：这里**不设** pointerEvents:all —— 框这类 fill="none" 的元素只应该
+          // 在"描边"上可点可拖，内部空白不能抢走里面元素的点击（用户 2026-10-16 要求）。
+          // 细线不好点的问题由每个元素自己的透明粗线命中区解决（见下方 hitStroke）。
+          style: { cursor: "move" },
         }
-      : {};
+      : {  };
 
   const showPinText = scale >= PIN_TEXT_MIN_SCALE;
   const body = bodyBoxOf(section);
@@ -330,51 +332,98 @@ export const SymbolPreview = ({
         if (shape.kind === "rect") {
           const x = Math.min(shape.min.x, shape.max.x);
           const y = Math.min(shape.min.y, shape.max.y);
+          const width = Math.abs(shape.max.x - shape.min.x);
+          const height = Math.abs(shape.max.y - shape.min.y);
           return (
             <g key={key} transform={translate} {...dragProps(key)}>
               <rect
                 x={x}
                 y={y}
-                width={Math.abs(shape.max.x - shape.min.x)}
-                height={Math.abs(shape.max.y - shape.min.y)}
+                width={width}
+                height={height}
                 rx={shape.cornerRadius}
                 fill={shape.filled ? BODY_FILL : "none"}
                 stroke={stroke}
                 strokeWidth={active ? 3 : 2}
                 vectorEffect="non-scaling-stroke"
               />
+              {editing ? (
+                /* 命中区：只有这条透明粗描边能点/拖，框内部空白不算（否则一个本体框
+                 * 会把里面所有标签的点击都吃掉 —— 用户 2026-10-16 反馈）。 */
+                <rect
+                  x={x}
+                  y={y}
+                  width={width}
+                  height={height}
+                  rx={shape.cornerRadius}
+                  fill="none"
+                  stroke="transparent"
+                  strokeWidth={9}
+                  vectorEffect="non-scaling-stroke"
+                />
+              ) : null}
             </g>
           );
         }
         if (shape.kind === "polyline") {
           const points = shape.points.map((point) => `${point.x},${point.y}`).join(" ");
+          const closed = shape.closed
+            ? `${points} ${shape.points[0].x},${shape.points[0].y}`
+            : points;
           return (
             <g key={key} transform={translate} {...dragProps(key)}>
               <polyline
-                points={shape.closed ? `${points} ${shape.points[0].x},${shape.points[0].y}` : points}
+                points={closed}
                 fill="none"
                 stroke={stroke}
                 strokeWidth={active ? 3 : 2}
                 vectorEffect="non-scaling-stroke"
               />
+              {editing ? (
+                <polyline
+                  points={closed}
+                  fill="none"
+                  stroke="transparent"
+                  strokeWidth={9}
+                  vectorEffect="non-scaling-stroke"
+                />
+              ) : null}
             </g>
           );
         }
+        /* 文字（CommentText）：glyph 本身的命中区太窄，垫一个透明矩形把整块文字都变成
+         * 可点区域，这样"想再拖一次同一个标签"就不会抓到别的东西（用户 2026-10-16 反馈）。
+         * 宽度按模型估算再放 35% + 12 单位余量 —— 预览用的是源字号，实际渲染比
+         * 模型（按 Capture 字号标定）略宽，不放够会出现"点文字右边一点点就落空"。 */
+        const hitWidth = estimateLabelWidth(shape.text) * (shape.height / PIN_FONT) * 1.35 + 12;
+        const hitHeight = shape.height * 1.4 + 6;
         return (
           <g key={key} transform={translate} {...dragProps(key)}>
-            <text
-              x={shape.at.x}
-              y={shape.at.y}
-              fontSize={shape.height}
-              fill={active ? ACTIVE : TEXT}
+            <g
               transform={
                 shape.rotation === 0
                   ? undefined
                   : `rotate(${-shape.rotation} ${shape.at.x} ${shape.at.y})`
               }
             >
-              {shape.text}
-            </text>
+              {editing ? (
+                <rect
+                  x={shape.at.x - 4}
+                  y={shape.at.y - shape.height}
+                  width={hitWidth}
+                  height={hitHeight}
+                  fill="transparent"
+                />
+              ) : null}
+              <text
+                x={shape.at.x}
+                y={shape.at.y}
+                fontSize={shape.height}
+                fill={active ? ACTIVE : TEXT}
+              >
+                {shape.text}
+              </text>
+            </g>
           </g>
         );
       })}

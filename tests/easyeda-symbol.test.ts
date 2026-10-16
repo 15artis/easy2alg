@@ -11,6 +11,7 @@ import {
   pinSideOf,
 } from "../src/shared/symbol-labels";
 import { buildCaptureLibraryXml } from "../src/main/conversion/capture-olb";
+import { DEFAULT_SYMBOL_TEXT_HEIGHT } from "../src/shared/symbol-labels";
 import type { NormalizedSymbol } from "../src/shared/schemas";
 
 /**
@@ -139,5 +140,37 @@ describe("easyeda standard symbol", () => {
       { lcscId: "C9999", fallbackName: "X", pcbFootprint: "" },
     );
     expect(symbol?.name).toBe("OPA2134_PA_BB_DIP");
+  });
+
+  /**
+   * 文本字号：源字段是 pt（形如 "11.5pt"），×1.33 换成符号单位；给不出可用值时
+   * 兜底到 DEFAULT_SYMBOL_TEXT_HEIGHT（用户 2026-10-16 要求 7，原先写死 6）。
+   */
+  describe("文本字号", () => {
+    const withText = (sizeField: string): number | undefined => {
+      const symbol = parseEasyEdaSymbol(
+        {
+          head: { c_para: { name: "TXT", pre: "U?" } },
+          shape: [`T~L~10~20~0~#000000~Arial~${sizeField}~~1~1~1~HELLO~~0~`],
+        },
+        { lcscId: "C1", fallbackName: "TXT", pcbFootprint: "" },
+      );
+      const text = symbol?.sections[0]?.shapes.find((shape) => shape.kind === "text");
+      return text?.kind === "text" ? text.height : undefined;
+    };
+
+    it("正常字号按 ×1.33 换算", () => {
+      expect(withText("11.5pt")).toBeCloseTo(15.295, 3);
+    });
+
+    it("字号过小时兜底到默认值 7（不再是 6）", () => {
+      expect(withText("1pt")).toBe(DEFAULT_SYMBOL_TEXT_HEIGHT);
+      expect(withText("4.5pt")).toBe(DEFAULT_SYMBOL_TEXT_HEIGHT);
+      expect(DEFAULT_SYMBOL_TEXT_HEIGHT).toBe(7);
+    });
+
+    it("缺字段时仍用 12 这个样例一致的缺省值", () => {
+      expect(withText("")).toBe(12);
+    });
   });
 });

@@ -30,6 +30,7 @@ import {
   translateSymbolPoint,
 } from "../../shared/symbol-edit";
 import { avoidLabelOverlapInSection } from "../../shared/symbol-layout";
+import { DEFAULT_SYMBOL_TEXT_HEIGHT } from "../../shared/symbol-labels";
 import { writeLog } from "../logging";
 
 /**
@@ -516,8 +517,9 @@ const parseSymbolDoc = (
           text,
           at: symbolPoint(asNumber(data.x), asNumber(data.y), canvas),
           rotation: asNumber(data.rotation, 0),
-          // 源 fontSize 为符号单位；缺省 12 与样例中的小标注一致。
-          height: Math.max(asNumber(data.fontSize, 12), 1),
+          // 源 fontSize 为符号单位；缺省 12 与样例中的小标注一致；
+          // 太小的值兜底到符号默认字号（见 shared/symbol-labels.ts）。
+          height: Math.max(asNumber(data.fontSize, 12), DEFAULT_SYMBOL_TEXT_HEIGHT),
         });
         break;
       }

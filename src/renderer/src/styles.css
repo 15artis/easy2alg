@@ -2298,6 +2298,26 @@ select:focus,
   font-size: 10px;
 }
 
+/**
+ * 原理图图例：带一条很长的操作提示 + 「重置调整」按钮。
+ * 不能吃上面那条 62% 的宽度上限 —— 窗口没最大化时提示会提前折行、
+ * 「重置调 整」被压成两行，而右边明明还有空位（用户 2026-10-16 反馈）。
+ */
+.canvas-legend.symbol-legend {
+  max-width: calc(100% - 24px);
+}
+
+.canvas-legend.symbol-legend span:last-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.canvas-legend.symbol-legend .legend-reset {
+  margin-left: auto;
+  flex: none;
+  white-space: nowrap;
+}
+
 .panzoom-controls .panzoom-fit + .panzoom-fit {
   border-left: 1px solid #e4e9f0;
   margin-left: 2px;

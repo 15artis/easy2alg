@@ -23,6 +23,15 @@ export const SYMBOL_LABEL_HALF = 4;
 /** 两组标签之间要求的最小间隙。 */
 export const SYMBOL_LABEL_CLEARANCE = 4;
 
+/**
+ * 符号文本的**默认/最小字号**（符号单位，1 单位 = 10 mil）。
+ *
+ * 源数据给不出可用字号（缺失、太小）时兜底用这个值 —— 两条链路
+ * （立创在线 easyeda-symbol / 本地库 elibz2）共用，避免各写一个魔数。
+ * 用户 2026-10-16 要求：7（原先在线链路写死 6）。
+ */
+export const DEFAULT_SYMBOL_TEXT_HEIGHT = 7;
+
 const NARROW_CHARACTERS = "ilI1|!.,:;'` ";
 const NARROW_WIDTH = 2;
 /** 实测：`PEX_NT_PERST#`(13 字符) 占 64 单位 → 4.9/字符。取 5 留余量。 */

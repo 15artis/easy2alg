@@ -31,12 +31,17 @@ const DRAGGABLE_SELECTOR = "[data-draggable]";
  * 内容整体挂在 `<g transform="translate(tx ty) scale(s)">` 上，缩放平移只改
  * 这一个 transform，内容不用重算。
  *
- * 交互：滚轮以光标为中心缩放；**空白处按住鼠标左键拖动即平移**；右下角有 −/＋/适应 按钮。
+ * 交互：滚轮以光标为中心缩放；**按住鼠标拖动**移动内容或选中元素；右下角有 −/＋/适应 按钮。
  * 标了 `data-draggable` 的子元素会自行处理 pointerdown（并 stopPropagation），
- * 不会被平移抢走 —— 按在元素上是"移动元素"，按在空白处才是"移动画布"，二者不会同时触发。
+ * 不会被这里的逻辑抢走 —— 按在元素上是"移动元素"，按在空白处才走画布/选中元素分支。
  *
- * 缩放与平移在**编辑模式下同样可用**（用户 2026-10-16 要求"编辑时允许符号缩放"）：
- * 鼠标手势只区分"按在什么上面"，不区分模式。
+ * 三种模式（按"光标底下是什么"分流，不按全局状态分流）：
+ *  - 按在元素上：元素自己消化（移动它）；
+ *  - 空白处 + 传了 `onBackgroundDrag`（编辑模式且已有选中元素）：拖动 = 继续移动那个
+ *    已选中的元素（用户 2026-10-16 要求"按住移动激活的对象，而不是重新抓起新对象"）；
+ *  - 其余：拖动 = 平移画布（中键恒为平移，任何模式下都能用）。
+ *
+ * 缩放与平移在编辑模式下同样可用（用户要求"编辑时允许符号缩放"）。
  */
 export const PanZoom = ({
   bounds,
@@ -44,6 +49,7 @@ export const PanZoom = ({
   children,
   ariaLabel,
   onBackgroundClick,
+  onBackgroundDrag,
 }: {
   readonly bounds: PanZoomBounds;
   /** 变化时自动适应窗口（切换器件 / 切换分页） */
@@ -52,6 +58,13 @@ export const PanZoom = ({
   readonly ariaLabel: string;
   /** 在空白处按下并原地松开（没有拖动）时触发，用于取消选中。 */
   readonly onBackgroundClick?: () => void;
+  /**
+   * 空白处按住左键拖动时改走这里（世界单位位移）—— 编辑模式下"已经选中了某个
+   * 标签/图形，再按住拖动就继续移动它"，而不是重新抓一个对象或平移画布
+   * （用户 2026-10-16 要求）。传了它，左键空白拖动就不再是平移；
+   * 平移仍可用中键拖动 / 先 Esc 取消选中。
+   */
+  readonly onBackgroundDrag?: (dx: number, dy: number) => void;
 }): ReactElement => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState({ width: 900, height: 600 });
@@ -62,6 +75,13 @@ export const PanZoom = ({
     readonly startY: number;
     readonly tx: number;
     readonly ty: number;
+    /** 这次按下是"移动选中元素"还是"平移画布"（中键恒为平移） */
+    readonly mode: "move" | "pan";
+    /** 已转发出去的世界位移，用来算增量 */
+    sentX: number;
+    sentY: number;
+    /** 是否已经越过点击死区 */
+    moved: boolean;
   } | null>(null);
 
   useEffect(() => {
@@ -151,7 +171,7 @@ export const PanZoom = ({
   const CLICK_SLOP = 3;
 
   const onPointerDown = (event: ReactPointerEvent<SVGSVGElement>): void => {
-    // 左键(0)与中键(1)都能拖动画布；编辑模式下同样可用（编辑与缩放/平移不互斥）
+    // 左键(0)与中键(1)都能拖动；中键永远是平移画布
     if (event.button !== 0 && event.button !== 1) {
       return;
     }
@@ -165,6 +185,10 @@ export const PanZoom = ({
       startY: event.clientY,
       tx: view.tx,
       ty: view.ty,
+      mode: event.button === 0 && onBackgroundDrag !== undefined ? "move" : "pan",
+      sentX: 0,
+      sentY: 0,
+      moved: false,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
   };
@@ -172,6 +196,26 @@ export const PanZoom = ({
   const onPointerMove = (event: ReactPointerEvent<SVGSVGElement>): void => {
     const pan = panRef.current;
     if (pan === null || pan.pointerId !== event.pointerId) {
+      return;
+    }
+    if (pan.mode === "move") {
+      const dxPx = event.clientX - pan.startX;
+      const dyPx = event.clientY - pan.startY;
+      // 死区：点击（按下即抬起）不该把元素挪走几十分之一单位
+      if (!pan.moved && Math.abs(dxPx) + Math.abs(dyPx) <= CLICK_SLOP) {
+        return;
+      }
+      pan.moved = true;
+      const worldX = dxPx / view.scale;
+      const worldY = dyPx / view.scale;
+      const stepX = worldX - pan.sentX;
+      const stepY = worldY - pan.sentY;
+      if (stepX === 0 && stepY === 0) {
+        return;
+      }
+      pan.sentX = worldX;
+      pan.sentY = worldY;
+      onBackgroundDrag?.(stepX, stepY);
       return;
     }
     setView((current) => ({
@@ -205,6 +249,7 @@ export const PanZoom = ({
         width={size.width}
         height={size.height}
         aria-label={ariaLabel}
+        style={onBackgroundDrag === undefined ? undefined : { cursor: "move" }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={endPan}
