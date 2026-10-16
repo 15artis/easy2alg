@@ -27,6 +27,8 @@ import {
   type AppSettings,
   type GenerationProgress,
   type HistoryEntry,
+  UiSettingsSchema,
+  defaultUiSettings,
 } from "../shared/schemas";
 
 const HistorySchema = z.array(HistoryEntrySchema);
@@ -57,6 +59,7 @@ const defaultSettings = (): AppSettings => ({
   setupCompleted: false,
   allegroExecutablePath: null,
   olbLibraryPath: null,
+  ui: defaultUiSettings(),
 });
 
 const createWindow = (): BrowserWindow => {
@@ -154,6 +157,18 @@ const registerHandlers = (): void => {
   ipcMain.handle(IpcChannels.fetchComponent, (_event, lcscId: unknown) =>
     easyEda.fetchFootprint(z.string().parse(lcscId)),
   );
+  ipcMain.handle(IpcChannels.fetchSymbol, (_event, lcscId: unknown) =>
+    easyEda.fetchSymbol(z.string().parse(lcscId)),
+  );
+  // 界面偏好单独一条通道：拖动侧栏时不能顺手重跑 Allegro 探测（那个要扫注册表）。
+  // 用 store.patch 做「读—改—写」：取色器拖动会连着打好几次，并发写会互相覆盖。
+  ipcMain.handle(IpcChannels.saveUiSettings, (_event, patch: unknown) => {
+    const parsedPatch = UiSettingsSchema.unwrap().partial().parse(patch ?? {});
+    return settingsStore.patch((current) => ({
+      ...current,
+      ui: { ...current.ui, ...parsedPatch },
+    }));
+  });
   ipcMain.handle(IpcChannels.chooseLocalLibraryFile, async () => {
     const result = await dialog.showOpenDialog({
       title: "选择立创EDA专业版库文件",

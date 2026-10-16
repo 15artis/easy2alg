@@ -1062,8 +1062,18 @@ select:focus,
 
 .workbench {
   display: grid;
-  grid-template-columns: 294px minmax(520px, 1fr) 322px;
+  /* grid-template-columns 由 App 按 settings.ui 的侧栏宽度写成行内样式（可拖动） */
   min-height: 0;
+}
+
+/* 拖动侧栏时关掉过渡抖动，"跟手"优先 */
+.workbench.is-resizing {
+  user-select: none;
+  cursor: col-resize;
+}
+
+.workbench.is-resizing .rail-resizer {
+  background: rgb(36 88 211 / 18%);
 }
 
 .left-rail,
@@ -1081,11 +1091,39 @@ select:focus,
 }
 
 .left-rail {
+  position: relative;
   border-right: 1px solid #dfe5ed;
 }
 
 .right-rail {
+  position: relative;
   border-left: 1px solid #dfe5ed;
+}
+
+/**
+ * 侧栏宽度拖动条：压在侧栏内侧边缘上（宽 7px，比 1px 边框好点得多），
+ * 平时透明，悬停才显色，不打扰视觉。
+ */
+.rail-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 6;
+  width: 7px;
+  cursor: col-resize;
+  transition: background 120ms ease;
+}
+
+.rail-resizer:hover {
+  background: rgb(36 88 211 / 18%);
+}
+
+.rail-resizer-left {
+  right: -4px;
+}
+
+.rail-resizer-right {
+  left: -4px;
 }
 
 .rail-header,
@@ -1146,9 +1184,29 @@ select:focus,
 
 .input-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr auto;
   gap: 8px;
   margin-top: 10px;
+}
+
+/* 「导入本地库」占满整行（除末尾的图标按钮列） */
+.input-actions .wide-action {
+  grid-column: 1 / 3;
+}
+
+.input-actions .icon-action {
+  grid-column: 3;
+  min-width: 40px;
+  padding: 0 10px;
+}
+
+.local-library-hint {
+  margin: 8px 0 0;
+  overflow: hidden;
+  color: #8791a2;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .workbench .primary-button {
@@ -1334,10 +1392,15 @@ select:focus,
   height: 100%;
 }
 
+/*
+ * 图例固定在**左下角**、缩放控件固定在**右上角** —— 两块浮层永远不重叠。
+ * 画布很矮时它们也只会各占一角（用户 2026-10-16 截图里两者叠在一起了）。
+ */
 .canvas-legend {
   position: absolute;
-  right: 12px;
+  left: 12px;
   bottom: 10px;
+  max-width: calc(100% - 24px);
   z-index: 3;
   display: flex;
   gap: 10px;
@@ -1366,7 +1429,8 @@ select:focus,
 
 .stage-footer {
   display: flex;
-  flex: 0 0 92px;
+  /* 用户要求：高度只留够放下按钮（按钮本体 42px + 上下各 7px 呼吸） */
+  flex: 0 0 56px;
   align-items: center;
   justify-content: space-between;
   gap: 20px;
@@ -1387,7 +1451,7 @@ select:focus,
   align-items: center;
   gap: 6px;
   max-width: 350px;
-  margin-top: 7px;
+  margin-top: 3px;
   overflow: hidden;
   color: #5f6b7d;
   font-size: 10px;
@@ -1431,10 +1495,41 @@ select:focus,
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin: 0 -15px 10px;
-  padding: 14px 15px 5px;
+  margin: 0;
+  padding: 0;
   color: #172033;
   font-size: 10px;
+}
+
+/* 折叠标题整行可点（右侧有展开/收起箭头） */
+.section-toggle {
+  display: block;
+  width: calc(100% + 30px);
+  margin: 0 -15px 10px;
+  padding: 14px 15px 5px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.section-toggle:hover {
+  background: #f6f8fb;
+}
+
+.section-chevron {
+  color: #8791a2;
+  transform: rotate(90deg);
+  transition: transform 150ms ease;
+}
+
+.inspector-section.is-collapsed .section-chevron {
+  transform: rotate(0deg);
+}
+
+.inspector-section.is-collapsed .section-toggle {
+  margin-bottom: 0;
+  padding-bottom: 12px;
 }
 
 .right-rail .facts {
@@ -1460,32 +1555,41 @@ select:focus,
   gap: 9px;
 }
 
-.layer-list label {
+.layer-row {
   display: grid;
-  grid-template-columns: 16px 12px 1fr 25px;
+  grid-template-columns: 16px 18px 1fr 25px;
   align-items: center;
+  gap: 2px;
   color: #5f6b7d;
   font-size: 9px;
 }
 
-.layer-list input {
+.layer-row input[type="checkbox"] {
   margin: 0;
   accent-color: #2458d3;
 }
 
-.layer-list i {
-  width: 10px;
-  height: 4px;
+/* 颜色块本身就是取色器：点一下就能改图层配色（颜色持久化在设置里） */
+.layer-swatch {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid #cbd4e0;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.layer-swatch::-webkit-color-swatch-wrapper {
+  padding: 1px;
+}
+
+.layer-swatch::-webkit-color-swatch {
+  border: 0;
   border-radius: 2px;
 }
 
-.layer-list i.copper { background: #d4a73f; }
-.layer-list i.silk { background: #fff; border: 1px solid #8791a2; }
-.layer-list i.mask { border: 1px dashed #2458d3; }
-.layer-list i.paste { background: #aeb8c5; }
-.layer-list i.bound { background: #778397; }
-
-.layer-list span {
+.layer-row .layer-count {
   color: #8791a2;
   text-align: right;
 }
@@ -1796,11 +1900,10 @@ select:focus,
   border-color: #1d49b7;
 }
 
-@media (max-width: 1180px) {
-  .workbench {
-    grid-template-columns: 260px minmax(460px, 1fr) 292px;
-  }
-}
+/*
+ * 侧栏宽度由用户拖动决定（行内样式写在 .workbench 上），所以这里不再用媒体查询
+ * 覆盖列宽 —— 行内样式优先级更高，留着只会让人以为还有响应式。
+ */
 
 .local-import-error {
   margin: 6px 2px 0;
@@ -1898,7 +2001,8 @@ select:focus,
 .panzoom-controls {
   position: absolute;
   right: 10px;
-  bottom: 10px;
+  top: 10px;
+  z-index: 5;
   display: flex;
   align-items: center;
   gap: 2px;
@@ -2045,13 +2149,18 @@ select:focus,
   border-radius: 2px;
 }
 
-.layer-list label .layer-name {
+/* 注意：行容器从 <label> 换成了 .layer-row（要给取色器留位置），选择器别写回 label */
+.layer-list .layer-name {
+  min-width: 0;
   color: #36434e;
   font-size: 11px;
   font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.layer-list label .layer-name em {
+.layer-list .layer-name em {
   display: block;
   color: #a3adb8;
   font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;

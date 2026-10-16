@@ -3,20 +3,71 @@ import { z } from "zod";
 export const AllegroVersionSchema = z.enum(["23.1", "22.1", "17.4", "17.2", "16.6"]);
 export type AllegroVersion = z.infer<typeof AllegroVersionSchema>;
 
-export const AppSettingsSchema = z.object({
-  allegroVersion: AllegroVersionSchema,
-  libraryDirectory: z.string().min(1),
-  setupCompleted: z.boolean(),
-  allegroExecutablePath: z.string().min(1).nullable().optional(),
-  // 原理图符号库（OrCAD Capture .olb）目标路径。null = 未指定，转换时在
-  // libraryDirectory/schlib 下按源库名自动新建（见 capture-writer.autoLibraryPath）。
-  olbLibraryPath: z.string().min(1).nullable().optional(),
-}).transform((settings) => ({
-  ...settings,
-  allegroExecutablePath: settings.allegroExecutablePath ?? null,
-  olbLibraryPath: settings.olbLibraryPath ?? null,
-}));
+/**
+ * 界面偏好 —— 与转换逻辑无关，改了只重写 settings.json、不重跑 Allegro 探测。
+ * 见 ipc.saveUiSettings。
+ */
+export const LEFT_RAIL_DEFAULT_WIDTH = 294;
+export const RIGHT_RAIL_DEFAULT_WIDTH = 322;
+export const LEFT_RAIL_RANGE = { min: 220, max: 560 } as const;
+export const RIGHT_RAIL_RANGE = { min: 260, max: 640 } as const;
+
+export const UiSettingsSchema = z
+  .object({
+    leftRailWidth: z.number().finite().min(LEFT_RAIL_RANGE.min).max(LEFT_RAIL_RANGE.max).optional(),
+    rightRailWidth: z.number().finite().min(RIGHT_RAIL_RANGE.min).max(RIGHT_RAIL_RANGE.max).optional(),
+    /** 已折叠的右侧分组标题（section id） */
+    collapsedSections: z.array(z.string()).optional(),
+    /** 图层 id → 用户自选颜色（#rrggbb） */
+    layerColors: z.record(z.string(), z.string()).optional(),
+    /** 上次「导入本地库」选中的 .elibz2 路径，下次直接复用不用重选 */
+    localLibraryPath: z.string().min(1).nullable().optional(),
+  })
+  .optional();
+
+/** 界面偏好的一套全新默认值（每次调用都返回新对象，避免共享可变引用）。 */
+export const defaultUiSettings = (): UiSettings & {
+  leftRailWidth: number;
+  rightRailWidth: number;
+  collapsedSections: string[];
+  layerColors: Record<string, string>;
+  localLibraryPath: string | null;
+} => ({
+  leftRailWidth: LEFT_RAIL_DEFAULT_WIDTH,
+  rightRailWidth: RIGHT_RAIL_DEFAULT_WIDTH,
+  collapsedSections: [],
+  layerColors: {},
+  localLibraryPath: null,
+});
+
+export const AppSettingsSchema = z
+  .object({
+    allegroVersion: AllegroVersionSchema,
+    libraryDirectory: z.string().min(1),
+    setupCompleted: z.boolean(),
+    allegroExecutablePath: z.string().min(1).nullable().optional(),
+    // 原理图符号库（OrCAD Capture .olb）目标路径。null = 未指定，转换时在
+    // libraryDirectory/schlib 下按源库名自动新建（见 capture-writer.autoLibraryPath）。
+    olbLibraryPath: z.string().min(1).nullable().optional(),
+    ui: UiSettingsSchema,
+  })
+  .transform((settings) => ({
+    ...settings,
+    allegroExecutablePath: settings.allegroExecutablePath ?? null,
+    olbLibraryPath: settings.olbLibraryPath ?? null,
+    ui: {
+      leftRailWidth: settings.ui?.leftRailWidth ?? LEFT_RAIL_DEFAULT_WIDTH,
+      rightRailWidth: settings.ui?.rightRailWidth ?? RIGHT_RAIL_DEFAULT_WIDTH,
+      collapsedSections: settings.ui?.collapsedSections ?? [],
+      layerColors: settings.ui?.layerColors ?? {},
+      localLibraryPath: settings.ui?.localLibraryPath ?? null,
+    },
+  }));
 export type AppSettings = z.infer<typeof AppSettingsSchema>;
+export type UiSettings = AppSettings["ui"];
+/** 只改其中几项（拖动侧栏 / 折叠分组 / 改某个图层颜色）时用 */
+export type UiSettingsPatch = Partial<UiSettings>;
+
 
 export const PointSchema = z.object({
   x: z.number().finite(),

@@ -11,7 +11,11 @@ import { createAllegroSourceBundle } from "../src/main/conversion/allegro-skill"
 import { derivePadstackName, deriveTargetPackageName } from "../src/main/conversion/naming";
 import { createConversionPlan } from "../src/main/conversion/validate";
 import { getDemoFootprint } from "../src/shared/demo-fixtures";
-import { AppSettingsSchema, type GenerationProgress } from "../src/shared/schemas";
+import {
+  AppSettingsSchema,
+  defaultUiSettings,
+  type GenerationProgress,
+} from "../src/shared/schemas";
 import { lastWindowCloseAction } from "../src/main/lifecycle";
 
 const requiredFixture = (lcscId: string) => {
@@ -192,6 +196,7 @@ describe("Allegro source generation", () => {
           setupCompleted: true,
           allegroExecutablePath: null,
           olbLibraryPath: null,
+          ui: defaultUiSettings(),
         },
         null,
         (item) => progress.push(item),

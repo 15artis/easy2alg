@@ -2,8 +2,9 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { ExternalServiceError } from "../../shared/errors";
-import type { NormalizedFootprint } from "../../shared/schemas";
+import type { NormalizedFootprint, NormalizedSymbol } from "../../shared/schemas";
 import { NormalizedFootprintSchema } from "../../shared/schemas";
+import { parseEasyEdaSymbol } from "../conversion/easyeda-symbol";
 import { normalizeEasyEdaResponse, RawEasyEdaResponseSchema } from "../conversion/normalize";
 import { writeLog } from "../logging";
 
@@ -34,6 +35,76 @@ export class EasyEdaConnector {
       return cached;
     }
 
+    const raw = await this.#loadRaw(lcscId);
+    try {
+      const footprint = normalizeEasyEdaResponse(raw, lcscId);
+      await this.#writeCache(lcscId, footprint);
+      return footprint;
+    } catch (error) {
+      const cause = error instanceof Error ? error : new Error(String(error));
+      throw new ExternalServiceError(
+        `EasyEDA data validation failed for ${lcscId}: ${cause.message}`,
+        {
+          operation: "validate_component",
+          requestUrl: API_TEMPLATE.replace("{lcsc_id}", lcscId),
+          statusCode: null,
+          responseBody: "",
+          parameters: { lcscId },
+        },
+        cause,
+      );
+    }
+  }
+
+  /**
+   * 原理图符号：与封装同一次接口响应的 `result.dataStr`。
+   *
+   * 立创编号链路过去只用 `packageDetail`（封装），把符号整段丢掉了 —— 用户
+   * 2026-10-16 反馈"搜索的器件没出现原理图符号，实际是有符号的"。
+   * 这里复用同一份原始响应缓存，不额外发请求。
+   */
+  async fetchSymbol(lcscIdInput: string): Promise<NormalizedSymbol | null> {
+    const lcscId = LcscIdSchema.parse(lcscIdInput);
+    const raw = await this.#loadRaw(lcscId);
+    const parsed = RawEasyEdaResponseSchema.safeParse(raw);
+    if (!parsed.success) {
+      return null;
+    }
+    const result = parsed.data.result;
+    const cPara = result.dataStr?.head.c_para ?? {};
+    // OLB 里的 PCB Footprint 字段必须与实际生成的 .dra 同名 → 复用封装通道的推导结果；
+    // 封装读不出来时退化成源封装名（不阻塞符号生成）。
+    let pcbFootprint = cPara.package ?? result.packageDetail.title;
+    try {
+      pcbFootprint = (await this.fetchFootprint(lcscId)).info.targetPackageName;
+    } catch (error) {
+      await writeLog("warn", "easyeda_symbol_footprint_link_failed", {
+        lcscId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    const symbol = parseEasyEdaSymbol(result.dataStr, {
+      lcscId,
+      fallbackName: result.title ?? lcscId,
+      pcbFootprint,
+    });
+    if (symbol === null) {
+      await writeLog("info", "easyeda_symbol_absent", { lcscId });
+    }
+    return symbol;
+  }
+
+  /** 原始响应（含封装与符号两段），落盘缓存避免同一器件请求两次。 */
+  async #loadRaw(lcscId: string): Promise<unknown> {
+    const cachePath = join(this.#cacheDirectory, `${lcscId}.raw.json`);
+    try {
+      return JSON.parse(await readFile(cachePath, "utf8")) as unknown;
+    } catch (error) {
+      if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") {
+        throw error;
+      }
+    }
+
     const requestUrl = API_TEMPLATE.replace("{lcsc_id}", lcscId);
     let lastError: ExternalServiceError | null = null;
     for (const [attemptIndex, waitMilliseconds] of RETRY_DELAYS_MS.entries()) {
@@ -46,9 +117,12 @@ export class EasyEdaConnector {
         await delay(waitMilliseconds);
       }
       try {
-        const footprint = await this.#requestFootprint(requestUrl, lcscId);
-        await this.#writeCache(lcscId, footprint);
-        return footprint;
+        const raw = await this.#requestRaw(requestUrl, lcscId);
+        await mkdir(this.#cacheDirectory, { recursive: true });
+        const temporaryPath = `${cachePath}.tmp`;
+        await writeFile(temporaryPath, `${JSON.stringify(raw)}\n`, "utf8");
+        await rename(temporaryPath, cachePath);
+        return raw;
       } catch (error) {
         if (!(error instanceof ExternalServiceError)) {
           throw error;
@@ -63,7 +137,7 @@ export class EasyEdaConnector {
     throw lastError;
   }
 
-  async #requestFootprint(requestUrl: string, lcscId: string): Promise<NormalizedFootprint> {
+  async #requestRaw(requestUrl: string, lcscId: string): Promise<unknown> {
     let response: Response;
     try {
       response = await fetch(requestUrl, {
@@ -106,33 +180,14 @@ export class EasyEdaConnector {
       );
     }
 
-    let parsed: unknown;
     try {
-      parsed = JSON.parse(body);
+      return JSON.parse(body) as unknown;
     } catch (error) {
       const cause = error instanceof Error ? error : new Error(String(error));
       throw new ExternalServiceError(
         `EasyEDA returned invalid JSON for ${lcscId}`,
         {
           operation: "fetch_component",
-          requestUrl,
-          statusCode: response.status,
-          responseBody: responseSnippet(body),
-          parameters: { lcscId },
-        },
-        cause,
-      );
-    }
-
-    try {
-      const raw = RawEasyEdaResponseSchema.parse(parsed);
-      return normalizeEasyEdaResponse(raw, lcscId);
-    } catch (error) {
-      const cause = error instanceof Error ? error : new Error(String(error));
-      throw new ExternalServiceError(
-        `EasyEDA data validation failed for ${lcscId}: ${cause.message}`,
-        {
-          operation: "validate_component",
           requestUrl,
           statusCode: response.status,
           responseBody: responseSnippet(body),

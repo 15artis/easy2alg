@@ -8,6 +8,7 @@ import {
   FileCode2,
   Folder,
   FolderOpen,
+  FolderSearch,
   History,
   Layers3,
   LibraryBig,
@@ -31,7 +32,9 @@ import {
   useRef,
   useState,
   type Dispatch,
+  type PointerEvent as ReactPointerEvent,
   type ReactElement,
+  type ReactNode,
   type SetStateAction,
 } from "react";
 import type { Easy2AlgApi } from "../../shared/ipc";
@@ -68,6 +71,12 @@ import {
   normalizeVisibleLayers,
   type FootprintLayerId,
 } from "../../shared/preview-layers";
+import {
+  defaultUiSettings,
+  LEFT_RAIL_RANGE,
+  RIGHT_RAIL_RANGE,
+  type UiSettingsPatch,
+} from "../../shared/schemas";
 import { sectionPreviewBounds } from "../../shared/symbol-labels";
 
 type Page = "convert" | "history" | "settings";
@@ -82,10 +91,12 @@ const createUnavailableApi = (): Easy2AlgApi => {
     getAppInfo: unavailable,
     getSettings: unavailable,
     saveSettings: unavailable,
+    saveUiSettings: unavailable,
     chooseLibraryDirectory: unavailable,
     chooseAllegroExecutable: unavailable,
     detectAllegro: unavailable,
     fetchComponent: unavailable,
+    fetchSymbol: unavailable,
     chooseLocalLibraryFile: unavailable,
     readLocalLibrary: unavailable,
     fetchLocalComponent: unavailable,
@@ -113,6 +124,7 @@ const emptySettings: AppSettings = {
   setupCompleted: false,
   allegroExecutablePath: null,
   olbLibraryPath: null,
+  ui: defaultUiSettings(),
 };
 
 const AllegroVersionOptions: readonly {
@@ -192,24 +204,46 @@ const formatDate = (iso: string): string =>
  * 阻焊/钢网不是源数据里的独立几何：阻焊 = 焊盘按 maskExpansionMm 外扩，
  * 钢网 = 表贴焊盘等大，与生成 .dra 时的推导规则一致。
  */
+/** 把 #rrggbb 按比例往白色（amount>0）或黑色（amount<0）混。 */
+const mixColor = (color: string, amount: number): string => {
+  const match = /^#([0-9a-f]{6})$/i.exec(color.trim());
+  if (match === null) {
+    return color;
+  }
+  const value = Number.parseInt(match[1], 16);
+  const target = amount >= 0 ? 255 : 0;
+  const ratio = Math.abs(amount);
+  const channel = (shift: number): string => {
+    const base = (value >> shift) & 0xff;
+    return Math.round(base + (target - base) * ratio)
+      .toString(16)
+      .padStart(2, "0");
+  };
+  return `#${channel(16)}${channel(8)}${channel(0)}`;
+};
+
 const FootprintPreview = ({
   footprint,
   visible,
   maskExpansionMm,
+  layerColors,
 }: {
   readonly footprint: NormalizedFootprint;
   readonly visible: ReadonlySet<FootprintLayerId>;
   readonly maskExpansionMm: number;
+  /** 用户在「图层显示」里改过的颜色：图层 id → #rrggbb */
+  readonly layerColors: Readonly<Record<string, string>>;
 }): ReactElement => {
   const width = Math.max(footprint.bounds.maxX - footprint.bounds.minX, 1);
   const height = Math.max(footprint.bounds.maxY - footprint.bounds.minY, 1);
   const margin = Math.max(width, height) * 0.15;
+  const declared = footprintLayers(footprint);
   const shapesOn = (layer: string): readonly (NormalizedLine | NormalizedCircle)[] => [
     ...footprint.lines.filter((line) => line.layer === layer),
     ...footprint.circles.filter((circle) => circle.layer === layer),
   ];
   const strokeOf = (layer: FootprintLayerId): string =>
-    footprintLayers(footprint).find((item) => item.id === layer)?.color ?? "#8f9ba8";
+    layerColors[layer] ?? declared.find((item) => item.id === layer)?.color ?? "#8f9ba8";
 
   const padOutline = (
     pad: NormalizedFootprint["pads"][number],
@@ -273,8 +307,9 @@ const FootprintPreview = ({
                   width={pad.width}
                   height={pad.height}
                   rx={pad.shape === "roundedRectangle" ? Math.min(pad.width, pad.height) * 0.2 : pad.shape === "oval" || pad.shape === "circle" ? Math.min(pad.width, pad.height) / 2 : 0}
-                  fill={pad.number === "1" ? "#e2b856" : "#d4a73f"}
-                  stroke="#a87919"
+                  // 1 脚提亮一点，方便一眼找到方向（颜色跟随用户自定义的「铜焊盘」色）
+                  fill={pad.number === "1" ? mixColor(strokeOf("pads"), 0.3) : strokeOf("pads")}
+                  stroke={mixColor(strokeOf("pads"), -0.3)}
                   strokeWidth="0.05"
                 />
               </g>
@@ -292,8 +327,8 @@ const FootprintPreview = ({
                   cy={pad.center.y}
                   rx={pad.holeWidth / 2}
                   ry={Math.max(pad.holeHeight, pad.holeWidth) / 2}
-                  fill="#f4f6f8"
-                  stroke="#687481"
+                  fill={mixColor(strokeOf("holes"), 0.86)}
+                  stroke={strokeOf("holes")}
                   strokeWidth="0.05"
                 />
               ))}
@@ -303,8 +338,8 @@ const FootprintPreview = ({
                 cx={hole.center.x}
                 cy={hole.center.y}
                 r={hole.diameter / 2}
-                fill="#f4f6f8"
-                stroke="#687481"
+                fill={mixColor(strokeOf("holes"), 0.86)}
+                stroke={strokeOf("holes")}
                 strokeWidth="0.05"
               />
             ))}
@@ -323,7 +358,7 @@ const FootprintPreview = ({
                   textAnchor="middle"
                   dominantBaseline="central"
                   fontSize={Math.max(Math.min(pad.width, pad.height) * 0.42, 0.18)}
-                  fill="#5e4d25"
+                  fill={mixColor(strokeOf("pinNumbers"), -0.15)}
                   transform={`scale(1 -1) rotate(${-pad.rotation})`}
                 >
                   {pad.number}
@@ -442,6 +477,7 @@ const SetupDialog = ({
         setupCompleted: true,
         allegroExecutablePath: manualExecutablePath,
         olbLibraryPath: initial.olbLibraryPath,
+        ui: initial.ui,
       });
     } catch (saveError) {
       setError(errorMessage(saveError));
@@ -651,6 +687,40 @@ const GenerationProgressDialog = ({
   );
 };
 
+/**
+ * 右侧检查结果里的可折叠分组。折叠状态存在设置里（settings.ui.collapsedSections），
+ * 下次打开保持原样 —— 用户 2026-10-16 反馈"右侧支持展开与隐藏，需要持久化"。
+ */
+const InspectorSection = ({
+  id,
+  title,
+  collapsed,
+  onToggle,
+  children,
+}: {
+  readonly id: string;
+  readonly title: string;
+  readonly collapsed: boolean;
+  readonly onToggle: (id: string) => void;
+  readonly children: ReactNode;
+}): ReactElement => (
+  <section className={`inspector-section${collapsed ? " is-collapsed" : ""}`}>
+    <button
+      className="section-toggle"
+      type="button"
+      aria-expanded={!collapsed}
+      onClick={() => onToggle(id)}
+      data-testid={`section-toggle-${id}`}
+    >
+      <h3>
+        {title}
+        <ChevronRight size={15} className="section-chevron" />
+      </h3>
+    </button>
+    {collapsed ? null : children}
+  </section>
+);
+
 const ConverterPage = ({
   settings,
   allegroInstall,
@@ -659,6 +729,7 @@ const ConverterPage = ({
   selectedId,
   setSelectedId,
   onGenerated,
+  onUiChange,
 }: {
   readonly settings: AppSettings;
   readonly allegroInstall: AllegroInstall | null;
@@ -667,6 +738,8 @@ const ConverterPage = ({
   readonly selectedId: string | null;
   readonly setSelectedId: (id: string | null) => void;
   readonly onGenerated: (entry: HistoryEntry) => void;
+  /** 界面偏好（侧栏宽度 / 分组折叠 / 图层配色）：落盘但不重跑 Allegro 探测 */
+  readonly onUiChange: (patch: UiSettingsPatch) => void;
 }): ReactElement => {
   const [input, setInput] = useState("C2040");
   const [plans, setPlans] = useState<Readonly<Record<string, ConversionPlan>>>({});
@@ -691,6 +764,8 @@ const ConverterPage = ({
   );
   // 每个器件的手工调整（符号元素位移）与输出改名。
   const [deviceEdits, setDeviceEdits] = useState<Readonly<Record<string, DeviceEdit>>>({});
+  // 拖动侧栏时的实时宽度（松手才落盘，避免拖拽过程刷 IPC）
+  const [liveRail, setLiveRail] = useState<{ readonly side: "left" | "right"; readonly width: number } | null>(null);
   const progressRef = useRef<GenerationProgress | null>(null);
   const selected = queue.find((item) => item.id === selectedId) ?? queue[0] ?? null;
   const selectedPlan = selected === null ? null : (plans[selected.id] ?? null);
@@ -839,50 +914,83 @@ const ConverterPage = ({
     setSelectedId(newItems[0]?.id ?? null);
     setInput("");
     const loaded = await Promise.all(
-      newItems.map(async (item): Promise<{ item: QueueItem; plan: ConversionPlan | null }> => {
-        try {
-          const footprint = await api.fetchComponent(item.id);
-          const plan = await api.createPlan(footprint);
-          return {
-            item: {
-              ...item,
-              state: plan.checks.some((check) => check.severity === "warning") ? "warning" : "ready",
-              footprint,
-              message: "已读取，等待生成",
-            },
-            plan,
-          };
-        } catch (error) {
-          return {
-            item: {
-              ...item,
-              state: "error",
-              message: errorMessage(error),
-            },
-            plan: null,
-          };
-        }
-      }),
+      newItems.map(
+        async (
+          item,
+        ): Promise<{ item: QueueItem; plan: ConversionPlan | null; symbol: NormalizedSymbol | null }> => {
+          try {
+            const footprint = await api.fetchComponent(item.id);
+            const plan = await api.createPlan(footprint);
+            // 原理图符号就在同一次接口响应里（主进程缓存了原始响应，不额外发请求）；
+            // 器件本来就没有符号时为 null，不算错误。
+            const symbol = await api.fetchSymbol(item.id).catch(() => null);
+            return {
+              item: {
+                ...item,
+                state: plan.checks.some((check) => check.severity === "warning") ? "warning" : "ready",
+                footprint,
+                message: "已读取，等待生成",
+              },
+              plan,
+              symbol,
+            };
+          } catch (error) {
+            return {
+              item: {
+                ...item,
+                state: "error",
+                message: errorMessage(error),
+              },
+              plan: null,
+              symbol: null,
+            };
+          }
+        },
+      ),
     );
     const loadedMap = new Map(loaded.map((result) => [result.item.id, result.item]));
     setQueue(nextQueue.map((item) => loadedMap.get(item.id) ?? item));
     setPlans((current) => {
       const additions = Object.fromEntries(
         loaded
-          .filter((result): result is { item: QueueItem; plan: ConversionPlan } => result.plan !== null)
+          .filter(
+            (
+              result,
+            ): result is {
+              item: QueueItem;
+              plan: ConversionPlan;
+              symbol: NormalizedSymbol | null;
+            } => result.plan !== null,
+          )
           .map((result) => [result.item.id, result.plan]),
       );
       return { ...current, ...additions };
     });
+    setSymbols((current) => {
+      const additions: Record<string, SymbolEntry> = {};
+      for (const result of loaded) {
+        if (result.symbol !== null) {
+          // 没指定 .olb 时按立创编号自动建库（C2040.olb）
+          additions[result.item.id] = { symbol: result.symbol, libraryName: result.item.id };
+        }
+      }
+      return { ...current, ...additions };
+    });
   };
 
-  const importLocalLibrary = async (): Promise<void> => {
+  /** forcePick=true 时强制弹选择框（"重新选择库文件"按钮）。 */
+  const importLocalLibrary = async (forcePick = false): Promise<void> => {
     setLocalError(null);
     setLocalLoading(true);
     try {
-      const filePath = await api.chooseLocalLibraryFile();
+      // 记住上次选的库文件：再次点击直接读它，不用重新选（用户 2026-10-16 要求持久化）。
+      const remembered = forcePick ? null : settings.ui.localLibraryPath;
+      const filePath = remembered ?? (await api.chooseLocalLibraryFile());
       if (filePath === null) {
         return;
+      }
+      if (filePath !== settings.ui.localLibraryPath) {
+        onUiChange({ localLibraryPath: filePath });
       }
       const devices = await api.readLocalLibrary(filePath);
       if (devices.length === 0) {
@@ -1103,6 +1211,55 @@ const ConverterPage = ({
     setRunning(false);
   };
 
+  // ---------- 侧栏宽度（可拖动，宽度持久化在 settings.ui 里）----------
+  const leftWidth = liveRail?.side === "left" ? liveRail.width : settings.ui.leftRailWidth;
+  const rightWidth = liveRail?.side === "right" ? liveRail.width : settings.ui.rightRailWidth;
+  const collapsedSections = settings.ui.collapsedSections;
+  const layerColors = settings.ui.layerColors;
+
+  const toggleSection = (id: string): void => {
+    onUiChange({
+      collapsedSections: collapsedSections.includes(id)
+        ? collapsedSections.filter((item) => item !== id)
+        : [...collapsedSections, id],
+    });
+  };
+
+  /**
+   * 拖动侧栏边缘调宽。拖动过程只动本地状态（跟手），松手才写设置，
+   * 免得每一帧都走一次 IPC。
+   */
+  const startRailDrag =
+    (side: "left" | "right") =>
+    (event: ReactPointerEvent<HTMLDivElement>): void => {
+      if (event.button !== 0) {
+        return;
+      }
+      event.preventDefault();
+      const handle = event.currentTarget;
+      const startX = event.clientX;
+      const startWidth = side === "left" ? leftWidth : rightWidth;
+      const range = side === "left" ? LEFT_RAIL_RANGE : RIGHT_RAIL_RANGE;
+      let width = startWidth;
+      const onMove = (moveEvent: PointerEvent): void => {
+        // 右侧栏拖的是它的左边缘，方向相反
+        const delta = side === "left" ? moveEvent.clientX - startX : startX - moveEvent.clientX;
+        width = Math.min(Math.max(Math.round(startWidth + delta), range.min), range.max);
+        setLiveRail({ side, width });
+      };
+      const onEnd = (): void => {
+        handle.removeEventListener("pointermove", onMove);
+        handle.removeEventListener("pointerup", onEnd);
+        handle.removeEventListener("pointercancel", onEnd);
+        setLiveRail(null);
+        onUiChange(side === "left" ? { leftRailWidth: width } : { rightRailWidth: width });
+      };
+      handle.setPointerCapture(event.pointerId);
+      handle.addEventListener("pointermove", onMove);
+      handle.addEventListener("pointerup", onEnd);
+      handle.addEventListener("pointercancel", onEnd);
+    };
+
   const readyCount = generatableItems.length;
   const retryCount = generatableItems.filter((item) => item.state === "generationFailed").length;
   const regenerateOnly = shouldOfferRegeneration(generatableItems);
@@ -1137,7 +1294,10 @@ const ConverterPage = ({
           }`;
   return (
     <>
-    <main className="workbench">
+    <main
+      className={`workbench${liveRail === null ? "" : " is-resizing"}`}
+      style={{ gridTemplateColumns: `${leftWidth}px minmax(360px, 1fr) ${rightWidth}px` }}
+    >
       <aside className="left-rail">
         <div className="rail-header">
           <h2>待转换器件</h2>
@@ -1163,11 +1323,32 @@ const ConverterPage = ({
               onClick={() => void importLocalLibrary()}
               disabled={localLoading}
               data-testid="import-local-button"
-              title="导入立创EDA专业版导出的 .elibz2 库文件，无需立创编号"
+              title={
+                settings.ui.localLibraryPath === null
+                  ? "导入立创EDA专业版导出的 .elibz2 库文件，无需立创编号"
+                  : `再次读取：${settings.ui.localLibraryPath}`
+              }
             >
               <FolderOpen size={16} />{localLoading ? "解析中…" : "导入本地库"}
             </button>
+            {/* 默认复用上次记住的库文件；这个按钮强制重新挑一个 */}
+            <button
+              className="secondary-button icon-action"
+              type="button"
+              onClick={() => void importLocalLibrary(true)}
+              disabled={localLoading}
+              data-testid="import-local-pick"
+              title="重新选择 .elibz2 库文件"
+              aria-label="重新选择库文件"
+            >
+              <FolderSearch size={16} />
+            </button>
           </div>
+          {settings.ui.localLibraryPath === null ? null : (
+            <p className="local-library-hint" title={settings.ui.localLibraryPath}>
+              记住的本地库：{settings.ui.localLibraryPath.split(/[\\/]/).pop()}
+            </p>
+          )}
           {localError === null ? null : (
             <p className="local-import-error" data-testid="local-import-error">{localError}</p>
           )}
@@ -1215,6 +1396,16 @@ const ConverterPage = ({
             <Trash2 size={14} />清空列表
           </button>
         ) : null}
+        <div
+          className="rail-resizer rail-resizer-left"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="拖动调整左侧栏宽度"
+          title="拖动调整宽度"
+          onPointerDown={startRailDrag("left")}
+          onDoubleClick={() => onUiChange({ leftRailWidth: LEFT_RAIL_RANGE.min + 74 })}
+          data-testid="rail-resizer-left"
+        />
       </aside>
 
       <section className="main-stage">
@@ -1298,6 +1489,7 @@ const ConverterPage = ({
                   footprint={selected.footprint!}
                   visible={visibleLayers}
                   maskExpansionMm={selectedPlan?.solderMaskExpansionMm ?? 0.05}
+                  layerColors={settings.ui.layerColors}
                 />
               )}
             </PanZoom>
@@ -1310,7 +1502,7 @@ const ConverterPage = ({
                 .filter((layer) => visibleLayers.has(layer.id))
                 .map((layer) => (
                   <span key={layer.id}>
-                    <i style={{ background: layer.color }} />
+                    <i style={{ background: layerColors[layer.id] ?? layer.color }} />
                     {layer.label}
                   </span>
                 ))}
@@ -1387,17 +1579,15 @@ const ConverterPage = ({
           <div className="empty-state detail-empty"><Sparkles size={28} /><strong>等待器件数据</strong><span>读取完成后会列出检查结果</span></div>
         ) : (
           <div className="inspector-scroll">
-            <section className="inspector-section">
-              <h3>器件信息 <ChevronRight size={15} /></h3>
+            <InspectorSection id="facts" title="器件信息" collapsed={collapsedSections.includes("facts")} onToggle={toggleSection}>
               <dl className="facts">
                 <div><dt>立创编号</dt><dd>{selected.footprint.info.lcscId}</dd></div>
                 <div><dt>制造商型号</dt><dd>{selected.footprint.info.manufacturerPartNumber || selected.footprint.info.name}</dd></div>
                 <div><dt>原始封装</dt><dd>{selected.footprint.info.sourcePackageName}</dd></div>
                 <div><dt>目标名称</dt><dd>{selectedEdit.pcbName === null ? selected.footprint.info.targetPackageName : (sanitizeLibraryName(selectedEdit.pcbName) || selected.footprint.info.targetPackageName)}</dd></div>
               </dl>
-            </section>
-            <section className="inspector-section">
-              <h3>输出命名 <ChevronRight size={15} /></h3>
+            </InspectorSection>
+            <InspectorSection id="naming" title="输出命名" collapsed={collapsedSections.includes("naming")} onToggle={toggleSection}>
               <div className="name-fields">
                 <label>
                   <span>PCB 封装名 <em>.dra / .psm / .pad</em></span>
@@ -1423,9 +1613,8 @@ const ConverterPage = ({
                   仅允许 A-Z 0-9 _ -，超长会被截断；留空则用自动推导的名字。
                 </p>
               </div>
-            </section>
-            <section className="inspector-section">
-              <h3>自动检查 <ChevronRight size={15} /></h3>
+            </InspectorSection>
+            <InspectorSection id="checks" title="自动检查" collapsed={collapsedSections.includes("checks")} onToggle={toggleSection}>
               <div className="check-list">
                 {selectedPlan.checks.map((item) => (
                   <div className="check-item" key={item.id}>
@@ -1434,15 +1623,14 @@ const ConverterPage = ({
                   </div>
                 ))}
               </div>
-            </section>
-            <section className="inspector-section">
-              <h3>图层显示 <ChevronRight size={15} /></h3>
+            </InspectorSection>
+            <InspectorSection id="layers" title="图层显示" collapsed={collapsedSections.includes("layers")} onToggle={toggleSection}>
               {layers.length === 0 ? (
                 <div className="layer-empty">读取器件后这里会列出实际存在的图层</div>
               ) : (
                 <div className="layer-list">
                   {layers.map((layer) => (
-                    <label key={layer.id} title={`${layer.label} · ${layer.allegro}`}>
+                    <div className="layer-row" key={layer.id}>
                       <input
                         type="checkbox"
                         checked={visibleLayers.has(layer.id)}
@@ -1457,25 +1645,34 @@ const ConverterPage = ({
                             return next;
                           });
                         }}
+                        aria-label={`显示 ${layer.label}`}
                         data-testid={`layer-${layer.id}`}
                       />
-                      <i style={{ background: layer.color }} />
-                      <span className="layer-name">
+                      {/* 图层颜色可改（点色块）—— 画布与图例跟随，颜色写进设置持久化 */}
+                      <input
+                        type="color"
+                        className="layer-swatch"
+                        value={layerColors[layer.id] ?? layer.color}
+                        title={`${layer.label} · ${layer.allegro}：点击更改颜色`}
+                        onChange={(event) =>
+                          onUiChange({ layerColors: { ...layerColors, [layer.id]: event.target.value } })
+                        }
+                        data-testid={`layer-color-${layer.id}`}
+                      />
+                      <span className="layer-name" title={`${layer.label} · ${layer.allegro}`}>
                         {layer.label}
                         <em>{layer.allegro}</em>
                       </span>
                       <span className="layer-count">{layer.count}</span>
-                    </label>
+                    </div>
                   ))}
                 </div>
               )}
-            </section>
-            <section className="inspector-section model-section">
-              <h3>三维模型 <ChevronRight size={15} /></h3>
+            </InspectorSection>
+            <InspectorSection id="model" title="三维模型" collapsed={collapsedSections.includes("model")} onToggle={toggleSection}>
               <div className="model-row"><Check size={15} />{selected.footprint.model3d?.name ?? "源数据未提供模型"}</div>
-            </section>
-            <section className="inspector-section model-section">
-              <h3>原理图符号库 <ChevronRight size={15} /></h3>
+            </InspectorSection>
+            <InspectorSection id="olb" title="原理图符号库" collapsed={collapsedSections.includes("olb")} onToggle={toggleSection}>
               {selectedOlb === null ? (
                 <div className="model-row">
                   <span className="muted">
@@ -1492,9 +1689,19 @@ const ConverterPage = ({
               ) : (
                 <div className="model-row"><TriangleAlert size={15} className="warning-icon" />{selectedOlb.message}</div>
               )}
-            </section>
+            </InspectorSection>
           </div>
         )}
+        <div
+          className="rail-resizer rail-resizer-right"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="拖动调整右侧栏宽度"
+          title="拖动调整宽度"
+          onPointerDown={startRailDrag("right")}
+          onDoubleClick={() => onUiChange({ rightRailWidth: RIGHT_RAIL_RANGE.min + 62 })}
+          data-testid="rail-resizer-right"
+        />
       </aside>
     </main>
     {progress !== null ? (
@@ -1834,6 +2041,16 @@ export const App = (): ReactElement => {
     setSettings(saved);
     setInstalls(await api.detectAllegro());
   };
+  /**
+   * 界面偏好：先本地生效（拖动/点击要跟手），再落盘。
+   * 走的是独立通道，不会顺带重跑 Allegro 探测（那个要扫注册表，很慢）。
+   */
+  const patchUiSettings = (patch: UiSettingsPatch): void => {
+    setSettings((current) => ({ ...current, ui: { ...current.ui, ...patch } }));
+    void api.saveUiSettings(patch).catch(async () => {
+      setSettings(await api.getSettings());
+    });
+  };
   if (!ready) {
     return (
       <div className="app-loading">
@@ -1887,6 +2104,7 @@ export const App = (): ReactElement => {
           selectedId={selectedId}
           setSelectedId={setSelectedId}
           onGenerated={(entry) => setHistory((current) => [entry, ...current])}
+          onUiChange={patchUiSettings}
         />
       ) : page === "history" ? (
         <HistoryPage history={history} settings={settings} />

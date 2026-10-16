@@ -133,8 +133,7 @@ export const deriveTargetPackageName = (
   return compactFallbackName(sourceName);
 };
 
-export const derivePadstackName = (pad: NormalizedPad): string => {
-  const shapeCode =
+export const derivePadstackName = (pad: NormalizedPad): string => {  const shapeCode =
     pad.shape === "circle"
       ? "C"
       : pad.shape === "oval"
@@ -152,4 +151,25 @@ export const derivePadstackName = (pad: NormalizedPad): string => {
     return `${shapeCode}${width}X${height}_H${holeWidth}X${holeHeight}`;
   }
   return `${shapeCode}${width}X${height}`;
+};
+
+/**
+ * .olb 内 Package/LibPart 的名字：只留字母数字与 `_ . -`，其它一律换成 `_`。
+ * 立创的器件名会带空格、括号、`/`、`#`（如 `LM393DR2G` 没事，但 `OPA2134PA/BB` 会炸），
+ * 空出来就用兜底名。
+ */
+export const sanitizeSymbolName = (raw: string, fallback: string): string => {
+  const cleaned = raw
+    .trim()
+    .replace(/[^A-Za-z0-9_.-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return cleaned.length > 0 ? cleaned : fallback;
+};
+
+/** 位号前缀：`U?` → `U`；源里没给就用 `U`。 */
+export const refdesPrefixFrom = (raw: unknown): string => {
+  const letters = String(raw ?? "")
+    .toUpperCase()
+    .replace(/[^A-Z]/g, "");
+  return letters.length > 0 ? letters : "U";
 };

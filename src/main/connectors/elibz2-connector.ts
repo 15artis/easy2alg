@@ -20,7 +20,11 @@ import {
   NormalizedSymbolSchema,
 } from "../../shared/schemas";
 import { computeBounds, enlargePin1Markers, roundMm } from "../conversion/geometry";
-import { deriveTargetPackageName } from "../conversion/naming";
+import {
+  deriveTargetPackageName,
+  refdesPrefixFrom,
+  sanitizeSymbolName,
+} from "../conversion/naming";
 import {
   translateSymbolShape,
   translateSymbolPoint,
@@ -409,19 +413,6 @@ const findSymbolDoc = (docs: readonly ElibuDoc[]): ElibuDoc | null => {
   }
   // 多版本块取引脚最多者（与封装通道同一策略）。
   return [...pinDocs].sort((left, right) => pinCountOf(right) - pinCountOf(left))[0];
-};
-
-const sanitizeSymbolName = (raw: string, fallback: string): string => {
-  const cleaned = raw
-    .trim()
-    .replace(/[^A-Za-z0-9_.-]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-  return cleaned.length > 0 ? cleaned : fallback;
-};
-
-const refdesPrefixFrom = (raw: unknown): string => {
-  const letters = String(raw ?? "").toUpperCase().replace(/[^A-Z]/g, "");
-  return letters.length > 0 ? letters : "U";
 };
 
 const parseSymbolDoc = (

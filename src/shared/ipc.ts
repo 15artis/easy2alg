@@ -10,6 +10,7 @@ import type {
   NormalizedFootprint,
   NormalizedSymbol,
   OlbWriteResult,
+  UiSettingsPatch,
 } from "./schemas";
 
 export type OlbWriteRequest = {
@@ -24,10 +25,17 @@ export type Easy2AlgApi = {
   getAppInfo: () => Promise<AppApiInfo>;
   getSettings: () => Promise<AppSettings>;
   saveSettings: (settings: AppSettings) => Promise<AppSettings>;
+  /**
+   * 只更新界面偏好（侧栏宽度 / 分组折叠 / 图层配色）—— 不重跑 Allegro 探测，
+   * 所以拖动侧栏时不卡。返回合并后的完整设置。
+   */
+  saveUiSettings: (patch: UiSettingsPatch) => Promise<AppSettings>;
   chooseLibraryDirectory: () => Promise<string | null>;
   chooseAllegroExecutable: () => Promise<AllegroInstall | null>;
   detectAllegro: () => Promise<AllegroInstall[]>;
   fetchComponent: (lcscId: string) => Promise<NormalizedFootprint>;
+  /** 立创编号链路的原理图符号（同一份接口响应里的 dataStr）；没有符号时返回 null。 */
+  fetchSymbol: (lcscId: string) => Promise<NormalizedSymbol | null>;
   chooseLocalLibraryFile: () => Promise<string | null>;
   readLocalLibrary: (filePath: string) => Promise<readonly LocalLibraryDeviceSummary[]>;
   fetchLocalComponent: (filePath: string, deviceUuid: string) => Promise<NormalizedFootprint>;
@@ -46,10 +54,12 @@ export const IpcChannels = {
   getAppInfo: "app:get-info",
   getSettings: "settings:get",
   saveSettings: "settings:save",
+  saveUiSettings: "settings:save-ui",
   chooseLibraryDirectory: "dialog:choose-library-directory",
   chooseAllegroExecutable: "dialog:choose-allegro-executable",
   detectAllegro: "allegro:detect",
   fetchComponent: "easyeda:fetch-component",
+  fetchSymbol: "easyeda:fetch-symbol",
   chooseLocalLibraryFile: "dialog:choose-local-library",
   readLocalLibrary: "local-library:read",
   fetchLocalComponent: "local-library:fetch-component",

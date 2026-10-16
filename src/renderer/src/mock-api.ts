@@ -1,6 +1,11 @@
 import { getDemoFootprint } from "../../shared/demo-fixtures";
 import type { Easy2AlgApi } from "../../shared/ipc";
-import type { AppSettings, GenerationProgress, HistoryEntry } from "../../shared/schemas";
+import {
+  defaultUiSettings,
+  type AppSettings,
+  type GenerationProgress,
+  type HistoryEntry,
+} from "../../shared/schemas";
 
 const SettingsKey = "easy2alg.settings";
 const HistoryKey = "easy2alg.history";
@@ -14,12 +19,14 @@ const readSettings = (): AppSettings => {
       setupCompleted: true,
       allegroExecutablePath: null,
       olbLibraryPath: null,
+      ui: defaultUiSettings(),
     };
   }
   const parsed = JSON.parse(saved) as AppSettings;
   return {
     ...parsed,
     allegroExecutablePath: parsed.allegroExecutablePath ?? null,
+    ui: { ...defaultUiSettings(), ...parsed.ui },
   };
 };
 
@@ -64,6 +71,12 @@ export const createMockApi = (): Easy2AlgApi => {
         detected: true,
       },
     ],
+    saveUiSettings: async (patch) => {
+      const merged: AppSettings = { ...readSettings(), ui: { ...readSettings().ui, ...patch } };
+      window.localStorage.setItem(SettingsKey, JSON.stringify(merged));
+      return merged;
+    },
+    fetchSymbol: async () => null,
     fetchComponent: async (lcscId) => {
       await wait(300);
       const footprint = getDemoFootprint(lcscId);
