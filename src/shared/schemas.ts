@@ -263,6 +263,34 @@ export const OlbWriteResultSchema = z.object({
 });
 export type OlbWriteResult = z.infer<typeof OlbWriteResultSchema>;
 
+/** 库里某个器件的概览（写入前探测同名器件用）。 */
+export const OlbPartSummarySchema = z.object({
+  sectionCount: z.number().int().positive(),
+  pinCount: z.number().int().nonnegative(),
+  /** 本体包围盒横向范围，用来区分"内容真的换了"和"只是名字相同" */
+  bodyWidth: z.number().finite().nullable(),
+});
+export type OlbPartSummary = z.infer<typeof OlbPartSummarySchema>;
+
+/**
+ * 写入 .olb 的结果。目标库里**已有同名器件**时先返回 needsConfirm，
+ * 由界面做二次确认（用户 2026-10-16 反馈"同名不覆盖也没提醒，还是旧数据"）。
+ */
+export const OlbWriteOutcomeSchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("needsConfirm"),
+    libraryPath: z.string().min(1),
+    packageName: z.string().min(1),
+    existing: OlbPartSummarySchema,
+    incoming: OlbPartSummarySchema,
+  }),
+  z.object({
+    status: z.literal("written"),
+    result: OlbWriteResultSchema,
+  }),
+]);
+export type OlbWriteOutcome = z.infer<typeof OlbWriteOutcomeSchema>;
+
 export const CheckSeveritySchema = z.enum(["pass", "warning", "error"]);
 export type CheckSeverity = z.infer<typeof CheckSeveritySchema>;
 

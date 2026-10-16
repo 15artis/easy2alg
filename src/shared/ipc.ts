@@ -9,7 +9,7 @@ import type {
   LocalLibraryDeviceSummary,
   NormalizedFootprint,
   NormalizedSymbol,
-  OlbWriteResult,
+  OlbWriteOutcome,
   UiSettingsPatch,
 } from "./schemas";
 
@@ -19,6 +19,8 @@ export type OlbWriteRequest = {
   readonly libraryPath: string | null;
   /** 未指定时的库文件名来源（一般取 .elibz2 文件名） */
   readonly libraryName: string;
+  /** 库里已有同名器件时是否直接覆盖（false = 先返回 needsConfirm 让界面确认） */
+  readonly confirmOverwrite?: boolean;
 };
 
 export type Easy2AlgApi = {
@@ -42,7 +44,7 @@ export type Easy2AlgApi = {
   fetchLocalSymbol: (filePath: string, deviceUuid: string) => Promise<NormalizedSymbol | null>;
   chooseOlbLibrary: () => Promise<string | null>;
   createOlbLibrary: (suggestedName: string) => Promise<string | null>;
-  writeOlb: (request: OlbWriteRequest) => Promise<OlbWriteResult>;
+  writeOlb: (request: OlbWriteRequest) => Promise<OlbWriteOutcome>;
   createPlan: (footprint: NormalizedFootprint) => Promise<ConversionPlan>;
   generate: (plan: ConversionPlan) => Promise<ConversionResult>;
   onGenerationProgress: (listener: (progress: GenerationProgress) => void) => () => void;

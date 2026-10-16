@@ -51,6 +51,8 @@ import type {
   NormalizedFootprint,
   NormalizedLine,
   NormalizedSymbol,
+  OlbWriteOutcome,
+  OlbPartSummary,
   OlbWriteResult,
   QueueItem,
 } from "../../shared/schemas";
@@ -170,6 +172,8 @@ const applyEdits = (symbol: NormalizedSymbol, edit: DeviceEdit): NormalizedSymbo
   const named = name.length === 0 ? symbol : { ...symbol, name };
   return applySymbolEdits(named, edit.symbolEdits);
 };
+
+const basenameOf = (filePath: string): string => filePath.split(/[\\/]/).pop() ?? filePath;
 
 const libraryNameOf = (sourcePath: string): string => {
   const base = sourcePath.split(/[\\/]/).pop() ?? sourcePath;
@@ -688,6 +692,75 @@ const GenerationProgressDialog = ({
 };
 
 /**
+ * 覆盖同名器件的**二次确认**（用户 2026-10-16 反馈"同名不覆盖也没提醒"）。
+ * 把"库里旧的"和"这次要写的"两份内容都摆出来，确认了才动手。
+ */
+const OverwriteConfirmDialog = ({
+  request,
+  onCancel,
+  onConfirm,
+}: {
+  readonly request: Extract<OlbWriteOutcome, { status: "needsConfirm" }>;
+  readonly onCancel: () => void;
+  readonly onConfirm: () => void;
+}): ReactElement => {
+  const describe = (part: OlbPartSummary): string =>
+    `${part.sectionCount} 段 / ${part.pinCount} 脚${
+      part.bodyWidth === null ? "" : `，本体宽 ${part.bodyWidth}`
+    }`;
+  return (
+    <div className="progress-backdrop">
+      <section
+        className="progress-dialog failed overwrite-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="overwrite-confirm-title"
+        data-testid="overwrite-confirm-dialog"
+      >
+        <div className="progress-heading">
+          <div className="progress-symbol">
+            <TriangleAlert size={24} />
+          </div>
+          <div>
+            <p>{request.packageName}</p>
+            <h2 id="overwrite-confirm-title">目标库里已有同名器件</h2>
+          </div>
+        </div>
+        <div className="overwrite-body">
+          <p>
+            <strong>{basenameOf(request.libraryPath)}</strong> 里已经有一个{" "}
+            <strong>{request.packageName}</strong>：
+          </p>
+          <dl className="overwrite-facts">
+            <div>
+              <dt>库里现有</dt>
+              <dd>{describe(request.existing)}</dd>
+            </div>
+            <div>
+              <dt>本次写入</dt>
+              <dd>{describe(request.incoming)}</dd>
+            </div>
+          </dl>
+          <p className="overwrite-note">
+            继续将<b>覆盖</b>旧内容（写入前会自动留一份 .bak 备份）。
+            <br />
+            如果 OrCAD Capture 正开着这个库，请先关闭它再继续，否则 Capture 会把内存里的旧内容写回去。
+          </p>
+        </div>
+        <div className="progress-actions">
+          <button className="secondary-button" type="button" onClick={onCancel} data-testid="overwrite-cancel">
+            跳过这个器件
+          </button>
+          <button className="primary-button progress-close" type="button" onClick={onConfirm} data-testid="overwrite-confirm">
+            覆盖写入
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+};
+
+/**
  * 右侧检查结果里的可折叠分组。折叠状态存在设置里（settings.ui.collapsedSections），
  * 下次打开保持原样 —— 用户 2026-10-16 反馈"右侧支持展开与隐藏，需要持久化"。
  */
@@ -766,6 +839,11 @@ const ConverterPage = ({
   const [deviceEdits, setDeviceEdits] = useState<Readonly<Record<string, DeviceEdit>>>({});
   // 拖动侧栏时的实时宽度（松手才落盘，避免拖拽过程刷 IPC）
   const [liveRail, setLiveRail] = useState<{ readonly side: "left" | "right"; readonly width: number } | null>(null);
+  // 覆盖同名器件的二次确认（promise 化，生成流程里 await 它）
+  const [overwriteAsk, setOverwriteAsk] = useState<{
+    readonly request: Extract<OlbWriteOutcome, { status: "needsConfirm" }>;
+    readonly resolve: (confirmed: boolean) => void;
+  } | null>(null);
   const progressRef = useRef<GenerationProgress | null>(null);
   const selected = queue.find((item) => item.id === selectedId) ?? queue[0] ?? null;
   const selectedPlan = selected === null ? null : (plans[selected.id] ?? null);
@@ -1162,13 +1240,38 @@ const ConverterPage = ({
       if (wantSymbol && symbol !== null && entry !== undefined) {
         updateItem(item.id, { state: "loading", message: "正在写入原理图符号库（.olb）…" });
         try {
-          const olb = await api.writeOlb({
+          const request = {
             symbol,
             libraryPath: settings.olbLibraryPath,
             libraryName: entry.libraryName,
-          });
-          setOlbOutcomes((current) => ({ ...current, [item.id]: { status: "ok", result: olb } }));
-          notes.push(olb.message);
+          };
+          let outcome = await api.writeOlb(request);
+          // 库里已有同名器件 → 二次确认后再覆盖（用户 2026-10-16 要求）。
+          // 实测 mode 1 会覆盖，但得让用户知道"这次会换掉旧内容"。
+          if (outcome.status === "needsConfirm") {
+            const confirmed = await askOverwriteConfirm(outcome);
+            if (!confirmed) {
+              const message = `已跳过 ${outcome.packageName}：${basenameOf(outcome.libraryPath)} 里已有同名器件`;
+              setOlbOutcomes((current) => ({
+                ...current,
+                [item.id]: { status: "failed", message },
+              }));
+              notes.push(message);
+              if (pcbFailure === null) {
+                pcbFailure = message;
+              }
+              updateItem(item.id, { state: "generationFailed", message });
+              continue;
+            }
+            outcome = await api.writeOlb({ ...request, confirmOverwrite: true });
+          }
+          if (outcome.status === "written") {
+            setOlbOutcomes((current) => ({
+              ...current,
+              [item.id]: { status: "ok", result: outcome.result },
+            }));
+            notes.push(outcome.result.message);
+          }
         } catch (error) {
           const message = errorMessage(error);
           setOlbOutcomes((current) => ({
@@ -1216,6 +1319,13 @@ const ConverterPage = ({
   const rightWidth = liveRail?.side === "right" ? liveRail.width : settings.ui.rightRailWidth;
   const collapsedSections = settings.ui.collapsedSections;
   const layerColors = settings.ui.layerColors;
+
+  const askOverwriteConfirm = (
+    request: Extract<OlbWriteOutcome, { status: "needsConfirm" }>,
+  ): Promise<boolean> =>
+    new Promise<boolean>((resolve) => {
+      setOverwriteAsk({ request, resolve });
+    });
 
   const toggleSection = (id: string): void => {
     onUiChange({
@@ -1711,6 +1821,19 @@ const ConverterPage = ({
         onOpenDirectory={api.openPath}
       />
     ) : null}
+    {overwriteAsk === null ? null : (
+      <OverwriteConfirmDialog
+        request={overwriteAsk.request}
+        onCancel={() => {
+          overwriteAsk.resolve(false);
+          setOverwriteAsk(null);
+        }}
+        onConfirm={() => {
+          overwriteAsk.resolve(true);
+          setOverwriteAsk(null);
+        }}
+      />
+    )}
     </>
   );
 };

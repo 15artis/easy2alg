@@ -4,7 +4,12 @@ import { access, copyFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 import { promisify } from "node:util";
-import type { NormalizedSymbol, OlbWriteResult } from "../../shared/schemas";
+import type {
+  NormalizedSymbol,
+  OlbPartSummary,
+  OlbWriteOutcome,
+  OlbWriteResult,
+} from "../../shared/schemas";
 import { buildCaptureLibraryXml } from "../conversion/capture-olb";
 import { writeLog } from "../logging";
 
@@ -153,12 +158,108 @@ export const olbLibraryNameFrom = (sourcePath: string): string => {
   return extension.length > 0 ? base.slice(0, -extension.length) : base;
 };
 
+/** 把现有 .olb 导出成 XML（用于写入前探测同名器件、写入后校验内容）。 */
+const exportLibrary = async (
+  toolchain: CaptureToolchain,
+  libraryPath: string,
+  workDirectory: string,
+): Promise<string> => {
+  const xmlPath = join(workDirectory, `inspect-${randomUUID()}.xml`);
+  const scriptPath = join(workDirectory, `inspect-${randomUUID()}.tcl`);
+  await writeFile(
+    scriptPath,
+    EXPORT_TEMPLATE(toolchain.binDirectory, toolchain.dllPath, libraryPath, xmlPath),
+    "utf8",
+  );
+  await executeFile(toolchain.tclshPath, [scriptPath], {
+    cwd: workDirectory,
+    encoding: "utf8",
+    env: { ...process.env },
+    maxBuffer: 64 * 1024 * 1024,
+    windowsHide: true,
+    timeout: 300_000,
+  });
+  return readFile(xmlPath, "utf8").catch(() => "");
+};
+
+/**
+ * 从导出的库 XML 里找出某个器件的内容概览。
+ *
+ * 返回 null = 库里没有这个器件。**注意不能只查名字**：写入后的回读校验若只看
+ * `name="X"` 存不存在，旧数据也能通过（用户 2026-10-16 反馈"同名不覆盖，
+ * 还是旧数据"），必须把段数/脚数/本体宽度一起比。
+ */
+export const inspectLibraryPart = (
+  xml: string,
+  packageName: string,
+): OlbPartSummary | null => {
+  const packageStart = xml.indexOf(`<Package>`);
+  if (packageStart < 0) {
+    return null;
+  }
+  const libEnd = xml.indexOf("</Lib>", packageStart);
+  const scope = xml.slice(packageStart, libEnd < 0 ? undefined : libEnd);
+  // 每个 <LibPart> 一段；Package 的 Defn 上才是器件名
+  const defnPattern = /<Defn ([^>]*name="([^"]*)"[^>]*)\/>/g;
+  const parts: { name: string; start: number; end: number }[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = defnPattern.exec(scope)) !== null) {
+    parts.push({ name: match[2], start: match.index, end: match.index + match[0].length });
+  }
+  const index = parts.findIndex((part) => part.name === packageName);
+  if (index < 0) {
+    return null;
+  }
+  // 该器件的范围 = 这个 Defn 到下一个 LibPart 的 Defn（或结尾）
+  const nextDefn = parts
+    .slice(index + 1)
+    .find((part) => scope.slice(0, part.start).includes("<LibPart>"));
+  const segment =
+    nextDefn === undefined ? scope.slice(parts[index].start) : scope.slice(parts[index].start, nextDefn.start);
+  return {
+    sectionCount: Math.max((segment.match(/<NormalView>/g) ?? []).length, 1),
+    pinCount: (segment.match(/<SymbolPinScalar>/g) ?? []).length,
+    bodyWidth: firstBodyWidth(segment),
+  };
+};
+
+/** SymbolBBox 的 x2 - x1（本体宽度），拿不到就 null。 */
+const firstBodyWidth = (segment: string): number | null => {
+  const box = /<SymbolBBox>\s*<Defn x1="([-\d.]+)" x2="([-\d.]+)"/.exec(segment);
+  if (box === null) {
+    return null;
+  }
+  return Number(box[2]) - Number(box[1]);
+};
+
 export type OlbWriteOptions = {
   readonly symbol: NormalizedSymbol;
   readonly toolchain: CaptureToolchain;
   /** 目标 .olb 绝对路径；不存在时会被创建 */
   readonly libraryPath: string;
+  /**
+   * 目标库里已有同名器件时是否直接覆盖。
+   * false（默认）= 先返回 needsConfirm，由界面做二次确认（用户要求）。
+   */
+  readonly confirmOverwrite?: boolean;
 };
+
+/** 本次要写进去的器件概览（用来和库里的旧内容比对）。 */
+const incomingSummary = (symbol: NormalizedSymbol): OlbPartSummary => {
+  const section = symbol.sections[0];
+  const rect = section?.shapes.find((shape) => shape.kind === "rect");
+  return {
+    sectionCount: symbol.sections.length,
+    pinCount: symbol.sections.reduce((total, item) => total + item.pins.length, 0),
+    bodyWidth:
+      rect === undefined || rect.kind !== "rect"
+        ? null
+        : Math.abs(rect.max.x - rect.min.x),
+  };
+};
+
+const samePart = (a: OlbPartSummary, b: OlbPartSummary): boolean =>
+  a.sectionCount === b.sectionCount && a.pinCount === b.pinCount && a.bodyWidth === b.bodyWidth;
 
 const timestamp = (): string => {
   const now = new Date();
@@ -176,11 +277,39 @@ const timestamp = (): string => {
 
 export const writeCaptureLibrary = async (
   options: OlbWriteOptions,
-): Promise<OlbWriteResult> => {
+): Promise<OlbWriteOutcome> => {
   const { symbol, toolchain, libraryPath } = options;
   const existedBefore = await fileExists(libraryPath);
   const mode = existedBefore ? 1 : 0;
   await mkdir(dirname(libraryPath), { recursive: true });
+
+  const workDirectory = join(tmpdir(), `easy2alg-olb-${randomUUID()}`);
+  await mkdir(workDirectory, { recursive: true });
+  const incoming = incomingSummary(symbol);
+
+  // 写入前先看一眼目标库：已有同名器件就必须让用户确认（二次提醒）。
+  // 实测 mode 1 会覆盖同名器件，但旧版校验只查名字 —— 旧数据也能通过，
+  // 所以这里把"库里的旧内容"和"本次要写的内容"都摆出来给用户看。
+  let existing: OlbPartSummary | null = null;
+  if (existedBefore) {
+    const before = await exportLibrary(toolchain, libraryPath, workDirectory).catch(() => "");
+    existing = before.length > 0 ? inspectLibraryPart(before, symbol.name) : null;
+    if (existing !== null && options.confirmOverwrite !== true) {
+      await writeLog("info", "olb_overwrite_needs_confirm", {
+        libraryPath,
+        packageName: symbol.name,
+        existing: JSON.stringify(existing),
+        incoming: JSON.stringify(incoming),
+      });
+      return {
+        status: "needsConfirm",
+        libraryPath,
+        packageName: symbol.name,
+        existing,
+        incoming,
+      };
+    }
+  }
 
   // 目标已存在时先自己留一份带时间戳的备份（工具自带的 *_0.OBK 名字不直观）。
   let backupPath: string | null = null;
@@ -189,8 +318,6 @@ export const writeCaptureLibrary = async (
     await copyFile(libraryPath, backupPath);
   }
 
-  const workDirectory = join(tmpdir(), `easy2alg-olb-${randomUUID()}`);
-  await mkdir(workDirectory, { recursive: true });
   const xmlPath = join(workDirectory, "library.xml");
   const logPath = join(workDirectory, "import.log");
   const statusPath = join(workDirectory, "import-status.txt");
@@ -266,7 +393,8 @@ export const writeCaptureLibrary = async (
     );
   }
 
-  // 回读校验：导出成品库，确认里面确实有刚写入的 Package。
+  // 回读校验：导出成品库，比对器件**内容**（段数/脚数/本体宽度）。
+  // 只查名字是不够的 —— 同名旧数据也能通过，那正是"写了却还是旧数据"的假象。
   await writeFile(
     verifyScriptPath,
     EXPORT_TEMPLATE(toolchain.binDirectory, toolchain.dllPath, libraryPath, exportPath),
@@ -274,10 +402,24 @@ export const writeCaptureLibrary = async (
   );
   await runTcl(verifyScriptPath);
   const exported = await readFile(exportPath, "utf8").catch(() => "");
-  if (!exported.includes(`name="${symbol.name}"`)) {
+  const after = exported.length > 0 ? inspectLibraryPart(exported, symbol.name) : null;
+  if (after === null) {
     await writeLog("error", "olb_verify_failed", { libraryPath, packageName: symbol.name });
     throw new Error(
       `OLB 已写入但回读未找到器件 ${symbol.name}，请检查 ${libraryPath}。`,
+    );
+  }
+  if (!samePart(after, incoming)) {
+    await writeLog("error", "olb_verify_stale", {
+      libraryPath,
+      packageName: symbol.name,
+      after: JSON.stringify(after),
+      incoming: JSON.stringify(incoming),
+    });
+    throw new Error(
+      `OLB 里 ${symbol.name} 的内容与本次写入不一致（库中 ${after.sectionCount} 段 / ${after.pinCount} 脚，` +
+        `本次 ${incoming.sectionCount} 段 / ${incoming.pinCount} 脚）。` +
+        "如果 OrCAD Capture 正开着这个库，请先关闭它再重新生成 —— Capture 会把内存里的旧内容写回去。",
     );
   }
 
@@ -297,15 +439,18 @@ export const writeCaptureLibrary = async (
     bytes: fileSize,
   });
   return {
-    libraryPath,
-    created: !existedBefore,
-    packageName: symbol.name,
-    sectionCount: symbol.sections.length,
-    pinCount: pinned,
-    backupPath,
-    bytes: fileSize,
-    message: existedBefore
-      ? `已追加到 ${basename(libraryPath)}（${symbol.sections.length} 段 / ${pinned} 脚）`
-      : `已新建 ${basename(libraryPath)}（${symbol.sections.length} 段 / ${pinned} 脚）`,
+    status: "written",
+    result: {
+      libraryPath,
+      created: !existedBefore,
+      packageName: symbol.name,
+      sectionCount: symbol.sections.length,
+      pinCount: pinned,
+      backupPath,
+      bytes: fileSize,
+      message: existedBefore
+        ? `已写入 ${basename(libraryPath)}（${symbol.sections.length} 段 / ${pinned} 脚，内容已核对）`
+        : `已新建 ${basename(libraryPath)}（${symbol.sections.length} 段 / ${pinned} 脚）`,
+    },
   };
 };

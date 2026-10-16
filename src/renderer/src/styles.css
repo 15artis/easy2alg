@@ -1392,6 +1392,54 @@ select:focus,
   height: 100%;
 }
 
+/* 覆盖同名器件的二次确认框：复用进度框的骨架，正文换成两行对比 */
+.overwrite-dialog {
+  width: min(520px, 92vw);
+}
+
+.overwrite-body {
+  display: grid;
+  gap: 10px;
+  color: #36434e;
+  font-size: 12px;
+}
+
+.overwrite-body p {
+  margin: 0;
+  line-height: 1.6;
+}
+
+.overwrite-facts {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 10px 12px;
+  background: #f6f8fb;
+  border: 1px solid #dfe5ed;
+  border-radius: 6px;
+}
+
+.overwrite-facts div {
+  display: flex;
+  gap: 10px;
+}
+
+.overwrite-facts dt {
+  min-width: 62px;
+  color: #8791a2;
+}
+
+.overwrite-facts dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.overwrite-note {
+  color: #8791a2;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
 /*
  * 图例固定在**左下角**、缩放控件固定在**右上角** —— 两块浮层永远不重叠。
  * 画布很矮时它们也只会各占一角（用户 2026-10-16 截图里两者叠在一起了）。

@@ -36,6 +36,7 @@ const OlbWriteRequestSchema = z.object({
   symbol: NormalizedSymbolSchema,
   libraryPath: z.string().min(1).nullable(),
   libraryName: z.string().min(1),
+  confirmOverwrite: z.boolean().optional(),
 });
 
 const resolveInstall = async (

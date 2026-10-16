@@ -67,13 +67,15 @@ const Label = ({
   readonly placement: LabelPlacement;
   readonly color: string;
 }): ReactElement => (
+  /* 不设 dominant-baseline：默认基线正好落在引脚线上，与 Capture 的画法一致
+   * （实测 Capture 把引脚号/名的基线放在引脚线上，文字整体偏上；之前用 middle
+   * 居中反而和 Capture 对不上 —— 用户 2026-10-16 指出）。 */
   <text
     x={placement.x}
     y={placement.y}
     fontSize={PIN_FONT}
     fill={color}
     textAnchor={placement.anchor}
-    dominantBaseline="middle"
     transform={
       placement.rotate === 0
         ? undefined
