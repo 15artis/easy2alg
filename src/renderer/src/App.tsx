@@ -44,7 +44,9 @@ import type {
   GenerationProgress,
   HistoryEntry,
   LocalLibraryDeviceSummary,
+  NormalizedCircle,
   NormalizedFootprint,
+  NormalizedLine,
   NormalizedSymbol,
   OlbWriteResult,
   QueueItem,
@@ -60,6 +62,12 @@ import {
   type SymbolEdits,
 } from "../../shared/symbol-edit";
 import { sanitizeLibraryName } from "../../shared/naming";
+import {
+  defaultVisibleLayers,
+  footprintLayers,
+  normalizeVisibleLayers,
+  type FootprintLayerId,
+} from "../../shared/preview-layers";
 
 type Page = "convert" | "history" | "settings";
 
@@ -175,10 +183,57 @@ const formatDate = (iso: string): string =>
   }).format(new Date(iso));
 
 /** PCB 封装俯视内容（不含 <svg>，交给 PanZoom 统一承载缩放平移）。y 轴向上。 */
-const FootprintPreview = ({ footprint }: { readonly footprint: NormalizedFootprint }): ReactElement => {
+/**
+ * PCB 封装俯视内容（不含 <svg>，交给 PanZoom 统一承载缩放平移）。y 轴向上。
+ *
+ * 按图层分组渲染，图层的可见性由右侧「图层显示」勾选框驱动；图层名用 Allegro
+ * 的实际叫法（见 shared/preview-layers.ts）。
+ * 阻焊/钢网不是源数据里的独立几何：阻焊 = 焊盘按 maskExpansionMm 外扩，
+ * 钢网 = 表贴焊盘等大，与生成 .dra 时的推导规则一致。
+ */
+const FootprintPreview = ({
+  footprint,
+  visible,
+  maskExpansionMm,
+}: {
+  readonly footprint: NormalizedFootprint;
+  readonly visible: ReadonlySet<FootprintLayerId>;
+  readonly maskExpansionMm: number;
+}): ReactElement => {
   const width = Math.max(footprint.bounds.maxX - footprint.bounds.minX, 1);
   const height = Math.max(footprint.bounds.maxY - footprint.bounds.minY, 1);
   const margin = Math.max(width, height) * 0.15;
+  const shapesOn = (layer: string): readonly (NormalizedLine | NormalizedCircle)[] => [
+    ...footprint.lines.filter((line) => line.layer === layer),
+    ...footprint.circles.filter((circle) => circle.layer === layer),
+  ];
+  const strokeOf = (layer: FootprintLayerId): string =>
+    footprintLayers(footprint).find((item) => item.id === layer)?.color ?? "#8f9ba8";
+
+  const padOutline = (
+    pad: NormalizedFootprint["pads"][number],
+    grow: number,
+    key: string,
+    color: string,
+  ): ReactElement => (
+    <g
+      key={key}
+      transform={`translate(${pad.center.x} ${pad.center.y}) rotate(${pad.rotation})`}
+    >
+      <rect
+        x={-pad.width / 2 - grow}
+        y={-pad.height / 2 - grow}
+        width={pad.width + grow * 2}
+        height={pad.height + grow * 2}
+        rx={pad.shape === "oval" || pad.shape === "circle" ? Math.min(pad.width, pad.height) / 2 : 0}
+        fill="none"
+        stroke={color}
+        strokeWidth="0.04"
+        strokeDasharray="0.18 0.12"
+      />
+    </g>
+  );
+
   return (
     <>
       <defs>
@@ -194,72 +249,124 @@ const FootprintPreview = ({ footprint }: { readonly footprint: NormalizedFootpri
         fill="url(#footprint-grid)"
       />
       <g transform="scale(1 -1)">
-      {footprint.lines.map((line, index) => (
-        <line
-          key={`line-${index}`}
-          x1={line.start.x}
-          y1={line.start.y}
-          x2={line.end.x}
-          y2={line.end.y}
-          stroke={
-            line.layer === "silkscreen"
-              ? "#f4a31a"
-              : line.layer === "courtyard"
-                ? "#7d8794"
-                : "#8f9ba8"
-          }
-          strokeWidth={Math.max(line.width, 0.06)}
-          strokeDasharray={line.layer === "courtyard" ? "0.25 0.18" : undefined}
-        />
-      ))}
-      {footprint.pads.map((pad) => (
-        <g
-          key={`${pad.number}-${pad.center.x}-${pad.center.y}`}
-          transform={`translate(${pad.center.x} ${pad.center.y}) rotate(${pad.rotation})`}
-        >
-          <rect
-            x={-pad.width / 2}
-            y={-pad.height / 2}
-            width={pad.width}
-            height={pad.height}
-            rx={pad.shape === "roundedRectangle" ? Math.min(pad.width, pad.height) * 0.2 : pad.shape === "oval" ? Math.min(pad.width, pad.height) / 2 : 0}
-            fill={pad.number === "1" ? "#e2b856" : "#d4a73f"}
-            stroke="#a87919"
-            strokeWidth="0.05"
-          />
-          {pad.holeWidth > 0 ? (
-            <ellipse
-              rx={pad.holeWidth / 2}
-              ry={Math.max(pad.holeHeight, pad.holeWidth) / 2}
-              fill="#f4f6f8"
-              stroke="#687481"
-              strokeWidth="0.05"
-            />
-          ) : null}
-          <text
-            x="0"
-            y="0"
-            textAnchor="middle"
-            dominantBaseline="central"
-            fontSize={Math.max(Math.min(pad.width, pad.height) * 0.42, 0.18)}
-            fill="#5e4d25"
-            transform={`scale(1 -1) rotate(${-pad.rotation})`}
-          >
-            {pad.number}
-          </text>
-        </g>
-      ))}
-      {footprint.circles.map((circle, index) => (
-        <circle
-          key={`circle-${index}`}
-          cx={circle.center.x}
-          cy={circle.center.y}
-          r={circle.radius}
-          fill="none"
-          stroke="#f4a31a"
-          strokeWidth={circle.width}
-        />
-      ))}
+        {visible.has("solderMask")
+          ? footprint.pads.map((pad, index) =>
+              padOutline(pad, maskExpansionMm, `mask-${index}`, strokeOf("solderMask")),
+            )
+          : null}
+        {visible.has("pasteMask")
+          ? footprint.pads
+              .filter((pad) => pad.holeWidth === 0)
+              .map((pad, index) => padOutline(pad, 0, `paste-${index}`, strokeOf("pasteMask")))
+          : null}
+
+        {visible.has("pads")
+          ? footprint.pads.map((pad) => (
+              <g
+                key={`${pad.number}-${pad.center.x}-${pad.center.y}`}
+                transform={`translate(${pad.center.x} ${pad.center.y}) rotate(${pad.rotation})`}
+              >
+                <rect
+                  x={-pad.width / 2}
+                  y={-pad.height / 2}
+                  width={pad.width}
+                  height={pad.height}
+                  rx={pad.shape === "roundedRectangle" ? Math.min(pad.width, pad.height) * 0.2 : pad.shape === "oval" || pad.shape === "circle" ? Math.min(pad.width, pad.height) / 2 : 0}
+                  fill={pad.number === "1" ? "#e2b856" : "#d4a73f"}
+                  stroke="#a87919"
+                  strokeWidth="0.05"
+                />
+              </g>
+            ))
+          : null}
+
+        {visible.has("holes") ? (
+          <>
+            {footprint.pads
+              .filter((pad) => pad.holeWidth > 0)
+              .map((pad, index) => (
+                <ellipse
+                  key={`hole-${index}`}
+                  cx={pad.center.x}
+                  cy={pad.center.y}
+                  rx={pad.holeWidth / 2}
+                  ry={Math.max(pad.holeHeight, pad.holeWidth) / 2}
+                  fill="#f4f6f8"
+                  stroke="#687481"
+                  strokeWidth="0.05"
+                />
+              ))}
+            {footprint.holes.map((hole, index) => (
+              <circle
+                key={`mech-${index}`}
+                cx={hole.center.x}
+                cy={hole.center.y}
+                r={hole.diameter / 2}
+                fill="#f4f6f8"
+                stroke="#687481"
+                strokeWidth="0.05"
+              />
+            ))}
+          </>
+        ) : null}
+
+        {visible.has("pinNumbers")
+          ? footprint.pads.map((pad) => (
+              <g
+                key={`num-${pad.number}-${pad.center.x}-${pad.center.y}`}
+                transform={`translate(${pad.center.x} ${pad.center.y}) rotate(${pad.rotation})`}
+              >
+                <text
+                  x="0"
+                  y="0"
+                  textAnchor="middle"
+                  dominantBaseline="central"
+                  fontSize={Math.max(Math.min(pad.width, pad.height) * 0.42, 0.18)}
+                  fill="#5e4d25"
+                  transform={`scale(1 -1) rotate(${-pad.rotation})`}
+                >
+                  {pad.number}
+                </text>
+              </g>
+            ))
+          : null}
+
+        {(["silkscreen", "assembly", "courtyard", "documentation"] as const).map((layer) =>
+          visible.has(layer)
+            ? shapesOn(layer).map((shape, index) => {
+                const color = strokeOf(layer);
+                const dashed = layer === "courtyard" || layer === "documentation";
+                if ("radius" in shape) {
+                  return (
+                    <circle
+                      key={`${layer}-c${index}`}
+                      cx={shape.center.x}
+                      cy={shape.center.y}
+                      r={shape.radius}
+                      fill="none"
+                      stroke={color}
+                      strokeWidth={shape.width}
+                    />
+                  );
+                }
+                if ("start" in shape) {
+                  return (
+                    <line
+                      key={`${layer}-l${index}`}
+                      x1={shape.start.x}
+                      y1={shape.start.y}
+                      x2={shape.end.x}
+                      y2={shape.end.y}
+                      stroke={color}
+                      strokeWidth={Math.max(shape.width, 0.06)}
+                      strokeDasharray={dashed ? "0.25 0.18" : undefined}
+                    />
+                  );
+                }
+                return null;
+              })
+            : null,
+        )}
       </g>
     </>
   );
@@ -577,6 +684,10 @@ const ConverterPage = ({
   const [previewTab, setPreviewTab] = useState<"pcb" | "sch">("pcb");
   const [sectionIndex, setSectionIndex] = useState(0);
   const [selectedShapeKey, setSelectedShapeKey] = useState<string | null>(null);
+  // PCB 预览的图层开关（右侧「图层显示」面板直接驱动画布）
+  const [visibleLayers, setVisibleLayers] = useState<ReadonlySet<FootprintLayerId>>(
+    () => defaultVisibleLayers([]),
+  );
   // 每个器件的手工调整（符号元素位移）与输出改名。
   const [deviceEdits, setDeviceEdits] = useState<Readonly<Record<string, DeviceEdit>>>({});
   const progressRef = useRef<GenerationProgress | null>(null);
@@ -619,6 +730,24 @@ const ConverterPage = ({
     setSectionIndex(0);
     setSelectedShapeKey(null);
   }, [selectedKeyId]);
+
+  // 当前器件实际存在的图层（源数据里没有的层不列出来）。换器件时把上次残留的
+  // 勾选收敛到新图层表，并保证至少留一层可见。
+  const layers = useMemo(
+    () => (selected?.footprint == null ? [] : footprintLayers(selected.footprint)),
+    [selected?.footprint],
+  );
+  useEffect(() => {
+    if (layers.length === 0) {
+      return;
+    }
+    setVisibleLayers((current) => {
+      const next = normalizeVisibleLayers(layers, current);
+      return next.size === current.size && [...next].every((id) => current.has(id))
+        ? current
+        : next;
+    });
+  }, [layers]);
 
   const updateDeviceEdit = (id: string, patch: Partial<DeviceEdit>): void => {
     setDeviceEdits((current) => ({
@@ -1160,13 +1289,28 @@ const ConverterPage = ({
               resetKey={`pcb:${selected.id}`}
               ariaLabel="PCB 封装预览"
             >
-              {() => <FootprintPreview footprint={selected.footprint!} />}
+              {() => (
+                <FootprintPreview
+                  footprint={selected.footprint!}
+                  visible={visibleLayers}
+                  maskExpansionMm={selectedPlan?.solderMaskExpansionMm ?? 0.05}
+                />
+              )}
             </PanZoom>
           ) : (
             <div className="empty-state large"><Box size={36} /><strong>这里会显示封装俯视图</strong><span>焊盘、丝印和外形可以在生成前确认</span></div>
           )}
           {previewTab === "pcb" && selected?.footprint !== null && selected?.footprint !== undefined ? (
-            <div className="canvas-legend"><span><i className="legend-pad" />铜焊盘</span><span><i className="legend-silk" />丝印</span><span><i className="legend-bound" />阻焊</span></div>
+            <div className="canvas-legend">
+              {layers
+                .filter((layer) => visibleLayers.has(layer.id))
+                .map((layer) => (
+                  <span key={layer.id}>
+                    <i style={{ background: layer.color }} />
+                    {layer.label}
+                  </span>
+                ))}
+            </div>
           ) : null}
           {previewTab === "sch" && editedSymbol !== null ? (
             <div className="canvas-legend">
@@ -1289,13 +1433,38 @@ const ConverterPage = ({
             </section>
             <section className="inspector-section">
               <h3>图层显示 <ChevronRight size={15} /></h3>
-              <div className="layer-list">
-                <label><input type="checkbox" defaultChecked /><i className="copper" />铜焊盘 <span>{selected.footprint.pads.length}</span></label>
-                <label><input type="checkbox" defaultChecked /><i className="silk" />顶层丝印 <span>{selected.footprint.lines.length}</span></label>
-                <label><input type="checkbox" defaultChecked /><i className="mask" />阻焊开窗 <span>{selected.footprint.pads.length}</span></label>
-                <label><input type="checkbox" defaultChecked /><i className="paste" />钢网开口 <span>{selected.footprint.pads.filter((pad) => pad.holeWidth === 0).length}</span></label>
-                <label><input type="checkbox" defaultChecked /><i className="bound" />装配外形 <span>1</span></label>
-              </div>
+              {layers.length === 0 ? (
+                <div className="layer-empty">读取器件后这里会列出实际存在的图层</div>
+              ) : (
+                <div className="layer-list">
+                  {layers.map((layer) => (
+                    <label key={layer.id} title={`${layer.label} · ${layer.allegro}`}>
+                      <input
+                        type="checkbox"
+                        checked={visibleLayers.has(layer.id)}
+                        onChange={(event) => {
+                          setVisibleLayers((current) => {
+                            const next = new Set(current);
+                            if (event.target.checked) {
+                              next.add(layer.id);
+                            } else {
+                              next.delete(layer.id);
+                            }
+                            return next;
+                          });
+                        }}
+                        data-testid={`layer-${layer.id}`}
+                      />
+                      <i style={{ background: layer.color }} />
+                      <span className="layer-name">
+                        {layer.label}
+                        <em>{layer.allegro}</em>
+                      </span>
+                      <span className="layer-count">{layer.count}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
             </section>
             <section className="inspector-section model-section">
               <h3>三维模型 <ChevronRight size={15} /></h3>

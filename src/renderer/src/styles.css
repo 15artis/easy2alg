@@ -2022,3 +2022,64 @@ select:focus,
   font-size: 10px;
   line-height: 1.5;
 }
+
+/* ---------- 图层显示面板 ---------- */
+.layer-list label {
+  display: grid;
+  grid-template-columns: auto 9px 1fr auto;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 0;
+  cursor: pointer;
+}
+
+.layer-list label input {
+  width: 14px;
+  height: 14px;
+  accent-color: #2458d3;
+}
+
+.layer-list label i {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+}
+
+.layer-list label .layer-name {
+  color: #36434e;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.layer-list label .layer-name em {
+  display: block;
+  color: #a3adb8;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.layer-list label .layer-count {
+  color: #8791a2;
+  font-size: 11px;
+}
+
+.layer-empty {
+  color: #a3adb8;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+/* 图例最多九项，允许换行 */
+.canvas-legend {
+  flex-wrap: wrap;
+  max-width: 62%;
+  font-size: 10px;
+}
+
+.panzoom-controls .panzoom-fit + .panzoom-fit {
+  border-left: 1px solid #e4e9f0;
+  margin-left: 2px;
+}

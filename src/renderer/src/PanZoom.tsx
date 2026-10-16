@@ -104,6 +104,15 @@ export const PanZoom = ({
     [size.height, size.width, zoomAt],
   );
 
+  /** 复位 = 回到 100% 并把内容摆到画布中心（区别于"适应窗口"的自动缩放）。 */
+  const reset = useCallback(() => {
+    setView({
+      scale: 1,
+      tx: size.width / 2 - (bounds.minX + bounds.maxX) / 2,
+      ty: size.height / 2 - (bounds.minY + bounds.maxY) / 2,
+    });
+  }, [bounds.minX, bounds.maxX, bounds.minY, bounds.maxY, size.height, size.width]);
+
   // React 的 onWheel 在部分环境是 passive，preventDefault 会被忽略 → 手挂原生监听。
   useEffect(() => {
     const element = containerRef.current;
@@ -189,6 +198,9 @@ export const PanZoom = ({
         </button>
         <button type="button" className="panzoom-fit" onClick={fit} title="缩放到刚好看见全部内容">
           适应
+        </button>
+        <button type="button" className="panzoom-fit" onClick={reset} title="复位：回到 100% 并居中" data-testid="panzoom-reset">
+          复位
         </button>
       </div>
     </div>
