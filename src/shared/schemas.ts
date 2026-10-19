@@ -426,6 +426,13 @@ export const QueueItemSchema = z.object({  id: z.string().regex(/^C\d+$/),
   footprint: NormalizedFootprintSchema.nullable(),
   message: z.string(),
   selected: z.boolean(),
+  /**
+   * 本地库器件的溯源信息。符号条目（symbols 表）丢了之后要靠它补拉 ——
+   * C 编号器件没有这个字段，走在线 fetchSymbol。
+   */
+  local: z
+    .object({ sourcePath: z.string().min(1), deviceUuid: z.string().min(1) })
+    .optional(),
 });
 export type QueueItem = z.infer<typeof QueueItemSchema>;
 

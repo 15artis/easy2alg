@@ -1365,6 +1365,17 @@ select:focus,
   font-style: normal;
 }
 
+/* 失败原因：红色、允许两行（错误文本比封装名长得多，单行 ellipsis 看不出原因，
+ * 完整内容靠 title 悬停提示） */
+.rail-item .rail-error-text {
+  color: #c13c4a;
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  line-height: 1.5;
+}
+
 .rail-state {
   color: #13856b;
   transition: opacity 120ms ease;

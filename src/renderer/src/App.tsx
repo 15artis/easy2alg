@@ -955,6 +955,50 @@ const ConverterPage = ({
       setPreviewTab("pcb");
     }
   }, [hasSymbol]);
+
+  /**
+   * 符号条目自愈：选中的器件在 symbols 表里缺条目时自动补拉一次。
+   *
+   * 正常流程里导入就会带上符号，但"清空列表 → 重新导入"等路径可能只恢复了
+   * 队列行（封装还在、能看 PCB 预览），符号却是空的 —— 表现为"原理图符号"
+   * tab 灰掉点不动（用户 2026-10-19）。每台只试一次（ref 去重），器件真没
+   * 符号时也不会反复打接口。
+   */
+  const symbolRetryRef = useRef<ReadonlySet<string>>(new Set());
+  const selectedQueueItem = selected;
+  useEffect(() => {
+    const item = selectedQueueItem;
+    if (item === null || item === undefined) {
+      return;
+    }
+    if (symbols[item.id] !== undefined || symbolRetryRef.current.has(item.id)) {
+      return;
+    }
+    symbolRetryRef.current = new Set([...symbolRetryRef.current, item.id]);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const symbol =
+          item.local === undefined
+            ? await api.fetchSymbol(item.id)
+            : await api.fetchLocalSymbol(item.local.sourcePath, item.local.deviceUuid);
+        if (!cancelled && symbol !== null) {
+          const libraryName =
+            item.local === undefined ? item.id : libraryNameOf(item.local.sourcePath);
+          setSymbols((current) =>
+            current[item.id] !== undefined
+              ? current
+              : { ...current, [item.id]: { symbol, libraryName } },
+          );
+        }
+      } catch {
+        // 拉不到就保持没有符号（tab 维持禁用 + 提示），不打断用户
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedQueueItem, symbols]);
   const selectedKeyId = selected?.id ?? null;
   useEffect(() => {
     setSectionIndex(0);
@@ -1540,14 +1584,20 @@ const ConverterPage = ({
         footprint: null,
         message: `读取本地库：${device.footprintTitle}（${device.padCount} 脚）`,
         selected: true,
+        local: { sourcePath: device.sourcePath, deviceUuid: device.deviceUuid },
       });
-      // 合并规则：同 id 已存在且是 error 项 → 替换重读；其它状态 → 跳过。
+      // 合并规则：同 id 已存在且是 error 项 → 替换重读；**符号条目丢了也重读**
+      // （用户 2026-10-19：重新导入后"原理图符号"tab 灰掉点不动 —— 旧的"非 error
+      // 就跳过"会让 symbols 表缺了之后永远补不回来，PCB 预览正常但符号没了）。
       const nextQueue = [...queue];
       const targets: LocalLibraryDeviceSummary[] = [];
       for (const device of devices) {
         const index = nextQueue.findIndex((item) => item.id === device.lcscId);
         if (index >= 0) {
-          if (nextQueue[index].state === "error") {
+          if (
+            nextQueue[index].state === "error" ||
+            symbols[nextQueue[index].id] === undefined
+          ) {
             nextQueue[index] = makeItem(device);
             targets.push(device);
           }
@@ -1992,7 +2042,13 @@ const ConverterPage = ({
                 <span className={`source-dot ${item.state}`} />
                 <div>
                   <strong>{item.id}</strong><small>{item.footprint?.info.name ?? ""}</small>
-                  <em>{item.footprint?.info.sourcePackageName ?? item.message}</em>
+                  {/* 失败时必须让用户看到原因（2026-10-19：Capture 占着库导致写入被拒，
+                   * 但 em 槽位被封装名占着，错误文本根本显示不出来，用户只看到红 X） */}
+                  {item.state === "error" || item.state === "generationFailed" ? (
+                    <em className="rail-error-text" title={item.message}>{item.message}</em>
+                  ) : (
+                    <em>{item.footprint?.info.sourcePackageName ?? item.message}</em>
+                  )}
                 </div>
                 <div className={`rail-state ${item.state}`}>
                   {item.state === "loading" ? (
