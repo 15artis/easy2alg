@@ -1266,6 +1266,50 @@ select:focus,
   text-align: left;
 }
 
+/**
+ * 每行外面套一个定位壳：行本身是 <button>，删除按钮不能嵌进去（HTML 不允许
+ * button 套 button），只能做兄弟节点压在同一行的右上角。平时透明，
+ * 悬停/键盘聚焦时浮出来，并把状态图标让开。
+ */
+.rail-item-wrap {
+  position: relative;
+}
+
+.rail-delete {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: #8791a2;
+  background: #fff;
+  border: 1px solid #dfe5ed;
+  border-radius: 6px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease, color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.rail-item-wrap:hover .rail-delete,
+.rail-item-wrap:focus-within .rail-delete {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.rail-item-wrap:hover .rail-state {
+  opacity: 0;
+}
+
+.rail-delete:hover {
+  color: #c13c4a;
+  background: #fff5f6;
+  border-color: #f0c2c7;
+}
+
 .rail-item:hover {
   background: #f8fafc;
 }
@@ -1323,6 +1367,7 @@ select:focus,
 
 .rail-state {
   color: #13856b;
+  transition: opacity 120ms ease;
 }
 
 .rail-state.warning { color: #b46b09; }

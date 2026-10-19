@@ -1335,6 +1335,45 @@ const ConverterPage = ({
     );
   };
 
+  /**
+   * 从队列里删掉器件（用户 2026-10-19 要求）。
+   *
+   * 不能只 `filter(queue)`：每台器件在 plans / symbols / olbOutcomes / deviceEdits /
+   * editHistory 里各有一份状态，留着的话**同一个编号再次导入会带着上次的残留**
+   * （改过的封装名、拖过的符号、上一次的撤销栈）。
+   */
+  const removeDevices = useCallback((ids: readonly string[]): void => {
+    if (ids.length === 0) {
+      return;
+    }
+    const gone = new Set(ids);
+    const drop = <T,>(record: Readonly<Record<string, T>>): Record<string, T> =>
+      Object.fromEntries(Object.entries(record).filter(([key]) => !gone.has(key)));
+
+    setQueue((current) => current.filter((item) => !gone.has(item.id)));
+    setPlans((current) => drop(current));
+    setSymbols((current) => drop(current));
+    setOlbOutcomes((current) => drop(current));
+    setDeviceEdits((current) => drop(current));
+    setEditHistory((current) => drop(current));
+    setSelectedKeys([]);
+    // 正在结算的"一步"如果属于被删掉的器件，定时器与快照一起丢掉。
+    if (editStepRef.current !== null && gone.has(editStepRef.current.deviceId)) {
+      window.clearTimeout(editStepRef.current.timer);
+      editStepRef.current = null;
+    }
+  }, []);
+
+  /** 删一台：选中它时顺手把选中项挪到相邻器件，别让右侧预览空着。 */
+  const removeDevice = (id: string): void => {
+    if (selectedId === id) {
+      const index = queue.findIndex((item) => item.id === id);
+      const neighbour = queue[index + 1]?.id ?? queue[index - 1]?.id ?? null;
+      setSelectedId(neighbour);
+    }
+    removeDevices([id]);
+  };
+
   /** 把一批 C 编号加入队列并读取（搜索命中后也走这里）。 */
   const importIdList = async (ids: readonly string[]): Promise<void> => {
     if (ids.length === 0) {
@@ -1916,41 +1955,68 @@ const ConverterPage = ({
           {queue.length === 0 ? (
             <div className="empty-state"><Layers3 size={28} /><strong>暂无器件</strong><span>先查询一个立创编号</span></div>
           ) : queue.map((item) => (
-            <button
-              type="button"
-              key={item.id}
-              className={`rail-item ${selected?.id === item.id ? "selected" : ""}`}
-              onClick={() => setSelectedId(item.id)}
-              data-testid={`queue-item-${item.id}`}
-            >
-              <input
-                type="checkbox"
-                checked={item.selected}
-                onClick={(event) => event.stopPropagation()}
-                onChange={(event) => updateItem(item.id, { selected: event.target.checked })}
-                aria-label={`选择 ${item.id}`}
-              />
-              <span className={`source-dot ${item.state}`} />
-              <div>
-                <strong>{item.id}</strong><small>{item.footprint?.info.name ?? ""}</small>
-                <em>{item.footprint?.info.sourcePackageName ?? item.message}</em>
-              </div>
-              <div className={`rail-state ${item.state}`}>
-                {item.state === "loading" ? (
-                  <LoaderCircle className="spin" size={15} />
-                ) : item.state === "warning" ? (
-                  <TriangleAlert size={15} />
-                ) : item.state === "error" || item.state === "generationFailed" ? (
-                  <X size={15} />
-                ) : (
-                  <Check size={15} />
-                )}
-              </div>
-            </button>
+            /* 行本身是按钮，删除按钮只能做**兄弟节点**（button 里不能再嵌 button），
+             * 用绝对定位压在同一行的右上角，悬停/聚焦时才浮出来。 */
+            <div className="rail-item-wrap" key={item.id}>
+              <button
+                type="button"
+                className={`rail-item ${selected?.id === item.id ? "selected" : ""}`}
+                onClick={() => setSelectedId(item.id)}
+                onKeyDown={(event) => {
+                  if (event.key === "Delete") {
+                    event.preventDefault();
+                    removeDevice(item.id);
+                  }
+                }}
+                data-testid={`queue-item-${item.id}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={item.selected}
+                  onClick={(event) => event.stopPropagation()}
+                  onChange={(event) => updateItem(item.id, { selected: event.target.checked })}
+                  aria-label={`选择 ${item.id}`}
+                />
+                <span className={`source-dot ${item.state}`} />
+                <div>
+                  <strong>{item.id}</strong><small>{item.footprint?.info.name ?? ""}</small>
+                  <em>{item.footprint?.info.sourcePackageName ?? item.message}</em>
+                </div>
+                <div className={`rail-state ${item.state}`}>
+                  {item.state === "loading" ? (
+                    <LoaderCircle className="spin" size={15} />
+                  ) : item.state === "warning" ? (
+                    <TriangleAlert size={15} />
+                  ) : item.state === "error" || item.state === "generationFailed" ? (
+                    <X size={15} />
+                  ) : (
+                    <Check size={15} />
+                  )}
+                </div>
+              </button>
+              <button
+                type="button"
+                className="rail-delete"
+                onClick={() => removeDevice(item.id)}
+                title={`从列表删除 ${item.id}`}
+                aria-label={`删除 ${item.id}`}
+                data-testid={`queue-remove-${item.id}`}
+              >
+                <Trash2 size={13} />
+              </button>
+            </div>
           ))}
         </div>
         {queue.length > 0 ? (
-          <button className="clear-list" type="button" onClick={() => { setQueue([]); setSelectedId(null); }}>
+          <button
+            className="clear-list"
+            type="button"
+            onClick={() => {
+              removeDevices(queue.map((item) => item.id));
+              setSelectedId(null);
+            }}
+            data-testid="clear-queue"
+          >
             <Trash2 size={14} />清空列表
           </button>
         ) : null}
