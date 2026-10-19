@@ -939,14 +939,19 @@ const ConverterPage = ({
     ]?.kind === "text";
 
 
-  // 勾选目标后仍要保证"有东西可生成"：只要 PCB 就要求有封装，只勾符号就要求该器件有符号。
-  const generatableItems = useMemo(
-    () =>
-      targets.pcb || targets.symbol
-        ? runnableItems.filter((item) => targets.pcb || symbols[item.id] !== undefined)
-        : [],
-    [runnableItems, symbols, targets.pcb, targets.symbol],
-  );
+  // 勾选目标后仍要保证"有东西可生成"。
+  // **只勾符号时不要求封装计划**（用户 2026-10-19：本地库器件封装计划丢了/没建过，
+  // 但符号在 —— 想只写 .olb 却被"先在左侧勾选至少一个已读取的器件"拦住）。
+  // PCB 走 runnableItems（那里要求 plans 有计划）；符号只看 symbols 表。
+  const generatableItems = useMemo(() => {
+    if (targets.pcb) {
+      return runnableItems;
+    }
+    if (targets.symbol) {
+      return queue.filter((item) => item.selected && symbols[item.id] !== undefined);
+    }
+    return [];
+  }, [queue, runnableItems, symbols, targets.pcb, targets.symbol]);
 
   // 切到没有符号的器件时把分页退回 PCB，避免"分页停在符号、画布却是封装"的错位。
   const hasSymbol = editedSymbol !== null;
@@ -1902,9 +1907,12 @@ const ConverterPage = ({
     : wantsNothing
       ? "至少勾选一种生成内容"
       : readyCount === 0
-        ? runnableItems.length > 0
-          ? "勾选的器件没有原理图符号数据（立创编号链路只有封装）"
-          : "先在左侧勾选至少一个已读取的器件"
+        ? // 只勾符号且确实勾了器件 → 是"没有符号数据"，不是"没勾选"
+          (!targets.pcb && queue.some((item) => item.selected)
+            ? "勾选的器件没有原理图符号数据"
+            : runnableItems.length > 0
+              ? "勾选的器件没有原理图符号数据（立创编号链路只有封装）"
+              : "先在左侧勾选至少一个已读取的器件")
         : pcbBlocked
           ? "生成 PCB 封装需要先检测到 Allegro"
           : retryCount > 0 || regenerateOnly
