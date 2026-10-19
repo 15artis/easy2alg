@@ -46,11 +46,16 @@ export const estimateLabelWidth = (text: string): number =>
 
 /**
  * 源 `fontSize`（符号单位）→ Capture 的 CommentText 字号。
- * 实测源 12 对应 OrCAD 的 -9，按 0.75 折算并夹到真实库常见区间。
- * 预览、避让、写 OLB 共用这一份，避免三处各算一套。
+ *
+ * **不再打折**（2026-10-19，用户第三次反馈"生成的尺寸和预览有差异"）：原先按 0.75
+ * 折算（源 12 → Capture 9），预览却按源字号画，于是 Capture 里每一条标注都比预览
+ * 小一号。.olb 的字高和符号坐标是同一个单位（10 mil），直接用源字号才是所见即所得；
+ * 手改样本也对得上：height=-9 的 "JTAG" 框高 14 = round(9×1.556)。
+ *
+ * 上下限只防退化（源数据缺失时兜底 8，超长标题不让它盖住整个符号）。
  */
 export const symbolFontHeight = (sourceHeight: number): number =>
-  Math.min(Math.max(Math.round(sourceHeight * 0.75), 8), 18);
+  Math.min(Math.max(Math.round(sourceHeight), 8), 40);
 
 /**
  * CommentText 的横向占宽。
@@ -280,16 +285,32 @@ export const anchorLabelBox = (
  * 没有官方文档，这里取"左上角起算、高度 = 字号"的保守近似 —— 只用来判断
  * "挪一下会不会压到引脚标签"，宁大勿小。
  */
+/**
+ * CommentText 的占位盒（含旋转）。
+ *
+ * 竖排（rotation 90/270）时**不能按横排算** —— 宽 = 字高、高 = 文本长度，否则
+ * 避让会拿一条横着扫过去的长条去判冲突（实测会误报"Hot Plug/Multfunction pins
+ * 压在引脚名上"）。锚点约定与写库一致：`at` 是文字起点，框沿阅读方向铺开。
+ */
 export const commentTextBox = (shape: {
   readonly at: { readonly x: number; readonly y: number };
   readonly height: number;
   readonly text: string;
+  readonly rotation?: number;
 }): SymbolBox => {
   const height = symbolFontHeight(shape.height);
+  const width = estimateCommentWidth(shape.text, height);
+  const quarter = Math.round((shape.rotation ?? 0) / 90) % 4;
+  if (quarter === 1 || quarter === 3) {
+    // 90°：文字自下而上，框向上铺；270°：自上而下，框向下铺
+    return quarter === 1
+      ? { minX: shape.at.x, maxX: shape.at.x + height, minY: shape.at.y - width, maxY: shape.at.y }
+      : { minX: shape.at.x, maxX: shape.at.x + height, minY: shape.at.y, maxY: shape.at.y + width };
+  }
   return {
     minX: shape.at.x,
     minY: shape.at.y,
-    maxX: shape.at.x + estimateCommentWidth(shape.text, height),
+    maxX: shape.at.x + width,
     maxY: shape.at.y + height,
   };
 };

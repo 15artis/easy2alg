@@ -164,14 +164,14 @@ describe("capture library XML", () => {
     const connector = new Elibz2Connector();
     const symbol = await connector.loadSymbol(fixturePath, deviceUuid);
     const xml = buildCaptureLibraryXml(symbol!, "C:/libs/target.OLB");
-    // 第一段源本体只有 380×310，避让后加宽到 506 —— SymbolBBox 必须是加宽后的值
+    // 第一段源本体只有 380×310，避让后加宽到 510（还对齐了 10 单位格点）
     expect(bodyBoxOf(symbol!.sections[0])).toEqual({
       minX: 0,
       minY: 0,
-      maxX: 506,
+      maxX: 510,
       maxY: 310,
     });
-    expect(xml).toContain('<Defn x1="0" x2="506" y1="0" y2="310" />');
+    expect(xml).toContain('<Defn x1="0" x2="510" y1="0" y2="310" />');
     // 每个上下边引脚的连接端 x 都落在左右两条名字竖带之间的中段里
     for (const section of symbol!.sections) {
       const body = bodyBoxOf(section);
@@ -201,7 +201,7 @@ describe("capture library XML", () => {
       expect(box[3]).toBe("0");
     }
     const sectionA = symbol!.sections[0];
-    expect([boxes[0][1], boxes[0][2], boxes[0][3], boxes[0][4]]).toEqual(["0", "506", "0", "310"]);
+    expect([boxes[0][1], boxes[0][2], boxes[0][3], boxes[0][4]]).toEqual(["0", "510", "0", "310"]);
     expect(sectionA.name).toBe("PEX8748_CS_I2C_SPI");
   });
 

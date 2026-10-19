@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, copyFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 import { promisify } from "node:util";
@@ -35,6 +35,26 @@ const fileExists = async (path: string): Promise<boolean> => {
   } catch {
     return false;
   }
+};
+
+/**
+ * Capture 的库锁文件：`<库名>lck`（实测 `EASY2ALG.OLBlck`），有的版本写成 `.lck`。
+ * 只按同目录、同名（大小写不敏感）匹配，别误伤别的库。
+ */
+const captureLockFile = async (libraryPath: string): Promise<string | null> => {
+  const directory = dirname(libraryPath);
+  const name = basename(libraryPath).toLowerCase();
+  let entries: string[];
+  try {
+    entries = await readdir(directory);
+  } catch {
+    return null;
+  }
+  const found = entries.find((entry) => {
+    const lower = entry.toLowerCase();
+    return lower === `${name}lck` || lower === `${name}.lck`;
+  });
+  return found === undefined ? null : join(directory, found);
 };
 
 /** Tcl 双引号字符串转义：反斜杠、引号、$ 与 [] 都必须在字面量里失效。 */
@@ -305,6 +325,18 @@ export const writeCaptureLibrary = async (
   options: OlbWriteOptions,
 ): Promise<OlbWriteOutcome> => {
   const { symbol, toolchain, libraryPath } = options;
+  // Capture 打开着库时会留一个 `<库名>lck`（实测 `EASY2ALG.OLBlck`）。此时写进去的内容
+  // 会被 Capture 用内存里的旧内容覆盖；用户甚至会看到"刚删掉的 OLB 又回来了"
+  // （2026-10-19 实际发生），所以直接拒绝并说清原因。
+  const lockPath = await captureLockFile(libraryPath);
+  if (lockPath !== null) {
+    await writeLog("warn", "olb_locked_by_capture", { libraryPath, lockPath });
+    throw new Error(
+      `OrCAD Capture 正打开着这个库（目录里有 ${basename(lockPath)}）。` +
+        `请先在 Capture 里关闭 ${basename(libraryPath)} 再重试 —— ` +
+        `否则 Capture 会把内存里的旧内容写回磁盘，看起来就像删掉的文件又出现了。`,
+    );
+  }
   const existedBefore = await fileExists(libraryPath);
   const mode = existedBefore ? 1 : 0;
   await mkdir(dirname(libraryPath), { recursive: true });

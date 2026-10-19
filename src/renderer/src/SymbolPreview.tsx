@@ -22,6 +22,7 @@ import {
   pinNameBox,
   pinNumberBox,
   pinSideOf,
+  symbolFontHeight,
   type SymbolBox,
 } from "../../shared/symbol-labels";
 
@@ -616,10 +617,13 @@ export const SymbolPreview = ({
           );
         }
         /* 文字（CommentText）：glyph 本身的命中区太窄，垫一个透明矩形把整块文字都变成
-         * 可点区域，这样"想再拖同一个标签"就不会抓到别的东西。宽度按模型估算再放
-         * 35% + 12 单位余量 —— 预览用的是源字号，实际渲染比模型略宽。 */
-        const hitWidth = estimateLabelWidth(shape.text) * (shape.height / PIN_FONT) * 1.35 + 12;
-        const hitHeight = shape.height * 1.4 + 6;
+         * 可点区域，这样"想再拖同一个标签"就不会抓到别的东西。
+         *
+         * 字号必须走 `symbolFontHeight` —— 写 .olb 时用的就是它，**预览按源字号画、
+         * 写库按 0.75 折算**会让 Capture 里每条标注都比预览小一号（用户 2026-10-19 反馈）。 */
+        const fontHeight = symbolFontHeight(shape.height);
+        const hitWidth = estimateLabelWidth(shape.text) * (fontHeight / PIN_FONT) * 1.35 + 12;
+        const hitHeight = fontHeight * 1.4 + 6;
         return (
           <g key={key} transform={translate} {...moveProps(key)}>
             <g
@@ -632,7 +636,7 @@ export const SymbolPreview = ({
               {editing ? (
                 <rect
                   x={shape.at.x - 4}
-                  y={shape.at.y - shape.height}
+                  y={shape.at.y - fontHeight}
                   width={hitWidth}
                   height={hitHeight}
                   fill="transparent"
@@ -641,7 +645,7 @@ export const SymbolPreview = ({
               <text
                 x={shape.at.x}
                 y={shape.at.y}
-                fontSize={shape.height}
+                fontSize={fontHeight}
                 fill={active ? ACTIVE : TEXT}
               >
                 {shape.text}

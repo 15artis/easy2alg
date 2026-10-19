@@ -243,21 +243,33 @@ const widenForVerticalLabels = (
   // ① 中段要容得下整排竖脚 + 一格取整余量，不够就把本体加宽（只右移右边缘）。
   const requiredWidth = leftInset + span + GRID + rightInset;
   const bodyWidth = body.maxX - body.minX;
-  const widen = Math.max(0, Math.ceil(requiredWidth - bodyWidth));
+  const needed = Math.max(0, Math.ceil(requiredWidth - bodyWidth));
+  // 加宽时把右边缘也推到 10 单位格点上：右列引脚的连接端 = 右边缘 + 引脚长，
+  // 边缘落在半格上时整排引脚都接不上线（PEX8748 右侧 182 脚实测）。
+  const widen =
+    needed === 0
+      ? 0
+      : Math.ceil((body.maxX + needed) / PIN_GRID) * PIN_GRID - body.maxX;
   const grownMaxX = body.maxX + widen;
 
-  // ② 竖脚整体平移到中段正中；取 5 的整数倍，并夹回带内。
+  // ② 竖脚整体平移到中段正中；并夹回带内。
+  //    步长看这一排本身：整排已经落在 10 单位格点上时按 10 挪，别把它推到半格
+  //    （半格的引脚在 Capture 原理图里接不上线，用户 2026-10-19 反馈）。
   const bandStart = body.minX + leftInset;
   const bandEnd = grownMaxX - rightInset;
   const xs = vertical.map((pin) => pin.connection.x);
   const groupMin = Math.min(...xs);
   const groupMax = Math.max(...xs);
-  let shift = roundGrid((bandStart + bandEnd) / 2 - (groupMin + groupMax) / 2);
+  const onTenGrid = new Set(xs.map((x) => ((Math.round(x) % PIN_GRID) + PIN_GRID) % PIN_GRID)).size === 1;
+  const step = onTenGrid ? PIN_GRID : GRID;
+  let shift = Math.round(
+    ((bandStart + bandEnd) / 2 - (groupMin + groupMax) / 2) / step,
+  ) * step;
   if (groupMin + shift < bandStart) {
-    shift = Math.ceil((bandStart - groupMin) / GRID) * GRID;
+    shift = Math.ceil((bandStart - groupMin) / step) * step;
   }
   if (groupMax + shift > bandEnd) {
-    shift = Math.floor((bandEnd - groupMax) / GRID) * GRID;
+    shift = Math.floor((bandEnd - groupMax) / step) * step;
   }
 
   if (widen === 0 && shift === 0) {
@@ -280,5 +292,58 @@ const widenForVerticalLabels = (
     bounds: { ...section.bounds, maxX: section.bounds.maxX + widen },
     shapes: recenterTitles(shapes, body, grownMaxX, widen, pins),
     pins,
+  };
+};
+
+/**
+ * 引脚坐标吸附到 Capture 的 100 mil 网格（10 单位）。
+ *
+ * 立创的符号常用 **5 单位**（50 mil）半格：PEX8748 有 247/676 个引脚落在 x=145/155…
+ * 这种半格位置上。放进 Capture 原理图（默认 100 mil 吸附网格）后，这些引脚**接不上线**
+ * （用户 2026-10-19 反馈"引脚没落在网格上导致线连不上"）。
+ *
+ * 做法：**按侧分组整排平移**，不逐脚取整 —— 逐脚 round 会把 145/155 挤成 140/150
+ * 甚至撞到一起；整排平移只改起点、相对间距与顺序原样保留。
+ * 前提是该侧所有引脚在变化方向上的余数一致（间距本身是 10 的整数倍）；
+ * 0.5mm 间距这种本来就对不齐的器件直接跳过，不做破坏性调整。
+ */
+const PIN_GRID = 10;
+
+export const alignPinsToGrid = (section: NormalizedSymbolSection): NormalizedSymbolSection => {
+  const sides: readonly ("left" | "right" | "top" | "bottom")[] = ["left", "right", "top", "bottom"];
+  const shifts = new Map<NormalizedSymbolPin, { dx: number; dy: number }>();
+
+  for (const side of sides) {
+    const group = section.pins.filter((pin) => pinSideOf(pin) === side);
+    if (group.length === 0) {
+      continue;
+    }
+    const vertical = side === "left" || side === "right";
+    const values = group.map((pin) => (vertical ? pin.connection.y : pin.connection.x));
+    const remainders = new Set(values.map((value) => ((Math.round(value) % PIN_GRID) + PIN_GRID) % PIN_GRID));
+    // 间距不是 10 的整数倍（如 0.5mm 间距）→ 整体挪也救不了，跳过
+    if (remainders.size !== 1) {
+      continue;
+    }
+    const remainder = [...remainders][0];
+    if (remainder === 0) {
+      continue;
+    }
+    // 往前挪 remainder，或往后挪 10-remainder，取位移小的那个
+    const delta = remainder <= PIN_GRID / 2 ? -remainder : PIN_GRID - remainder;
+    for (const pin of group) {
+      shifts.set(pin, vertical ? { dx: 0, dy: delta } : { dx: delta, dy: 0 });
+    }
+  }
+
+  if (shifts.size === 0) {
+    return section;
+  }
+  return {
+    ...section,
+    pins: section.pins.map((pin) => {
+      const shift = shifts.get(pin);
+      return shift === undefined ? pin : shiftPin(pin, shift.dx, shift.dy);
+    }),
   };
 };

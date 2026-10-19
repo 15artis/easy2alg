@@ -1652,11 +1652,15 @@ const ConverterPage = ({
   const generateSelected = async (): Promise<void> => {
     const items = generatableItems;
     if (items.length === 0) {
+      // 按钮不再做灰，点下去要把"为什么现在生成不了"说清楚
+      setLocalError(generateTitle);
       return;
     }
+    setLocalError(null);
     const wantPcb = targets.pcb;
     const wantSymbol = targets.symbol;
     setRunning(true);
+    try {
     for (const item of items) {
       const plan = planFor(item.id);
       const symbol = wantSymbol ? symbolFor(item.id) : null;
@@ -1770,7 +1774,10 @@ const ConverterPage = ({
         onGenerated({ ...pcbResult, id: `${pcbResult.lcscId}-${pcbResult.completedAt}` });
       }
     }
-    setRunning(false);
+    } finally {
+      // 任何一步抛出来都不能把 running 卡在 true —— 那会让按钮永远灰着（用户 2026-10-19）
+      setRunning(false);
+    }
   };
 
   // ---------- 侧栏宽度（可拖动，宽度持久化在 settings.ui 里）----------
@@ -1834,7 +1841,12 @@ const ConverterPage = ({
   const regenerateOnly = shouldOfferRegeneration(generatableItems);
   const wantsNothing = !targets.pcb && !targets.symbol;
   const pcbBlocked = targets.pcb && allegroInstall === null;
-  const generateDisabled = readyCount === 0 || running || wantsNothing || pcbBlocked;
+  /**
+   * 生成按钮**只在运行中变灰**（用户 2026-10-19："不需要进行变灰处理，需要每次都能执行"）。
+   * 其它"现在不能生成"的情况改成点一下把原因写在输入框下方，而不是把按钮做灰 ——
+   * 灰按钮不给原因，用户只会觉得"点了没反应"。
+   */
+  const generateDisabled = running;
   const generateTitle = running
     ? "正在生成…"
     : wantsNothing

@@ -10,6 +10,7 @@ import type {
 import { NormalizedSymbolSchema } from "../../shared/schemas";
 import { avoidLabelOverlapInSection } from "../../shared/symbol-layout";
 import { attachPinLabelAnchors, DEFAULT_SYMBOL_TEXT_HEIGHT } from "../../shared/symbol-labels";
+import { alignPinsToGrid } from "../../shared/symbol-layout";
 import { dedupePinNames } from "../../shared/symbol-normalize";
 import { refdesPrefixFrom, sanitizeSymbolName } from "./naming";
 
@@ -321,6 +322,7 @@ export const parseEasyEdaSymbol = (
   // 都在解析阶段做，预览与写库看到的是同一份结果。
   const section: NormalizedSymbolSection = attachPinLabelAnchors(
     avoidLabelOverlapInSection(
+      alignPinsToGrid(
       dedupePinNames({
         name: sanitizeSymbolName(cPara.name ?? options.fallbackName, fallback),
         bounds: {
@@ -337,6 +339,7 @@ export const parseEasyEdaSymbol = (
         shapes: shapes.map(moveShape),
       }),
     ),
+  ),
   );
   const symbol: NormalizedSymbol = {
     name: sanitizeSymbolName(cPara.name ?? options.fallbackName, fallback),

@@ -163,13 +163,14 @@ describe("elibz2 connector", () => {
     expect(station0.shapes.find((shape) => shape.kind === "rect")).toEqual({
       kind: "rect",
       min: { x: 0, y: 0 },
-      // 180 是源本体宽度；避让把上下一排竖脚挪进中段时加宽到 243（见 symbol-layout.ts）
-      max: { x: 243, y: 400 },
+      // 180 是源本体宽度；避让把上下一排竖脚挪进中段时加宽到 250（见 symbol-layout.ts，
+      // 加宽量还会把右边缘对齐到 10 单位格点，右边引脚才接得上线）
+      max: { x: 250, y: 400 },
       cornerRadius: 10,
       filled: false,
     });
     // 左右引脚伸到 x<0 是正常的（真实库同样如此），整体 bounds 允许越出本体
-    expect(station0.bounds).toEqual({ minX: -10, minY: -10, maxX: 253, maxY: 410 });
+    expect(station0.bounds).toEqual({ minX: -10, minY: -10, maxX: 260, maxY: 410 });
   });
 
   it("maps pin geometry to Capture hotpt/start and reads attributes via parentId", async () => {
@@ -190,9 +191,9 @@ describe("elibz2 connector", () => {
     expect(left.body).toEqual({ x: 0, y: 10 });
     // rotation=180 朝 -x
     const right = station0.pins.find((pin) => pin.name === "PEX_PETp8")!;
-    // 右侧引脚跟随加宽后的右边缘（180 → 243）
-    expect(right.connection).toEqual({ x: 253, y: 10 });
-    expect(right.body).toEqual({ x: 243, y: 10 });
+    // 右侧引脚跟随加宽后的右边缘（180 → 250：加宽量还要把边缘对齐到 10 单位格点）
+    expect(right.connection).toEqual({ x: 260, y: 10 });
+    expect(right.body).toEqual({ x: 250, y: 10 });
     // rotation=90 朝 -y
     const top = station0.pins.find((pin) => pin.name === "PEX_REFCLKp")!;
     expect(top.connection).toEqual({ x: 70, y: 410 });
@@ -208,7 +209,7 @@ describe("elibz2 connector", () => {
       points: [
         { x: 0, y: 200 },
         // 右端贴住本体右边缘 → 跟着加宽一起外推（否则分隔线比本体短一截）
-        { x: 243, y: 200 },
+        { x: 250, y: 200 },
       ],
       closed: false,
     });
@@ -219,7 +220,7 @@ describe("elibz2 connector", () => {
         .map((shape) => (shape.kind === "text" ? `${shape.text}@${shape.at.x},${shape.at.y}` : "")),
       // 源坐标是 52/62；本体加宽 63 后居中的标题各右移 30（widen/2）重新居中
       // （见 shared/symbol-layout.ts 的 recenterTitles）
-    ).toEqual(["PEX8748@82,183", "Station 0@92,234"]);
+    ).toEqual(["PEX8748@87,183", "Station 0@97,234"]);
   });
 
   /**
