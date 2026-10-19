@@ -1,6 +1,7 @@
 import {
   memo,
   useCallback,
+  useEffect,
   useRef,
   type PointerEvent as ReactPointerEvent,
   type ReactElement,
@@ -114,8 +115,12 @@ type DragState =
       readonly mode: "move";
       readonly keys: readonly string[];
       readonly pointerId: number;
+      readonly startX: number;
+      readonly startY: number;
       lastX: number;
       lastY: number;
+      /** 越过死区才算真的在拖（只是点一下 = 选中，不移动） */
+      moved: boolean;
     }
   | {
       readonly mode: "resize";
@@ -126,6 +131,9 @@ type DragState =
       readonly edges: RectEdges;
       readonly origin: RectBounds;
     };
+
+/** 按下后移动不到这么多像素就当"点击选中"，不移动元素。 */
+const DRAG_SLOP_PX = 3;
 
 const resizeCursor = (edges: RectEdges): string => {
   const horizontal = edges.left || edges.right;
@@ -201,6 +209,27 @@ const useElementDrag = (
 ) => {
   const dragRef = useRef<DragState | null>(null);
 
+  /**
+   * 兜底：**任何** pointerup / pointercancel / 窗口失焦都要把拖动状态清掉。
+   *
+   * 只靠元素自己的 onPointerUp 不够 —— 指针捕捉可能已经丢了（元素被重新挂载、
+   * 或松手时指针已经移出元素），那样 dragRef 会一直挂着，之后**不按键移动鼠标
+   * 也会继续拖元素**（用户 2026-10-19 报的"鼠标移动让文本引脚一起跑"）。
+   */
+  useEffect(() => {
+    const stop = (): void => {
+      dragRef.current = null;
+    };
+    window.addEventListener("pointerup", stop, true);
+    window.addEventListener("pointercancel", stop, true);
+    window.addEventListener("blur", stop);
+    return () => {
+      window.removeEventListener("pointerup", stop, true);
+      window.removeEventListener("pointercancel", stop, true);
+      window.removeEventListener("blur", stop);
+    };
+  }, []);
+
   const startMove =
     (key: string) =>
     (event: ReactPointerEvent<SVGElement>): void => {
@@ -219,8 +248,11 @@ const useElementDrag = (
         mode: "move",
         keys,
         pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
         lastX: event.clientX,
         lastY: event.clientY,
+        moved: false,
       };
       event.currentTarget.setPointerCapture(event.pointerId);
     };
@@ -253,9 +285,23 @@ const useElementDrag = (
       if (drag === null || drag.pointerId !== event.pointerId) {
         return;
       }
+      // 左键已经松开了（哪怕没收到 pointerup）→ 立刻停手，绝不跟着鼠标走。
+      if (event.buttons === 0) {
+        dragRef.current = null;
+        return;
+      }
       event.stopPropagation();
       const scale = scaleRef.current > 0 ? scaleRef.current : 1;
       if (drag.mode === "move") {
+        if (!drag.moved) {
+          const travelled =
+            Math.abs(event.clientX - drag.startX) + Math.abs(event.clientY - drag.startY);
+          // 死区内的抖动当"点击选中"，不动元素
+          if (travelled <= DRAG_SLOP_PX) {
+            return;
+          }
+          drag.moved = true;
+        }
         if (event.clientX === drag.lastX && event.clientY === drag.lastY) {
           return;
         }
@@ -371,12 +417,17 @@ const SymbolPins = memo(
           const active = selectedKeys.has(key);
           return (
             <g
-              key={`${key}-${pin.number}-${pin.connection.x}-${pin.connection.y}`}
+              /* key 只用"段:脚"这个稳定键。以前把 connection 坐标也拼进 key，
+               * 拖动时每帧坐标都变 → React 卸载重建 <g> → **指针捕捉被丢掉** →
+               * 松手时收不到 pointerup，dragRef 一直挂着，之后不按键移动鼠标
+               * 元素也会跟着跑（用户 2026-10-19 报的正是这个）。 */
+              key={key}
               data-draggable={editing ? "true" : undefined}
               onPointerDown={editing ? drag.startMove(key) : undefined}
               onPointerMove={editing ? drag.move : undefined}
               onPointerUp={editing ? drag.end : undefined}
               onPointerCancel={editing ? drag.end : undefined}
+              onLostPointerCapture={editing ? drag.end : undefined}
             >
               <line
                 x1={pin.connection.x}
@@ -472,6 +523,7 @@ export const SymbolPreview = ({
           onPointerMove: drag.move,
           onPointerUp: drag.end,
           onPointerCancel: drag.end,
+          onLostPointerCapture: drag.end,
           // 光标恢复默认箭头（用户 2026-10-16 要求）；框线单独用 resize 光标
           style: { cursor: "default" },
         }
@@ -531,6 +583,7 @@ export const SymbolPreview = ({
                   onPointerMove={drag.strokePointerMove(key, bounds)}
                   onPointerUp={drag.end}
                   onPointerCancel={drag.end}
+                  onLostPointerCapture={drag.end}
                 />
               ) : null}
             </g>

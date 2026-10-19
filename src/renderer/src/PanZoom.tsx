@@ -214,6 +214,12 @@ export const PanZoom = ({
     if (pan === null || pan.pointerId !== event.pointerId) {
       return;
     }
+    // 左键已经松开（没收到 pointerup 的兜底）→ 停手，别让画布/框选跟着鼠标跑。
+    if (event.buttons === 0) {
+      panRef.current = null;
+      setMarquee(null);
+      return;
+    }
     const travelled = Math.abs(event.clientX - pan.startX) + Math.abs(event.clientY - pan.startY);
     if (pan.mode === "marquee") {
       // 死区：点击（按下即抬起）不算框选，交给 endPan 当取消选中处理
@@ -291,6 +297,7 @@ export const PanZoom = ({
         onPointerMove={onPointerMove}
         onPointerUp={endPan}
         onPointerCancel={endPan}
+        onLostPointerCapture={endPan}
       >
         {/* 透明底板：让 .engineering-canvas 的网格纹理透出来 */}
         <rect x={0} y={0} width={size.width} height={size.height} fill="transparent" />
