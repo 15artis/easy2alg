@@ -1092,6 +1092,8 @@ select:focus,
 
 .left-rail {
   position: relative;
+  /* 左栏自身不滚：高度必须被裁住，否则子块会把整栏撑出窗口（搜索结果多时尤其明显） */
+  overflow: hidden;
   border-right: 1px solid #dfe5ed;
 }
 
@@ -1159,9 +1161,22 @@ select:focus,
   gap: 10px;
 }
 
+/**
+ * 输入区是个"可压缩"的 flex 列：窗口不够高时只压搜索结果的滚动区，
+ * 输入框/按钮保持原尺寸（否则 25 条命中会把下面的队列整个挤出屏幕）。
+ */
 .input-block {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
   padding: 14px;
   border-bottom: 1px solid #dfe5ed;
+}
+
+.input-block > :not(.search-results) {
+  flex: 0 0 auto;
 }
 
 .input-block textarea {
@@ -1221,6 +1236,7 @@ select:focus,
 
 .queue-columns {
   display: flex;
+  flex: 0 0 auto;
   justify-content: space-between;
   padding: 10px 14px;
   color: #8791a2;
@@ -1228,8 +1244,10 @@ select:focus,
   font-size: 10px;
 }
 
+/* 队列列表吃掉剩余高度；给个下限，别让搜索结果把它压没 */
 .rail-list {
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 96px;
   overflow: auto;
 }
 
@@ -2090,28 +2108,41 @@ select:focus,
 /* 画布光标：默认箭头（用户 2026-10-16 要求编辑模式别用 move 光标）；
  * 框线上由内联 style 按方向显示 resize 光标。 */
 
-/* 关键字搜索结果（输入型号时列在导入框下方） */
+/* 关键字搜索结果（输入型号时列在导入框下方）。
+ * 命中多时自身滚动——用户 2026-10-19：25 条命中撑出窗口，剩下一半看不到。 */
 .search-results {
   display: flex;
+  flex: 0 1 auto;
   flex-direction: column;
   gap: 4px;
+  min-height: 0;
   margin-top: 8px;
   padding: 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: #f7f9ff;
   border: 1px solid #d7e2fb;
   border-radius: 8px;
 }
 
+/* 滚动时把标题行（含「关闭」）钉在顶部 */
 .search-results-header {
+  position: sticky;
+  top: -8px;
+  z-index: 1;
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
+  padding: 2px 0;
   color: #5f6b7d;
+  background: #f7f9ff;
   font-size: 11px;
 }
 
 .search-hit {
   display: grid;
+  flex: 0 0 auto;
   grid-template-columns: auto 1fr;
   gap: 2px 8px;
   align-items: baseline;
