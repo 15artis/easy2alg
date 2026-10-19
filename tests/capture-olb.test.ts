@@ -253,6 +253,9 @@ describe("capture library XML", () => {
       ],
     };
     const xml = buildCaptureLibraryXml(rotated, "C:/libs/target.OLB");
+    // Capture 的竖排真正靠 escapement（0.1° 为单位）：手改样本里 90° 就是 escapement="900"。
+    // 只写 orientation 的话 Capture 仍然画横排（0.1.29~0.1.32 三次踩坑）。
+    expect(xml).toContain('escapement="900"');
     expect(xml).toContain('orientation="90"');
     expect(xml).toContain('orientation="0"');
     // 90° 的框绕锚点旋转：宽度变成纵向高度，y 向上铺开

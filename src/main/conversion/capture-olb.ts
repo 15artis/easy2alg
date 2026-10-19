@@ -95,17 +95,20 @@ const fontHeightFor = (sourceHeight: number): number => {
 };
 
 /**
- * 文本方向：源 rotation（立创的 90° 整数倍，逆时针）→ Capture 的 TextFont/@orientation。
+ * 文本方向：源 rotation（立创的 90° 整数倍，逆时针）→ Capture 的 TextFont 两个字段。
  *
- * 注意：**光写 orientation 不会让文字竖起来**（2026-10-19 实测：orientation="90"
- * 能存能回读，但 Capture 仍画成横排）。真正决定竖排的是**包围盒的形状**——
- * 同一条文本，横框画成横排、窄高框才画成竖排（对照用户手改前后导出的数据）。
- * 这里仍然同时写 orientation，是为了和 Capture 自己保存的竖排文本保持一致。
+ * **关键是 `escapement`（单位：0.1°），不是 `orientation`**（用户 2026-10-19 手改样本
+ * 给出的铁证）：Capture 里手动把 JTAG 转 90° 之后，导出的 TextFont 是
+ * `escapement="900" orientation="90"`；而我们把 orientation 写成 90、escapement 留 0，
+ * 生成的文本在 Capture 里始终是横排。两者按同一份样本照抄：escapement = 10×角度。
  */
 const textOrientation = (rotation: number): number => {
   const snapped = Math.round(rotation / 90) * 90;
   return ((snapped % 360) + 360) % 360;
 };
+
+/** escapement 用 0.1° 为单位（900 = 90°）。 */
+const textEscapement = (rotation: number): number => textOrientation(rotation) * 10;
 
 /**
  * 注释文字的包围盒（x1/x2/y1/y2）。
@@ -160,7 +163,7 @@ const commentTextCommands = (shape: Extract<NormalizedSymbolShape, { kind: "text
     "      <TextFont>",
     tag("Defn", {
       charset: 0,
-      escapement: 0,
+      escapement: textEscapement(shape.rotation),
       height: -height,
       italic: 0,
       name: COMMENT_FONT_NAME,
