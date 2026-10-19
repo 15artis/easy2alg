@@ -94,20 +94,63 @@ const fontHeightFor = (sourceHeight: number): number => {
   return symbolFontHeight(sourceHeight);
 };
 
+/**
+ * 文本方向：源 rotation（立创的 90° 整数倍，逆时针）→ Capture 的 TextFont/@orientation。
+ *
+ * 这个字段是**唯一**能让 .olb 里的注释文字竖起来的开关（用户 2026-10-19 反馈
+ * "生成原理图没有根据修改后的预览生成"——之前这里写死 0，预览里竖排的区域标注
+ * 落到 Capture 全变成横排，还会压到旁边的引脚名上）。
+ *
+ * 已用实验确认：把导出的 XML 里某条 CommentText 的 orientation 改成 90 再导入，
+ * XMATIC_XML2OLB **接受**并原样回读（`orientation="90"`），说明 schema 支持。
+ */
+const textOrientation = (rotation: number): number => {
+  const snapped = Math.round(rotation / 90) * 90;
+  return ((snapped % 360) + 360) % 360;
+};
+
+/**
+ * 注释文字的包围盒（x1/x2/y1/y2）。
+ *
+ * 约定（沿用横排的既有约定，不擅自改）：**locX/locY 是文字起始的那个角**，
+ * 框沿阅读方向铺开。所以竖排不是"横框加个 orientation"，而是把整个框绕锚点
+ * 刚性旋转 —— 90° 时文字向上读，框变成"窄而高"（与预览里 `rotate(-rotation)`
+ * 的效果一致）。
+ */
+const commentTextBox = (
+  at: { readonly x: number; readonly y: number },
+  width: number,
+  boxHeight: number,
+  orientation: number,
+): { readonly x1: number; readonly x2: number; readonly y1: number; readonly y2: number } => {
+  switch (orientation) {
+    case 90:
+      return { x1: at.x, x2: at.x + boxHeight, y1: at.y - width, y2: at.y };
+    case 180:
+      return { x1: at.x - width, x2: at.x, y1: at.y - boxHeight, y2: at.y };
+    case 270:
+      return { x1: at.x - boxHeight, x2: at.x, y1: at.y, y2: at.y + width };
+    default:
+      return { x1: at.x, x2: at.x + width, y1: at.y, y2: at.y + boxHeight };
+  }
+};
+
 const commentTextCommands = (shape: Extract<NormalizedSymbolShape, { kind: "text" }>): string => {
   const height = fontHeightFor(shape.height);
   const width = estimateCommentWidth(shape.text, height);
   const boxHeight = Math.round(height * 1.556);
+  const orientation = textOrientation(shape.rotation);
+  const box = commentTextBox(shape.at, width, boxHeight, orientation);
   const lines = [
     tag("Defn", {
       locX: grid(shape.at.x),
       locY: grid(shape.at.y),
       name: shape.text,
       textJustification: 0,
-      x1: grid(shape.at.x),
-      x2: grid(shape.at.x + width),
-      y1: grid(shape.at.y),
-      y2: grid(shape.at.y + boxHeight),
+      x1: grid(box.x1),
+      x2: grid(box.x2),
+      y1: grid(box.y1),
+      y2: grid(box.y2),
     }),
   ];
   return [
@@ -120,7 +163,7 @@ const commentTextCommands = (shape: Extract<NormalizedSymbolShape, { kind: "text
       height: -height,
       italic: 0,
       name: COMMENT_FONT_NAME,
-      orientation: 0,
+      orientation,
       weight: 400,
       width: COMMENT_FONT_WIDTH,
     }),

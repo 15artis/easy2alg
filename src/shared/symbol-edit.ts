@@ -14,9 +14,10 @@ import type { NormalizedSymbol, NormalizedSymbolShape, Point } from "./schemas";
  *
  * 段/元素序号是数组下标，源数据不变时编辑记录就能稳定对应到同一个元素。
  *
- * 已知限制：.olb 的 CommentText 没有 rotation 字段（实测现网库导出件的 Defn 只有
- * locX/locY/name/textJustification/x1/x2/y1/y2），所以**旋转只在预览生效**，
- * 写库时只带位置与字号。
+ * 已知限制：早期的结论"CommentText 没有 rotation 字段、旋转只能留在预览里"是**错的**
+ * （2026-10-19 用 XMATIC 实验推翻）：旋转由 `<TextFont>` 的 `orientation` 承载，
+ * 90 是合法值且能原样回读。现在 `capture-olb.ts` 会同时写 orientation 与旋转后的包围盒，
+ * 预览里竖排的区域标注到了 Capture 仍是竖排。
  */
 
 export const translateSymbolPoint = (point: Point, dx: number, dy: number): Point => ({

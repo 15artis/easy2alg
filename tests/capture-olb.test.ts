@@ -235,6 +235,39 @@ describe("capture library XML", () => {
     );
   });
 
+  it("writes rotated comment text as rotated (orientation + rotated box)", () => {
+    // 用户 2026-10-19：预览里竖排的区域标注，生成到 Capture 全变成横排，
+    // 还压在旁边的引脚名上 —— 根因是 TextFont 的 orientation 被写死成 0。
+    const symbol = singleSection();
+    const section = symbol.sections[0];
+    const rotated: NormalizedSymbol = {
+      ...symbol,
+      sections: [
+        {
+          ...section,
+          shapes: section.shapes.map((shape) =>
+            shape.kind === "text" ? { ...shape, rotation: 90 } : shape,
+          ),
+        },
+      ],
+    };
+    const xml = buildCaptureLibraryXml(rotated, "C:/libs/target.OLB");
+    expect(xml).toContain('orientation="90"');
+    expect(xml).toContain('orientation="0"');
+    // 90° 的框绕锚点旋转：宽度变成纵向高度，y 向上铺开
+    const comment = /<CommentText>\s*<Defn locX="(-?\d+)" locY="(-?\d+)"[^>]*x1="(-?\d+)" x2="(-?\d+)" y1="(-?\d+)" y2="(-?\d+)" \/>/.exec(xml)!;
+    const [x1, x2, y1, y2] = comment.slice(3).map(Number);
+    expect(x1).toBe(Number(comment[1]));
+    expect(y2).toBe(Number(comment[2]));
+    expect(x2 - x1).toBeLessThan(y2 - y1);
+    expect(y1).toBeLessThan(y2);
+
+    // 未旋转的文本仍然是横框
+    const horizontal = buildCaptureLibraryXml(symbol, "C:/libs/target.OLB");
+    const flat = /<CommentText>\s*<Defn locX="(-?\d+)" locY="(-?\d+)"[^>]*x1="(-?\d+)" x2="(-?\d+)" y1="(-?\d+)" y2="(-?\d+)" \/>/.exec(horizontal)!;
+    expect(Number(flat[4]) - Number(flat[3])).toBeGreaterThan(Number(flat[6]) - Number(flat[5]));
+  });
+
   it("keeps every attribute value XML-escaped", () => {
     const symbol = singleSection();
     const withSpecialText: NormalizedSymbol = {
