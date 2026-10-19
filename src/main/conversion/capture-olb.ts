@@ -6,6 +6,7 @@ import type {
   SymbolPinType,
 } from "../../shared/schemas";
 import { estimateCommentWidth, pinSideOf, symbolFontHeight } from "../../shared/symbol-labels";
+import { snapPinsToGrid } from "../../shared/symbol-layout";
 
 /**
  * OrCAD Capture 库 XML（.olb 交换格式）生成器。
@@ -376,7 +377,10 @@ export const buildCaptureLibraryXml = (
   libraryPath: string,
   options: { readonly fillPcbFootprint?: boolean } = {},
 ): string => {
-  const multiSection = symbol.sections.length > 1;
+  // 写库出口统一吸附：解析阶段已对齐过一次，但用户可能在预览里手动拖过元素
+  // （offset 是任意小数）。不吸附的话生成出来的引脚在 Capture 里接不上线。
+  const sections = symbol.sections.map(snapPinsToGrid);
+  const multiSection = sections.length > 1;
   const now = Math.floor(Date.now() / 1000);
   const lines: string[] = [
     '<?xml version="1.0" encoding="UTF-8" standalone="no" ?>',
@@ -397,13 +401,13 @@ export const buildCaptureLibraryXml = (
       timezone: "0800",
     }),
   ];
-  symbol.sections.forEach((section, index) => {
+  sections.forEach((section, index) => {
     lines.push(
       "    <LibPart>",
       tag("Defn", {
         CellName: multiSection ? `${symbol.name}${sectionSuffix(index)}` : symbol.name,
       }),
-      ...normalViewCommands(symbol, section),
+      ...normalViewCommands({ ...symbol, sections }, section),
       "      <PhysicalPart>",
       "        <Defn />",
       ...section.pins.map((pin, pinIndex) =>

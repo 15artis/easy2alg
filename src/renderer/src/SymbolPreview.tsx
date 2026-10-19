@@ -10,12 +10,14 @@ import {
 import type { NormalizedSymbol, NormalizedSymbolPin } from "../../shared/schemas";
 import {
   dragDelta,
+  isSymbolPinKey,
   symbolPinKey,
   symbolShapeKey,
   type RectEdges,
   type SymbolEdits,
   type SymbolShapeBounds,
 } from "../../shared/symbol-edit";
+import { SYMBOL_PIN_GRID } from "../../shared/symbol-layout";
 import {
   bodyBoxOf,
   estimateLabelWidth,
@@ -120,6 +122,12 @@ type DragState =
       readonly startY: number;
       lastX: number;
       lastY: number;
+      /** 累计位移（世界单位，未吸附） */
+      rawX: number;
+      rawY: number;
+      /** 已经下发给 onMoveElements 的累计位移（吸附后） */
+      appliedX: number;
+      appliedY: number;
       /** 越过死区才算真的在拖（只是点一下 = 选中，不移动） */
       moved: boolean;
     }
@@ -253,6 +261,10 @@ const useElementDrag = (
         startY: event.clientY,
         lastX: event.clientX,
         lastY: event.clientY,
+        rawX: 0,
+        rawY: 0,
+        appliedX: 0,
+        appliedY: 0,
         moved: false,
       };
       event.currentTarget.setPointerCapture(event.pointerId);
@@ -306,9 +318,31 @@ const useElementDrag = (
         if (event.clientX === drag.lastX && event.clientY === drag.lastY) {
           return;
         }
-        const { dx, dy } = dragDelta(event.clientX - drag.lastX, event.clientY - drag.lastY, scale);
+        const { dx: stepDx, dy: stepDy } = dragDelta(
+          event.clientX - drag.lastX,
+          event.clientY - drag.lastY,
+          scale,
+        );
         drag.lastX = event.clientX;
         drag.lastY = event.clientY;
+        // 组里有引脚 → 整组吸附到 100 mil 网格。预览里拖到哪，生成的就是哪；
+        // 只吸附引脚会让文本留在原处，反而把标签与引脚拉出间距。
+        drag.rawX += stepDx;
+        drag.rawY += stepDy;
+        const snap = drag.keys.some(isSymbolPinKey);
+        const targetX = snap
+          ? Math.round(drag.rawX / SYMBOL_PIN_GRID) * SYMBOL_PIN_GRID
+          : drag.rawX;
+        const targetY = snap
+          ? Math.round(drag.rawY / SYMBOL_PIN_GRID) * SYMBOL_PIN_GRID
+          : drag.rawY;
+        const dx = targetX - drag.appliedX;
+        const dy = targetY - drag.appliedY;
+        drag.appliedX = targetX;
+        drag.appliedY = targetY;
+        if (dx === 0 && dy === 0) {
+          return;
+        }
         onMoveElements(drag.keys, dx, dy);
         return;
       }
@@ -423,6 +457,7 @@ const SymbolPins = memo(
                * 松手时收不到 pointerup，dragRef 一直挂着，之后不按键移动鼠标
                * 元素也会跟着跑（用户 2026-10-19 报的正是这个）。 */
               key={key}
+              data-pin="true"
               data-draggable={editing ? "true" : undefined}
               onPointerDown={editing ? drag.startMove(key) : undefined}
               onPointerMove={editing ? drag.move : undefined}

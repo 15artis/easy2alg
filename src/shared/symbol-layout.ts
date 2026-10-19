@@ -307,7 +307,8 @@ const widenForVerticalLabels = (
  * 前提是该侧所有引脚在变化方向上的余数一致（间距本身是 10 的整数倍）；
  * 0.5mm 间距这种本来就对不齐的器件直接跳过，不做破坏性调整。
  */
-const PIN_GRID = 10;
+export const SYMBOL_PIN_GRID = 10;
+const PIN_GRID = SYMBOL_PIN_GRID;
 
 export const alignPinsToGrid = (section: NormalizedSymbolSection): NormalizedSymbolSection => {
   const sides: readonly ("left" | "right" | "top" | "bottom")[] = ["left", "right", "top", "bottom"];
@@ -346,4 +347,48 @@ export const alignPinsToGrid = (section: NormalizedSymbolSection): NormalizedSym
       return shift === undefined ? pin : shiftPin(pin, shift.dx, shift.dy);
     }),
   };
+};
+
+/**
+ * 写库前的最后一道吸附：把每个引脚的**连接端**取整到 100 mil 网格（10 单位）。
+ *
+ * 为什么还要这一步：`alignPinsToGrid` 只在**解析阶段**把整排平移一次；用户随后在
+ * 预览里手动拖动元素（offset 是像素 ÷ 缩放算出来的任意小数），连接端会重新离开
+ * 网格 —— 那样生成的 .olb 在 Capture 原理图里照样接不上线。写库出口统一过一遍
+ * 这里，无论前面怎么编辑，落到文件里的连接端一定在格点上。
+ *
+ * 两个方向分开处理：
+ *  - **排方向**（左右脚看 y、上下脚看 x）：整脚平移（connection 与 body 同移），
+ *    这样引脚长度与方向不变，同一排的相对间距原样保留；
+ *  - **引脚长度方向**：只挪 connection 端，body 端继续贴在本体边缘上 —— 若整体
+ *    平移，引脚会离开本体留下一道缝，视觉上像断开的引脚。
+ * 代价是引脚长度可能变化 ≤5 单位（最多半个网格），换连接端严格落格。
+ */
+export const snapPinsToGrid = (section: NormalizedSymbolSection): NormalizedSymbolSection => {
+  let changed = false;
+  const pins = section.pins.map((pin) => {
+    // 左右引脚沿 y 排、水平伸出；上下引脚沿 x 排、竖直伸出。
+    const side = pinSideOf(pin);
+    const rowsAlongY = side === "left" || side === "right";
+    // 排方向：整脚平移
+    const along = rowsAlongY ? pin.connection.y : pin.connection.x;
+    const snappedAlong = Math.round(along / SYMBOL_PIN_GRID) * SYMBOL_PIN_GRID;
+    const alongDelta = snappedAlong - along;
+    const moved =
+      alongDelta === 0
+        ? pin
+        : shiftPin(pin, rowsAlongY ? 0 : alongDelta, rowsAlongY ? alongDelta : 0);
+    // 引脚长度方向：只挪连接端，body 端继续贴在本体边缘
+    const axis = rowsAlongY ? moved.connection.x : moved.connection.y;
+    const snappedAxis = Math.round(axis / SYMBOL_PIN_GRID) * SYMBOL_PIN_GRID;
+    if (snappedAxis === axis && moved === pin) {
+      return pin;
+    }
+    changed = true;
+    return rowsAlongY
+      ? { ...moved, connection: { x: snappedAxis, y: moved.connection.y } }
+      : { ...moved, connection: { x: moved.connection.x, y: snappedAxis } };
+  });
+
+  return changed ? { ...section, pins } : section;
 };
