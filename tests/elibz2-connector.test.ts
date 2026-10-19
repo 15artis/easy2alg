@@ -20,7 +20,7 @@ describe("elibz2 connector", () => {
     expect(summaries).toHaveLength(1);
     const summary = summaries[0];
     expect(summary.lcscId).toBe("C1522695");
-    expect(summary.footprintTitle).toBe("pex8748_baca");
+    expect(summary.footprintTitle).toBe("PEX8748_BACA");
     expect(summary.padCount).toBe(676);
     expect(summary.manufacturerPartNumber).toBe("PEX8748-CA80BC G");
     expect(summary.sourcePath).toBe(fixturePath);
@@ -32,7 +32,7 @@ describe("elibz2 connector", () => {
 
     expect(footprint.pads).toHaveLength(676);
     expect(footprint.info.lcscId).toBe("C1522695");
-    expect(footprint.info.sourcePackageName).toBe("pex8748_baca");
+    expect(footprint.info.sourcePackageName).toBe("PEX8748_BACA");
     expect(footprint.info.assemblyProcess).toBe("SMT");
     expect(footprint.info.manufacturer).toContain("Broadcom");
 
@@ -220,5 +220,23 @@ describe("elibz2 connector", () => {
       // 源坐标是 52/62；本体加宽 63 后居中的标题各右移 30（widen/2）重新居中
       // （见 shared/symbol-layout.ts 的 recenterTitles）
     ).toEqual(["PEX8748@82,183", "Station 0@92,234"]);
+  });
+
+  /**
+   * 用户 2026-10-19：从立创专业版导出的 ProLib_1pcs（LMK00301ARHST）导入后，
+   * "PCB 封装名"显示成了器件名 LMK00301ARHST —— 因为之前取的是封装文档自己的
+   * meta.title（导出时被写成器件名），应该取 device2.json 里封装条目的 display_title。
+   */
+  it("取 device2.json 里的封装 display_title 作为封装名", async () => {
+    const connector = new Elibz2Connector();
+    const lmkPath = fileURLToPath(new URL("./fixtures/lmk00301arhst.elibz2", import.meta.url));
+    const summaries = await connector.readLibrary(lmkPath);
+    expect(summaries[0].footprintTitle).toBe("WQFN-48_L7.0-W7.0-P0.50-BL-EP5.1");
+
+    const footprint = await connector.loadFootprint(lmkPath, summaries[0].deviceUuid);
+    expect(footprint.info.name).toBe("LMK00301ARHST");
+    expect(footprint.info.sourcePackageName).toBe("WQFN-48_L7.0-W7.0-P0.50-BL-EP5.1");
+    // 立创的 L7.0-W7.0 也要能推出本体尺寸（0.5mm 间距 / 7×7mm / 48 脚 + 散热焊盘 49）
+    expect(footprint.info.targetPackageName).toBe("QFN50P700X700X100-49N");
   });
 });

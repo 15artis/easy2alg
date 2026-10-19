@@ -68,6 +68,21 @@ type DeviceEntry = {
   display_title?: string;
 };
 
+/**
+ * device2.json 里的封装索引项。
+ *
+ * **封装名要取 `display_title`**（用户在立创里看到的就是它，如
+ * `WQFN-48_L7.0-W7.0-P0.50-BL-EP5.1`）。`*.elibu` 里那个封装文档自己的
+ * `meta.title` 常常是**器件名**（导出时从器件复制过来的，如 `lmk00301arhst`），
+ * 拿它当封装名会推导出 `LMK00301ARHST` 这种明显不对的名字（用户 2026-10-19 报的）。
+ */
+type FootprintEntry = {
+  uuid?: string;
+  title?: string;
+  display_title?: string;
+  description?: string;
+};
+
 const asNumber = (value: unknown, fallback = 0): number => {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -626,7 +641,11 @@ const parseSymbolDoc = (
 
 const readArchive = async (
   filePath: string,
-): Promise<{ devices: Record<string, DeviceEntry>; elibuText: string }> => {
+): Promise<{
+  devices: Record<string, DeviceEntry>;
+  footprints: Record<string, FootprintEntry>;
+  elibuText: string;
+}> => {
   let zip: AdmZip;
   try {
     zip = new AdmZip(filePath);
@@ -648,13 +667,36 @@ const readArchive = async (
   }
   const parsed = JSON.parse(zip.readAsText(deviceEntry)) as {
     devices?: Record<string, DeviceEntry>;
+    footprints?: Record<string, FootprintEntry>;
   };
-  return { devices: parsed.devices ?? {}, elibuText: zip.readAsText(elibuEntry) };
+  return {
+    devices: parsed.devices ?? {},
+    footprints: parsed.footprints ?? {},
+    elibuText: zip.readAsText(elibuEntry),
+  };
 };
+
+/**
+ * 封装名：立创库索引里的 `display_title` 优先，其次 `title`、封装文档自己的
+ * `meta.title`，最后退回器件名。前两个是"这个封装叫什么"，后两个经常是器件名。
+ */
+const packageNameOf = (
+  device: DeviceEntry,
+  footprintEntry: FootprintEntry | undefined,
+  docTitle: unknown,
+): string =>
+  String(
+    footprintEntry?.display_title ??
+      footprintEntry?.title ??
+      docTitle ??
+      device.display_title ??
+      device.title ??
+      "LOCAL-PACKAGE",
+  );
 
 export class Elibz2Connector {
   async readLibrary(filePath: string): Promise<readonly LocalLibraryDeviceSummary[]> {
-    const { devices, elibuText } = await readArchive(filePath);
+    const { devices, footprints, elibuText } = await readArchive(filePath);
     const docs = splitElibuDocs(parseElibuLines(elibuText));
     const summaries: LocalLibraryDeviceSummary[] = [];
     for (const device of Object.values(devices)) {
@@ -674,7 +716,7 @@ export class Elibz2Connector {
           ),
           manufacturer: String(attributes["Manufacturer"] ?? ""),
           manufacturerPartNumber: String(attributes["Manufacturer Part"] ?? ""),
-          footprintTitle: String(doc.meta?.title ?? device.title ?? ""),
+          footprintTitle: packageNameOf(device, footprints[footprintUuid], doc.meta?.title),
           padCount: padCountOf(doc),
           sourcePath: filePath,
         }),
@@ -684,7 +726,7 @@ export class Elibz2Connector {
   }
 
   async loadFootprint(filePath: string, deviceUuid: string): Promise<NormalizedFootprint> {
-    const { devices, elibuText } = await readArchive(filePath);
+    const { devices, footprints, elibuText } = await readArchive(filePath);
     const device = devices[deviceUuid];
     if (device === undefined) {
       throw new Error(`本地库中未找到器件 ${deviceUuid}`);
@@ -767,9 +809,7 @@ export class Elibz2Connector {
 
     const rawLcscId = String(attributes["Supplier Part"] ?? "").toUpperCase();
     const lcscId = /^C\d+$/.test(rawLcscId) ? rawLcscId : synthesizeLcscId(device.uuid);
-    const sourcePackageName = String(
-      doc.meta?.title ?? device.title ?? `LOCAL-${deviceUuid.slice(0, 8)}`,
-    );
+    const sourcePackageName = packageNameOf(device, footprints[footprintUuid], doc.meta?.title);
     const extraPoints: readonly Point[] = [
       ...lines.flatMap((line) => [line.start, line.end]),
       ...visibleCircles.flatMap((circle) => [

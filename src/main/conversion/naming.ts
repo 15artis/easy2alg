@@ -50,11 +50,18 @@ const minimumPitch = (pads: readonly NormalizedPad[]): number | null => {
 };
 
 const bodyDimensionsFromName = (sourceName: string): readonly [number, number] | null => {
-  const match = sourceName.match(/(\d+(?:\.\d+)?)\s*[xX×]\s*(\d+(?:\.\d+)?)\s*(?:MM)?/i);
-  if (match === null) {
-    return null;
+  const match = sourceName.match(/(\d+(?:\.\d+)?)\s*[xX×*]\s*(\d+(?:\.\d+)?)\s*(?:MM)?/i);
+  if (match !== null) {
+    return [Number(match[1]), Number(match[2])];
   }
-  return [Number(match[1]), Number(match[2])];
+  // 立创EDA专业版的封装名把本体尺寸写成 `L7.0-W7.0`（长-宽），没有 `x`。
+  // 不认这个格式的话 QFN/BGA 会全部掉到 fallback 的哈希名（如
+  // `WQFN-48_L7-0-W7-0-P0-50--833A4E`），用户 2026-10-19 报的"命名不对"。
+  const lcsc = sourceName.match(/(?:^|[-_\s])L(\d+(?:\.\d+)?)\s*[-_]\s*W(\d+(?:\.\d+)?)/i);
+  if (lcsc !== null) {
+    return [Number(lcsc[1]), Number(lcsc[2])];
+  }
+  return null;
 };
 
 const padSpan = (pads: readonly NormalizedPad[]): number => {
