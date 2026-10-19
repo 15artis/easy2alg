@@ -97,12 +97,10 @@ const fontHeightFor = (sourceHeight: number): number => {
 /**
  * 文本方向：源 rotation（立创的 90° 整数倍，逆时针）→ Capture 的 TextFont/@orientation。
  *
- * 这个字段是**唯一**能让 .olb 里的注释文字竖起来的开关（用户 2026-10-19 反馈
- * "生成原理图没有根据修改后的预览生成"——之前这里写死 0，预览里竖排的区域标注
- * 落到 Capture 全变成横排，还会压到旁边的引脚名上）。
- *
- * 已用实验确认：把导出的 XML 里某条 CommentText 的 orientation 改成 90 再导入，
- * XMATIC_XML2OLB **接受**并原样回读（`orientation="90"`），说明 schema 支持。
+ * 注意：**光写 orientation 不会让文字竖起来**（2026-10-19 实测：orientation="90"
+ * 能存能回读，但 Capture 仍画成横排）。真正决定竖排的是**包围盒的形状**——
+ * 同一条文本，横框画成横排、窄高框才画成竖排（对照用户手改前后导出的数据）。
+ * 这里仍然同时写 orientation，是为了和 Capture 自己保存的竖排文本保持一致。
  */
 const textOrientation = (rotation: number): number => {
   const snapped = Math.round(rotation / 90) * 90;
@@ -112,10 +110,13 @@ const textOrientation = (rotation: number): number => {
 /**
  * 注释文字的包围盒（x1/x2/y1/y2）。
  *
- * 约定（沿用横排的既有约定，不擅自改）：**locX/locY 是文字起始的那个角**，
- * 框沿阅读方向铺开。所以竖排不是"横框加个 orientation"，而是把整个框绕锚点
- * 刚性旋转 —— 90° 时文字向上读，框变成"窄而高"（与预览里 `rotate(-rotation)`
- * 的效果一致）。
+ * 竖排不是"横框加个 orientation"，而是把整个框绕锚点**刚性旋转** —— 90° 时文字
+ * 向上读，框变成"窄而高"（与预览里 `rotate(-rotation)` 的效果一致）。
+ *
+ * **loc 必须取框的最小角**（用户 2026-10-19 手改对照得出的结论）：Capture 自己保存
+ * 竖排文本时 locX/locY 就是 x1/y1。XMATIC 导入时若 loc 不在最小角，会**按横排把包围盒
+ * 重算一遍**，竖排就丢了（实测：喂 loc=(x1,y2)、框 14×20，回读成了 24×14 的横框；
+ * 改成 loc=(x1,y1) 后同样的框原样回读）。
  */
 const commentTextBox = (
   at: { readonly x: number; readonly y: number },
@@ -143,8 +144,8 @@ const commentTextCommands = (shape: Extract<NormalizedSymbolShape, { kind: "text
   const box = commentTextBox(shape.at, width, boxHeight, orientation);
   const lines = [
     tag("Defn", {
-      locX: grid(shape.at.x),
-      locY: grid(shape.at.y),
+      locX: grid(Math.min(box.x1, box.x2)),
+      locY: grid(Math.min(box.y1, box.y2)),
       name: shape.text,
       textJustification: 0,
       x1: grid(box.x1),
