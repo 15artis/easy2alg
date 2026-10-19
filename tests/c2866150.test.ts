@@ -35,17 +35,24 @@ describe("C2866150（LMK00301ARHST）", () => {
     expect(parse().length).toBe(49);
   });
 
-  it("引脚名去重：同名的第二个起拼上引脚号", () => {
+  it("引脚名去重：**所有**同名的都拼上引脚号（含第一个）", () => {
     const pins = parse();
     const names = pins.map((pin) => pin.name);
     expect(new Set(names).size).toBe(names.length);
-    // 第一个 GND 保持原名，后续的带引脚号
+    // GND 6 个、VCC 2 个、VCCOA/VCCOB 各 2 个 —— 全都带引脚号，没有裸名字
     const gnds = pins.filter((pin) => pin.name.startsWith("GND"));
-    expect(gnds.length).toBeGreaterThan(1);
-    expect(gnds[0].name).toBe("GND");
-    for (const pin of gnds.slice(1)) {
+    expect(gnds.length).toBe(6);
+    for (const pin of gnds) {
       expect(pin.name).toBe(`GND_${pin.number}`);
     }
+    expect(names).not.toContain("GND");
+    expect(names).not.toContain("VCC");
+    expect(names).toContain("VCC_15");
+    expect(names).toContain("VCC_42");
+    expect(names).toContain("VCCOA_5");
+    expect(names).toContain("VCCOA_8");
+    // 唯一名字保持原样
+    expect(names).toContain("OSCin");
   });
 
   it("写库坐标全为整数（小数会让 XMATIC 整库导入失败）", () => {
@@ -77,16 +84,17 @@ describe("dedupePinNames（单元）", () => {
     visible: true,
   });
 
-  it("首个保留原名，后续附加引脚号；不同名的引脚不动", () => {
+  it("同名引脚全部带引脚号；不同名的引脚不动", () => {
     const section = {
       name: "S",
       bounds: { minX: 0, minY: 0, maxX: 10, maxY: 10 },
       shapes: [],
       pins: [pin("1", "VCC"), pin("2", "GND"), pin("3", "GND"), pin("4", "IO"), pin("5", "GND")],
     } as NormalizedSymbolSection;
+    // VCC / IO 只出现一次 → 原名；GND ×3 → 三个都带引脚号
     expect(dedupePinNames(section).pins.map((p) => p.name)).toEqual([
       "VCC",
-      "GND",
+      "GND_2",
       "GND_3",
       "IO",
       "GND_5",
