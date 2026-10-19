@@ -181,10 +181,21 @@ export const applySymbolEdits = (
         if (edit?.offset === undefined || (edit.offset.dx === 0 && edit.offset.dy === 0)) {
           return pin;
         }
+        // 引脚文字锚点必须跟引脚一起平移，否则"拖引脚时标签不动、拖本体时标签乱跑"
+        // （用户 2026-10-19 反馈的"标签与引脚分离/间距越拖越宽"）。
+        const anchor = pin.labelAnchor;
         return {
           ...pin,
           connection: translateSymbolPoint(pin.connection, edit.offset.dx, edit.offset.dy),
           body: translateSymbolPoint(pin.body, edit.offset.dx, edit.offset.dy),
+          ...(anchor === undefined
+            ? {}
+            : {
+                labelAnchor: {
+                  name: translateSymbolPoint(anchor.name, edit.offset.dx, edit.offset.dy),
+                  number: translateSymbolPoint(anchor.number, edit.offset.dx, edit.offset.dy),
+                },
+              }),
         };
       }),
     })),

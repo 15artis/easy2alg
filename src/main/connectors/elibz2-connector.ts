@@ -30,7 +30,7 @@ import {
   translateSymbolPoint,
 } from "../../shared/symbol-edit";
 import { avoidLabelOverlapInSection } from "../../shared/symbol-layout";
-import { DEFAULT_SYMBOL_TEXT_HEIGHT } from "../../shared/symbol-labels";
+import { attachPinLabelAnchors, DEFAULT_SYMBOL_TEXT_HEIGHT } from "../../shared/symbol-labels";
 import { dedupePinNames } from "../../shared/symbol-normalize";
 import { writeLog } from "../logging";
 
@@ -845,7 +845,9 @@ export class Elibz2Connector {
       // 引脚名去重（用户 2026-10-19：Cadence 不接受重复引脚文本）
       // 必须在避让之前：避让按引脚名宽度算竖带深度，要用最终名字
       .map(dedupePinNames)
-      .map(avoidLabelOverlapInSection);
+      .map(avoidLabelOverlapInSection)
+      // 文字锚点冻结到引脚上（必须在避让之后，几何才是最终的）
+      .map(attachPinLabelAnchors);
     if (sections.length === 0) {
       return null;
     }

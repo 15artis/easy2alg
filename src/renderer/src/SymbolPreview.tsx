@@ -61,14 +61,18 @@ type LabelPlacement = {
   readonly anchor: "start" | "end";
 };
 
-const placeLabel = (pin: NormalizedSymbolPin, box: SymbolBox): LabelPlacement => {
+const placeLabel = (
+  pin: NormalizedSymbolPin,
+  box: SymbolBox,
+  anchor: { readonly x: number; readonly y: number } | undefined,
+): LabelPlacement => {
   switch (pinSideOf(pin)) {
     case "left":
-      return { x: box.minX, y: pin.body.y, rotate: 0, anchor: "start" };
+      return { x: anchor?.x ?? box.minX, y: anchor?.y ?? pin.body.y, rotate: 0, anchor: "start" };
     case "right":
-      return { x: box.maxX, y: pin.body.y, rotate: 0, anchor: "end" };
+      return { x: anchor?.x ?? box.maxX, y: anchor?.y ?? pin.body.y, rotate: 0, anchor: "end" };
     default:
-      return { x: pin.body.x, y: box.maxY, rotate: -90, anchor: "start" };
+      return { x: anchor?.x ?? pin.body.x, y: anchor?.y ?? box.maxY, rotate: -90, anchor: "start" };
   }
 };
 
@@ -393,12 +397,12 @@ const SymbolPins = memo(
                 <>
                   <Label
                     text={pin.number}
-                    placement={placeLabel(pin, pinNumberBox(pin, body))}
+                    placement={placeLabel(pin, pinNumberBox(pin, body), pin.labelAnchor?.number)}
                     color={active ? ACTIVE : PIN_NUMBER}
                   />
                   <Label
                     text={pin.name}
-                    placement={placeLabel(pin, pinNameBox(pin, body))}
+                    placement={placeLabel(pin, pinNameBox(pin, body), pin.labelAnchor?.name)}
                     color={active ? ACTIVE : PIN_NAME}
                   />
                 </>

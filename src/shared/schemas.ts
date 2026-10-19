@@ -224,6 +224,18 @@ export const NormalizedSymbolPinSchema = z.object({
   length: z.number().nonnegative(),
   type: SymbolPinTypeSchema,
   visible: z.boolean(),
+  /**
+   * 引脚文字的**定位锚点**（名字 / 编号各一个点），解析时从本体盒推导后**冻结在引脚上**。
+   *
+   * 为什么必须冻结：Capture 的画法里，引脚名从本体边缘起算，但我们的手工编辑允许单独
+   * 移动引脚。若每次渲染都拿"当前本体盒"推锚点，横着拖引脚时文字不会跟（左侧引脚名字的
+   * x 恒等于本体左边 +5），而拖本体时所有文字又跟着本体跑 —— 用户会看到"标签与引脚分离、
+   * 间距越拖越宽"。冻结到引脚后，`applySymbolEdits` 平移引脚时把它一起平移，
+   * 标签与引脚的相对位置就永远不变。
+   */
+  labelAnchor: z
+    .object({ name: PointSchema, number: PointSchema })
+    .optional(),
 });
 export type NormalizedSymbolPin = z.infer<typeof NormalizedSymbolPinSchema>;
 

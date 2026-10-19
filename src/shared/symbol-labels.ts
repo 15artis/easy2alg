@@ -161,8 +161,7 @@ export const pinNameBox = (pin: NormalizedSymbolPin, body: SymbolBox): SymbolBox
 };
 
 /** 引脚号占位（本体外侧，紧贴本体边缘）。 */
-export const pinNumberBox = (pin: NormalizedSymbolPin, body: SymbolBox): SymbolBox => {
-  const box = normalize(body);
+export const pinNumberBox = (pin: NormalizedSymbolPin, body: SymbolBox): SymbolBox => {  const box = normalize(body);
   const width = estimateLabelWidth(pin.number);
   switch (pinSideOf(pin)) {
     case "left":
@@ -194,6 +193,84 @@ export const pinNumberBox = (pin: NormalizedSymbolPin, body: SymbolBox): SymbolB
         maxY: box.maxY + SYMBOL_LABEL_OFFSET + width,
       };
   }
+};
+
+/** 预览里引脚名/脚号用的字号（世界单位）。Capture 两侧同为 height≈9。 */
+export const SYMBOL_PIN_FONT = 9;
+
+/** 引脚文字锚点：名字/编号各一个定位点（预览的 `placeLabel` 用）。 */
+export type PinLabelAnchor = {
+  readonly name: { readonly x: number; readonly y: number };
+  readonly number: { readonly x: number; readonly y: number };
+};
+
+/**
+ * 从当前本体盒推导出这个引脚两个文字的定位点。
+ *
+ * 与预览的 `placeLabel` 一一对应（左/右引脚取名字盒的内侧边，上下引脚取名字盒的外端、
+ * x 用引脚自己的 x）；解析时调用一次后**冻结**到引脚上（见 schemas 里的 labelAnchor）。
+ */
+export const pinLabelAnchors = (pin: NormalizedSymbolPin, body: SymbolBox): PinLabelAnchor => {
+  const nameBox = pinNameBox(pin, body);
+  const numberBox = pinNumberBox(pin, body);
+  switch (pinSideOf(pin)) {
+    case "left":
+      return {
+        name: { x: nameBox.minX, y: pin.body.y },
+        number: { x: numberBox.maxX, y: pin.body.y },
+      };
+    case "right":
+      return {
+        name: { x: nameBox.maxX, y: pin.body.y },
+        number: { x: numberBox.minX, y: pin.body.y },
+      };
+    default:
+      return {
+        name: { x: pin.body.x, y: nameBox.maxY },
+        number: { x: pin.body.x, y: numberBox.maxY },
+      };
+  }
+};
+
+/**
+ * 把锚点冻结到段里每个引脚上。放在**去重与避让之后**调用：避让会挪引脚/加宽本体，
+ * 锚点必须反映最终几何。
+ */
+export const attachPinLabelAnchors = (
+  section: NormalizedSymbolSection,
+): NormalizedSymbolSection => {
+  const body = bodyBoxOf(section);
+  return {
+    ...section,
+    pins: section.pins.map((pin) => ({ ...pin, labelAnchor: pinLabelAnchors(pin, body) })),
+  };
+};
+
+/**
+ * 文字锚点 → 占位盒（框选命中用）。
+ *
+ * `endAnchored` = 文字从锚点往左延伸（右侧引脚的名字、左侧引脚的脚号），
+ * 竖排（rotated）= 往上方延伸。宽度按 `estimateLabelWidth`、高度按 `SYMBOL_PIN_FONT`。
+ * 与预览画出来的东西对齐，不要求像素级精确 —— 框选碰到就算选中。
+ */
+export const anchorLabelBox = (
+  anchor: { readonly x: number; readonly y: number },
+  text: string,
+  rotated: boolean,
+  endAnchored: boolean,
+): SymbolBox => {
+  const width = estimateLabelWidth(text);
+  const half = SYMBOL_PIN_FONT / 2;
+  if (rotated) {
+    return { minX: anchor.x - half, maxX: anchor.x + half, minY: anchor.y - width, maxY: anchor.y };
+  }
+  const baseline = SYMBOL_PIN_FONT * 0.25;
+  return {
+    minX: endAnchored ? anchor.x - width : anchor.x,
+    maxX: endAnchored ? anchor.x : anchor.x + width,
+    minY: anchor.y - (SYMBOL_PIN_FONT - baseline),
+    maxY: anchor.y + baseline,
+  };
 };
 
 /**
@@ -257,8 +334,20 @@ export const symbolElementBox = (
     if (pin === undefined) {
       return null;
     }
-    const body = bodyBoxOf(section);
-    return [pinNameBox(pin, body), pinNumberBox(pin, body), boxOfPoints([pin.connection, pin.body])].reduce(
+    const side = pinSideOf(pin);
+    const rotated = side === "top" || side === "bottom";
+    // 有冻结锚点就按锚点算（跟屏幕上看到的一致）；老数据退化到本体盒推导
+    const labelBoxes =
+      pin.labelAnchor === undefined
+        ? (() => {
+            const body = bodyBoxOf(section);
+            return [pinNameBox(pin, body), pinNumberBox(pin, body)];
+          })()
+        : [
+            anchorLabelBox(pin.labelAnchor.name, pin.name, rotated, side === "right"),
+            anchorLabelBox(pin.labelAnchor.number, pin.number, rotated, side === "left"),
+          ];
+    return [...labelBoxes, boxOfPoints([pin.connection, pin.body])].reduce(
       (acc, box) => ({
         minX: Math.min(acc.minX, box.minX),
         minY: Math.min(acc.minY, box.minY),
@@ -296,16 +385,29 @@ export const boxesIntersect = (a: SymbolBox, b: SymbolBox): boolean =>
  * 框选：返回本段里落在 `box` 内的所有元素键（图形 + 引脚）。
  * 键要带上真实的段序号，才能直接喂给选中态与编辑记录。
  */
+/**
+ * 框选（橡皮筋）命中：返回与 `box` 相交的所有元素键。
+ *
+ * **本体框（rect）不参与框选** —— 用户 2026-10-19 反馈："框选引脚和引脚标签，
+ * 结果本体也被带上、拖动时多出一堆东西跟着动"。框的包围盒覆盖整个符号，
+ * 无论按"碰到就算"还是"越过描边"，只要框选贴着边缘就会把本体捎上，手感不可预测。
+ * 所以：框选只选**内容**（引脚 / 文字 / 分隔线），本体框要用鼠标点它的线来选中
+ * （选中后可用方向键移动，拖它的线则是改大小）。
+ */
 export const symbolKeysInBox = (
   section: NormalizedSymbolSection,
   sectionIndex: number,
   box: SymbolBox,
 ): readonly string[] => {
   const keys: string[] = [];
-  section.shapes.forEach((_shape, index) => {
-    const element = symbolElementBox(section, symbolShapeKey(sectionIndex, index));
+  section.shapes.forEach((shape, index) => {
+    if (shape.kind === "rect") {
+      return;
+    }
+    const key = symbolShapeKey(sectionIndex, index);
+    const element = symbolElementBox(section, key);
     if (element !== null && boxesIntersect(element, box)) {
-      keys.push(symbolShapeKey(sectionIndex, index));
+      keys.push(key);
     }
   });
   section.pins.forEach((_pin, index) => {

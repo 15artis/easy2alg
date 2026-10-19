@@ -2132,7 +2132,7 @@ const ConverterPage = ({
               <span><i className="legend-pad" />引脚</span>
               <span>
                 {editMode
-                  ? "编辑中：拖元素移动（可框选多个一起动） · 拖本体框线改大小 · 空白处拖出框选 · 中键平移 · ←↑→↓ 微调 · 空格 旋转文本 · [ ] 字号 · Ctrl+Z 退回 · Esc 取消"
+                  ? "编辑中：拖元素移动（可框选多个一起动，本体框需点它的线选中） · 拖框线改大小 · 中键平移 · ←↑→↓ 微调 · 空格 旋转文本 · [ ] 字号 · Ctrl+Z 退回 · Esc 取消"
                   : "点「编辑」后按住鼠标左键拖动文字、图形与引脚（滚轮缩放照常可用）"}
                 {hasSymbolEdits(selectedEdit.symbolEdits) ? (
                   <button
