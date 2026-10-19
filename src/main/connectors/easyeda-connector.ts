@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { ExternalServiceError } from "../../shared/errors";
-import type { NormalizedFootprint, NormalizedSymbol } from "../../shared/schemas";
+import type { NormalizedFootprint, NormalizedSymbol, ProductSearchResult } from "../../shared/schemas";
 import { NormalizedFootprintSchema } from "../../shared/schemas";
 import { parseEasyEdaSymbol } from "../conversion/easyeda-symbol";
 import { normalizeEasyEdaResponse, RawEasyEdaResponseSchema } from "../conversion/normalize";
@@ -10,7 +10,35 @@ import { writeLog } from "../logging";
 
 const LcscIdSchema = z.string().trim().toUpperCase().regex(/^C\d+$/);
 const API_TEMPLATE = "https://easyeda.com/api/products/{lcsc_id}/components?version=6.4.19.5";
+/**
+ * 关键字搜索（用户 2026-10-19 要求"输入元件名模糊搜索"）。
+ * 实测可用端点：`/api/eda/product/search?keyword=...`（参数名必须是 keyword，
+ * 用 wd/q/page 等会返回 resultCode 0004）。响应里 productList 的 number 即 C 编号。
+ * **必须带 Accept: application/json** —— 只带 UA 会被 CloudFront 403。
+ */
+const SEARCH_TEMPLATE = "https://easyeda.com/api/eda/product/search?keyword={keyword}";
 const RETRY_DELAYS_MS = [0, 450, 1_250] as const;
+
+/** 搜索响应只取我们需要的字段，其余结构变化不让界面崩。 */
+const SearchResponseSchema = z.object({
+  code: z.number().optional(),
+  result: z
+    .object({
+      productList: z
+        .array(
+          z.object({
+            number: z.string().regex(/^C\d+$/),
+            mpn: z.string().default(""),
+            package: z.string().default(""),
+            manufacturer: z.string().default(""),
+            stock: z.number().int().nonnegative().default(0),
+          }),
+        )
+        .default([]),
+    })
+    .nullable()
+    .optional(),
+});
 
 const delay = async (milliseconds: number): Promise<void> => {
   await new Promise<void>((resolve) => {
@@ -94,9 +122,91 @@ export class EasyEdaConnector {
     return symbol;
   }
 
+  /**
+   * 关键字模糊搜索（厂商型号 / 描述 / 关键词）。返回 C 编号等摘要信息，
+   * 用户选中后再走正常的 fetchFootprint / fetchSymbol 流程。
+   *
+   * 接口要点（实测）：参数名必须是 keyword；必须带 `Accept: application/json`，
+   * 只带 UA 会被 CloudFront 拦成 403。stock 为 0 也照常返回（缺货件同样可生成）。
+   */
+  async searchProducts(keywordInput: string): Promise<ProductSearchResult> {
+    const keyword = keywordInput.trim();
+    if (keyword.length === 0) {
+      return { keyword, hits: [] };
+    }
+    const requestUrl = SEARCH_TEMPLATE.replace("{keyword}", encodeURIComponent(keyword));
+    let response: Response;
+    try {
+      response = await fetch(requestUrl, {
+        headers: {
+          Accept: "application/json",
+          "Accept-Encoding": "gzip, deflate",
+          Referer: "https://easyeda.com/",
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/132.0 Easy2ALG/0.1",
+        },
+        signal: AbortSignal.timeout(20_000),
+      });
+    } catch (error) {
+      const cause = error instanceof Error ? error : new Error(String(error));
+      throw new ExternalServiceError(
+        `元件搜索失败（${keyword}）：${cause.message}`,
+        {
+          operation: "search_products",
+          requestUrl,
+          statusCode: null,
+          responseBody: "",
+          parameters: { keyword },
+        },
+        cause,
+      );
+    }
+    const body = await response.text();
+    if (!response.ok) {
+      throw new ExternalServiceError(
+        `元件搜索失败（${keyword}）：HTTP ${response.status}`,
+        {
+          operation: "search_products",
+          requestUrl,
+          statusCode: response.status,
+          responseBody: responseSnippet(body),
+          parameters: { keyword },
+        },
+        null,
+      );
+    }
+    const parsed = SearchResponseSchema.safeParse(JSON.parse(body) as unknown);
+    if (!parsed.success) {
+      throw new ExternalServiceError(
+        `元件搜索返回了无法识别的数据（${keyword}）`,
+        {
+          operation: "search_products",
+          requestUrl,
+          statusCode: response.status,
+          responseBody: responseSnippet(body),
+          parameters: { keyword },
+        },
+        null,
+      );
+    }
+    await writeLog("info", "easyeda_search", {
+      keyword,
+      total: parsed.data.result?.productList.length ?? 0,
+    });
+    return {
+      keyword,
+      hits: (parsed.data.result?.productList ?? []).map((item) => ({
+        lcscId: item.number,
+        mpn: item.mpn,
+        package: item.package,
+        manufacturer: item.manufacturer,
+        stock: item.stock,
+      })),
+    };
+  }
+
   /** 原始响应（含封装与符号两段），落盘缓存避免同一器件请求两次。 */
-  async #loadRaw(lcscId: string): Promise<unknown> {
-    const cachePath = join(this.#cacheDirectory, `${lcscId}.raw.json`);
+  async #loadRaw(lcscId: string): Promise<unknown> {    const cachePath = join(this.#cacheDirectory, `${lcscId}.raw.json`);
     try {
       return JSON.parse(await readFile(cachePath, "utf8")) as unknown;
     } catch (error) {

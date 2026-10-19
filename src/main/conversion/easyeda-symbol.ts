@@ -10,6 +10,7 @@ import type {
 import { NormalizedSymbolSchema } from "../../shared/schemas";
 import { avoidLabelOverlapInSection } from "../../shared/symbol-layout";
 import { DEFAULT_SYMBOL_TEXT_HEIGHT } from "../../shared/symbol-labels";
+import { dedupePinNames } from "../../shared/symbol-normalize";
 import { refdesPrefixFrom, sanitizeSymbolName } from "./naming";
 
 /**
@@ -315,7 +316,10 @@ export const parseEasyEdaSymbol = (
     return { ...shape, at: movePoint(shape.at) };
   };
 
-  const section: NormalizedSymbolSection = avoidLabelOverlapInSection({
+  // ① 引脚名去重（Cadence 不接受重复引脚文本）→ ② 引脚标签避让。
+  // 顺序不能反：避让按引脚名的字宽算竖带深度，必须用**最终名字**（GND_18 比 GND 宽）。
+  // 都在解析阶段做，预览与写库看到的是同一份结果。
+  const section: NormalizedSymbolSection = avoidLabelOverlapInSection(dedupePinNames({
     name: sanitizeSymbolName(cPara.name ?? options.fallbackName, fallback),
     bounds: {
       minX: bounds.minX + dx,
@@ -329,8 +333,7 @@ export const parseEasyEdaSymbol = (
       body: movePoint(pin.body),
     })),
     shapes: shapes.map(moveShape),
-  });
-
+  }));
   const symbol: NormalizedSymbol = {
     name: sanitizeSymbolName(cPara.name ?? options.fallbackName, fallback),
     refdesPrefix: refdesPrefixFrom(cPara.pre),

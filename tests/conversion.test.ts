@@ -196,6 +196,8 @@ describe("Allegro source generation", () => {
           setupCompleted: true,
           allegroExecutablePath: null,
           olbLibraryPath: null,
+          unifiedLibraryFolder: false,
+          fillPcbFootprint: true,
           ui: defaultUiSettings(),
         },
         null,

@@ -60,6 +60,8 @@ const defaultSettings = (): AppSettings => ({
   setupCompleted: false,
   allegroExecutablePath: null,
   olbLibraryPath: null,
+  unifiedLibraryFolder: false,
+  fillPcbFootprint: true,
   ui: defaultUiSettings(),
 });
 
@@ -155,6 +157,9 @@ const registerHandlers = (): void => {
     }
     return detector.inspectExecutable(result.filePaths[0], null);
   });
+  ipcMain.handle(IpcChannels.searchProducts, (_event, keyword: unknown) =>
+    easyEda.searchProducts(z.string().parse(keyword)),
+  );
   ipcMain.handle(IpcChannels.fetchComponent, (_event, lcscId: unknown) =>
     easyEda.fetchFootprint(z.string().parse(lcscId)),
   );
@@ -232,13 +237,19 @@ const registerHandlers = (): void => {
       );
     }
     const libraryPath =
-      request.libraryPath ?? autoLibraryPath(settings.libraryDirectory, request.libraryName);
+      request.libraryPath ??
+      autoLibraryPath(
+        settings.libraryDirectory,
+        request.libraryName,
+        settings.unifiedLibraryFolder,
+      );
     return writeCaptureLibrary({
       symbol: request.symbol,
       toolchain,
       libraryPath,
       // 必须转发：漏掉它 => 用户点了「覆盖写入」也依然返回 needsConfirm，弹窗无限重来
       confirmOverwrite: request.confirmOverwrite,
+      fillPcbFootprint: settings.fillPcbFootprint,
     });
   });
   ipcMain.handle(IpcChannels.createPlan, (_event, rawFootprint: unknown) =>

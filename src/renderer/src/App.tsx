@@ -57,6 +57,7 @@ import type {
   OlbWriteOutcome,
   OlbPartSummary,
   OlbWriteResult,
+  ProductSearchHit,
   QueueItem,
 } from "../../shared/schemas";
 import { createMockApi } from "./mock-api";
@@ -70,7 +71,10 @@ import {
   applySymbolEdits,
   EMPTY_SYMBOL_EDITS,
   hasSymbolEdits,
+  setRectBounds,
+  type RectEdges,
   type SymbolEdits,
+  type SymbolShapeBounds,
 } from "../../shared/symbol-edit";
 import {
   canRedo,
@@ -95,7 +99,7 @@ import {
   RIGHT_RAIL_RANGE,
   type UiSettingsPatch,
 } from "../../shared/schemas";
-import { sectionPreviewBounds } from "../../shared/symbol-labels";
+import { sectionPreviewBounds, symbolKeysInBox } from "../../shared/symbol-labels";
 
 type Page = "convert" | "history" | "settings";
 
@@ -113,6 +117,7 @@ const createUnavailableApi = (): Easy2AlgApi => {
     chooseLibraryDirectory: unavailable,
     chooseAllegroExecutable: unavailable,
     detectAllegro: unavailable,
+    searchProducts: unavailable,
     fetchComponent: unavailable,
     fetchSymbol: unavailable,
     chooseLocalLibraryFile: unavailable,
@@ -142,6 +147,8 @@ const emptySettings: AppSettings = {
   setupCompleted: false,
   allegroExecutablePath: null,
   olbLibraryPath: null,
+  unifiedLibraryFolder: false,
+  fillPcbFootprint: true,
   ui: defaultUiSettings(),
 };
 
@@ -503,6 +510,8 @@ const SetupDialog = ({
         setupCompleted: true,
         allegroExecutablePath: manualExecutablePath,
         olbLibraryPath: initial.olbLibraryPath,
+        unifiedLibraryFolder: initial.unifiedLibraryFolder,
+        fillPcbFootprint: initial.fillPcbFootprint,
         ui: initial.ui,
       });
     } catch (saveError) {
@@ -853,6 +862,11 @@ const ConverterPage = ({
   const [progress, setProgress] = useState<GenerationProgress | null>(null);
   const [localLoading, setLocalLoading] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  /** 关键字搜索结果（输入框下方列出，点一下加入队列） */
+  const [searching, setSearching] = useState(false);
+  const [searchKeyword, setSearchKeyword] = useState<string | null>(null);
+  const [searchHits, setSearchHits] = useState<readonly ProductSearchHit[] | null>(null);
+  const [searchError, setSearchError] = useState<string | null>(null);
   // 生成哪些产物：PCB 封装（.dra/.psm/.pad）与原理图符号（.olb）各自独立开关。
   const [targets, setTargets] = useState<{ pcb: boolean; symbol: boolean }>({
     pcb: true,
@@ -860,7 +874,20 @@ const ConverterPage = ({
   });
   const [previewTab, setPreviewTab] = useState<"pcb" | "sch">("pcb");
   const [sectionIndex, setSectionIndex] = useState(0);
-  const [selectedShapeKey, setSelectedShapeKey] = useState<string | null>(null);
+  /**
+   * 符号编辑的**选中集**：支持多选（空白处拖出橡皮筋框选，然后一起移动 ——
+   * 用户 2026-10-16 要求）。单选就是长度为 1。
+   */
+  const [selectedKeys, setSelectedKeys] = useState<readonly string[]>([]);
+  /** 单选时的那一个键 —— 旋转 / 字号这类只对单个元素有意义的操作看它。 */
+  const selectedShapeKey = selectedKeys.length === 1 ? selectedKeys[0] : null;
+  /** 正在拖的橡皮筋框里命中的键（拖动过程实时高亮用；null = 没在框选）。 */
+  const [marqueeKeys, setMarqueeKeys] = useState<readonly string[] | null>(null);
+  /** 框选中优先显示"正要选中的"，松手后才变成正式选中集。 */
+  const effectiveSelectedKeys = useMemo(
+    () => new Set(marqueeKeys ?? selectedKeys),
+    [marqueeKeys, selectedKeys],
+  );
   // PCB 预览的图层开关（右侧「图层显示」面板直接驱动画布）
   const [visibleLayers, setVisibleLayers] = useState<ReadonlySet<FootprintLayerId>>(
     () => defaultVisibleLayers([]),
@@ -931,7 +958,7 @@ const ConverterPage = ({
   const selectedKeyId = selected?.id ?? null;
   useEffect(() => {
     setSectionIndex(0);
-    setSelectedShapeKey(null);
+    setSelectedKeys([]);
   }, [selectedKeyId]);
 
   // 当前器件实际存在的图层（源数据里没有的层不列出来）。换器件时把上次残留的
@@ -1002,14 +1029,14 @@ const ConverterPage = ({
    * `continuous=true` 用于拖动与长按方向键：连续改动先挂在同一个"步"里，
    * 停手 `EDIT_STEP_IDLE_MS` 之后才结算 —— 否则一次拖动会攒出几十个撤销点，
    * Ctrl+Z 要按到手酸。
+   *
+   * **状态更新必须是函数式**：指针事件会被浏览器合并（一次批处理里来两个 move），
+   * 若以渲染期的 ref 为基线，后一个事件会把前一个的位移整个覆盖掉
+   * （实测一次拖动只走了最后一步的位移）。
    */
   const mutateSymbolEdits = useCallback(
     (deviceId: string, mutate: (edits: SymbolEdits) => SymbolEdits, continuous: boolean): void => {
       const before = symbolEditsOf(deviceId);
-      const next = mutate(before);
-      if (next === before) {
-        return;
-      }
       const open = editStepRef.current;
       if (continuous && open !== null && open.deviceId === deviceId) {
         window.clearTimeout(open.timer);
@@ -1029,13 +1056,17 @@ const ConverterPage = ({
           }));
         }
       }
-      setDeviceEdits((current) => ({
-        ...current,
-        [deviceId]: {
-          ...(current[deviceId] ?? EMPTY_DEVICE_EDIT),
-          symbolEdits: next,
-        },
-      }));
+      setDeviceEdits((current) => {
+        const base = current[deviceId] ?? EMPTY_DEVICE_EDIT;
+        const next = mutate(base.symbolEdits);
+        if (next === base.symbolEdits) {
+          return current;
+        }
+        return {
+          ...current,
+          [deviceId]: { ...base, symbolEdits: next },
+        };
+      });
     },
     [sealEditStep, symbolEditsOf],
   );
@@ -1107,22 +1138,39 @@ const ConverterPage = ({
   );
 
   /**
-   * 符号预览里"按住左键拖动元素"的落点。
+   * 符号预览里"按住左键拖动元素"的落点 —— **整组一起移动**（框选出来的多选）。
    * 引用必须稳定：引脚层是 memo 的，拖动时每一帧 setState 都会重渲染 App，
    * 匿名回调会把 676 个引脚的 memo 全部打穿（拖动明显发顿）。
    */
-  const moveSelectedElement = useCallback(
-    (key: string, dx: number, dy: number): void => {
-      if (selectedKeyId !== null) {
-        moveSymbolElement(selectedKeyId, key, dx, dy);
+  const moveSelectedElements = useCallback(
+    (keys: readonly string[], dx: number, dy: number): void => {
+      if (selectedKeyId === null || keys.length === 0) {
+        return;
       }
+      // continuous：一次拖动合并成同一个撤销点
+      mutateSymbolEdits(
+        selectedKeyId,
+        (edits) => keys.reduce((acc, key) => accumulateOffset(acc, key, dx, dy), edits),
+        true,
+      );
     },
-    [selectedKeyId, moveSymbolElement],
+    [mutateSymbolEdits, selectedKeyId],
+  );
+
+  /** 拖本体框线改大小（绝对值 + 被拖的边，来自 SymbolPreview 的边界计算）。 */
+  const resizeSelectedRect = useCallback(
+    (key: string, bounds: SymbolShapeBounds, dragged: RectEdges): void => {
+      if (selectedKeyId === null) {
+        return;
+      }
+      mutateSymbolEdits(selectedKeyId, (edits) => setRectBounds(edits, key, bounds, dragged), true);
+    },
+    [mutateSymbolEdits, selectedKeyId],
   );
 
   /** 编辑模式下点画布空白处 = 取消选中当前元素。 */
   const clearSymbolSelection = useCallback((): void => {
-    setSelectedShapeKey(null);
+    setSelectedKeys([]);
   }, []);
 
   /** 旋转一个文本（90° 步进）。单次操作：每按一次一个撤销点。 */
@@ -1137,15 +1185,21 @@ const ConverterPage = ({
 
   /**
    * 编辑模式快捷键（用户 2026-10-16 要求"空格旋转、上下左右移动、更多按键"）：
-   *   ← ↑ → ↓  平移 5 单位（Shift=1 精调，Alt=20 粗调）
-   *   空格 / R  文本旋转 90°
-   *   [ / -    文本字号缩小
-   *   ] / =    文本字号放大
-   *   Esc      取消选择；再按一次退出编辑由工具栏按钮负责
+   *   ← ↑ → ↓  平移 5 单位（Shift=1 精调，Alt=20 粗调）—— 选中的**全部**元素一起动
+   *   空格 / R  文本旋转 90°（仅单选一个文本时）
+   *   [ / -    文本字号缩小（仅单选一个文本时）
+   *   ] / =    文本字号放大（仅单选一个文本时）
+   *   Ctrl+Z / Ctrl+Shift+Z  退回 / 前进（见下面那条 effect）
+   *   Esc      取消选择
    * 只在「编辑」开着、且已选中元素时接管按键；输入框聚焦时不抢。
    */
   useEffect(() => {
-    if (!editMode || previewTab !== "sch" || selected === null || selectedShapeKey === null) {
+    if (
+      !editMode ||
+      previewTab !== "sch" ||
+      selected === null ||
+      selectedKeys.length === 0
+    ) {
       return;
     }
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -1163,8 +1217,12 @@ const ConverterPage = ({
       if (event.key in deltas) {
         event.preventDefault();
         const [dx, dy] = deltas[event.key];
-        moveSymbolElement(selected.id, selectedShapeKey, dx, dy);
+        // 方向键动的是**全部选中**的元素（框选出来的那一批一起微调）
+        moveSelectedElements(selectedKeys, dx, dy);
         return;
+      }
+      if (selectedShapeKey === null) {
+        return; // 多选时旋转/字号没有意义（那是单选文本的操作）
       }
       if (event.key === " " || event.key.toLowerCase() === "r") {
         if (!selectedIsText) {
@@ -1185,7 +1243,7 @@ const ConverterPage = ({
         return;
       }
       if (event.key === "Escape") {
-        setSelectedShapeKey(null);
+        setSelectedKeys([]);
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -1194,9 +1252,10 @@ const ConverterPage = ({
     editMode,
     previewTab,
     selected,
+    selectedKeys,
     selectedShapeKey,
     selectedIsText,
-    moveSymbolElement,
+    moveSelectedElements,
     rotateSymbolText,
     scaleSymbolText,
   ]);
@@ -1276,8 +1335,8 @@ const ConverterPage = ({
     );
   };
 
-  const importIds = async (): Promise<void> => {
-    const ids = splitIds(input);
+  /** 把一批 C 编号加入队列并读取（搜索命中后也走这里）。 */
+  const importIdList = async (ids: readonly string[]): Promise<void> => {
     if (ids.length === 0) {
       return;
     }
@@ -1362,6 +1421,55 @@ const ConverterPage = ({
       }
       return { ...current, ...additions };
     });
+  };
+
+  /**
+   * 关键字搜索（用户 2026-10-19 要求"输入元件名模糊搜索"）。
+   * 输入框里的非 C 编号词条按关键字处理，命中的结果列在输入框下方，点一下即加入队列。
+   * 例：输入 LMK00301ARHST → 命中 C2866150。
+   */
+  const runSearch = async (keyword: string): Promise<void> => {
+    setSearching(true);
+    setSearchError(null);
+    setSearchHits(null);
+    setSearchKeyword(keyword);
+    try {
+      const result = await api.searchProducts(keyword);
+      setSearchHits(result.hits);
+      if (result.hits.length === 0) {
+        setSearchError(`没有找到与「${keyword}」匹配的元件，换个型号或封装关键字试试`);
+      }
+    } catch (error) {
+      setSearchError(errorMessage(error));
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  /** 输入框 → 有 C 编号就直接导入，其余当关键字搜索。 */
+  const importIds = async (): Promise<void> => {
+    const tokens = splitIds(input);
+    if (tokens.length === 0) {
+      return;
+    }
+    const ids = tokens.filter((token) => /^C\d+$/.test(token));
+    const keywords = tokens.filter((token) => !/^C\d+$/.test(token));
+    if (ids.length > 0) {
+      setInput("");
+      await importIdList(ids);
+    }
+    if (keywords.length > 0) {
+      // 多个关键字时只搜第一个：搜索是给"找一个型号"用的，不是批量入口
+      await runSearch(keywords[0]);
+    }
+  };
+
+  /** 点搜索结果 = 把该 C 编号加入队列。 */
+  const addSearchHit = (lcscId: string): void => {
+    setSearchHits(null);
+    setSearchError(null);
+    setSearchKeyword(null);
+    void importIdList([lcscId]);
   };
 
   /**
@@ -1729,7 +1837,7 @@ const ConverterPage = ({
           <textarea
             value={input}
             onChange={(event) => setInput(event.target.value)}
-            placeholder="输入或粘贴立创编号，如 C2040"
+            placeholder="输入立创编号或型号，如 C2040 / LMK00301ARHST"
             data-testid="lcsc-input"
           />
           <div className="input-actions">
@@ -1758,6 +1866,46 @@ const ConverterPage = ({
             <p className="local-library-hint" title={settings.ui.localLibraryDir}>
               上次目录：{basenameOf(settings.ui.localLibraryDir)}
             </p>
+          )}
+          {/* 关键字搜索结果：输入型号（如 LMK00301ARHST）时列在这里，点一下加入队列 */}
+          {searching ? (
+            <p className="local-library-hint">正在搜索 {searchKeyword ?? ""} …</p>
+          ) : null}
+          {searchHits !== null && searchHits.length > 0 ? (
+            <div className="search-results" data-testid="search-results">
+              <div className="search-results-header">
+                <span>「{searchKeyword}」命中 {searchHits.length} 个</span>
+                <button
+                  type="button"
+                  className="legend-reset"
+                  onClick={() => {
+                    setSearchHits(null);
+                    setSearchError(null);
+                    setSearchKeyword(null);
+                  }}
+                >
+                  关闭
+                </button>
+              </div>
+              {searchHits.map((hit) => (
+                <button
+                  key={hit.lcscId}
+                  type="button"
+                  className="search-hit"
+                  onClick={() => addSearchHit(hit.lcscId)}
+                  title={`${hit.manufacturer} ${hit.mpn}`}
+                  data-testid={`search-hit-${hit.lcscId}`}
+                >
+                  <strong>{hit.lcscId}</strong>
+                  <span className="search-hit-mpn">{hit.mpn}</span>
+                  <span className="search-hit-meta">{hit.package}</span>
+                  <span className="search-hit-meta">库存 {hit.stock}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {searchError === null ? null : (
+            <p className="local-import-error" data-testid="search-error">{searchError}</p>
           )}
           {localError === null ? null : (
             <p className="local-import-error" data-testid="local-import-error">{localError}</p>
@@ -1853,7 +2001,7 @@ const ConverterPage = ({
                 className={`edit-mode-toggle ${editMode ? "on" : ""}`}
                 onClick={() => {
                   setEditMode((current) => !current);
-                  setSelectedShapeKey(null);
+                  setSelectedKeys([]);
                 }}
                 title={
                   editMode
@@ -1899,7 +2047,7 @@ const ConverterPage = ({
                   className={index === sectionIndex ? "active" : ""}
                   onClick={() => {
                     setSectionIndex(index);
-                    setSelectedShapeKey(null);
+                    setSelectedKeys([]);
                   }}
                   title={section.name}
                 >
@@ -1916,9 +2064,21 @@ const ConverterPage = ({
               resetKey={`sch:${selected?.id ?? ""}:${sectionIndex}:${editedSymbol.sections.length}`}
               ariaLabel="原理图符号预览"
               onBackgroundClick={editMode ? clearSymbolSelection : undefined}
-              onBackgroundDrag={
-                editMode && selectedShapeKey !== null && selectedKeyId !== null
-                  ? (dx, dy) => moveSymbolElement(selectedKeyId, selectedShapeKey, dx, dy)
+              onMarquee={
+                editMode
+                  ? (box, done) => {
+                      if (box === null) {
+                        setMarqueeKeys(null);
+                        return;
+                      }
+                      const keys =
+                        previewSection === null ? [] : symbolKeysInBox(previewSection, sectionIndex, box);
+                      setMarqueeKeys(keys);
+                      if (done) {
+                        setSelectedKeys(keys);
+                        setMarqueeKeys(null);
+                      }
+                    }
                   : undefined
               }
             >
@@ -1929,9 +2089,10 @@ const ConverterPage = ({
                   scale={scale}
                   edits={selectedEdit.symbolEdits}
                   editing={editMode}
-                  selectedKey={selectedShapeKey}
-                  onSelect={setSelectedShapeKey}
-                  onMoveElement={moveSelectedElement}
+                  selectedKeys={effectiveSelectedKeys}
+                  onSelectKeys={setSelectedKeys}
+                  onMoveElements={moveSelectedElements}
+                  onResizeRect={resizeSelectedRect}
                 />
               )}
             </PanZoom>
@@ -1971,7 +2132,7 @@ const ConverterPage = ({
               <span><i className="legend-pad" />引脚</span>
               <span>
                 {editMode
-                  ? "编辑中：左键按住元素移动 · 已选中时按住空白处拖动继续移动它 · 滚轮缩放 · 中键拖动平移 · ←↑→↓ 微调(Shift/Alt 改步长) · 空格 旋转文本 · [ ] 字号 · Ctrl+Z 退回一步 · Ctrl+Shift+Z 前进 · Esc 取消"
+                  ? "编辑中：拖元素移动（可框选多个一起动） · 拖本体框线改大小 · 空白处拖出框选 · 中键平移 · ←↑→↓ 微调 · 空格 旋转文本 · [ ] 字号 · Ctrl+Z 退回 · Esc 取消"
                   : "点「编辑」后按住鼠标左键拖动文字、图形与引脚（滚轮缩放照常可用）"}
                 {hasSymbolEdits(selectedEdit.symbolEdits) ? (
                   <button
@@ -1981,7 +2142,7 @@ const ConverterPage = ({
                       if (selected !== null) {
                         // 走统一入口：重置也是一步，可以 Ctrl+Z 退回来
                         mutateSymbolEdits(selected.id, () => EMPTY_SYMBOL_EDITS, false);
-                        setSelectedShapeKey(null);
+                        setSelectedKeys([]);
                       }
                     }}
                   >
@@ -2434,6 +2595,33 @@ const SettingsPage = ({
                 <X size={18} />
               </button>
             </div>
+          </div>
+        </div>
+        <div className="setting-section">
+          <div className="setting-icon"><Layers3 size={21} /></div>
+          <div className="setting-content">
+            <label>输出结构与器件字段</label>
+            <p>默认把焊盘放进 padstacks、封装放进 symbols；勾选后全部放在库目录下。</p>
+            <label className="toggle-row">
+              <input
+                type="checkbox"
+                checked={draft.unifiedLibraryFolder}
+                onChange={(event) =>
+                  setDraft({ ...draft, unifiedLibraryFolder: event.target.checked })
+                }
+                data-testid="setting-unified-folder"
+              />
+              <span>焊盘、封装、符号库都用同一个文件夹</span>
+            </label>
+            <label className="toggle-row">
+              <input
+                type="checkbox"
+                checked={draft.fillPcbFootprint}
+                onChange={(event) => setDraft({ ...draft, fillPcbFootprint: event.target.checked })}
+                data-testid="setting-fill-footprint"
+              />
+              <span>在 .olb 的器件里填入 PCB Footprint 字段</span>
+            </label>
           </div>
         </div>
         <div className="settings-actions">

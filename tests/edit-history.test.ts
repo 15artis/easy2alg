@@ -73,12 +73,12 @@ describe("edit history（撤销 / 重做）", () => {
   it("超过上限丢最老的一步（长按方向键/反复拖动也不会无限涨）", () => {
     let history = EMPTY_EDIT_HISTORY;
     for (let i = 0; i < EDIT_HISTORY_LIMIT + 20; i += 1) {
-      history = pushUndo(history, { [key]: { kind: "offset", dx: i, dy: 0 } });
+      history = pushUndo(history, { [key]: { offset: { dx: i, dy: 0 } } });
     }
     expect(history.undo.length).toBe(EDIT_HISTORY_LIMIT);
     // 最老的那批被丢掉，栈顶是最后压进去的
     expect(history.undo[history.undo.length - 1]).toEqual({
-      [key]: { kind: "offset", dx: EDIT_HISTORY_LIMIT + 19, dy: 0 },
+      [key]: { offset: { dx: EDIT_HISTORY_LIMIT + 19, dy: 0 } },
     });
   });
 

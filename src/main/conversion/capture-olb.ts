@@ -66,6 +66,17 @@ const render = (value: number): string => {
   return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(3).replace(/0+$/, "");
 };
 
+/**
+ * 坐标必须落在 Capture 的符号网格上（1 单位 = 10 mil），**XML 里只接受整数**：
+ * `x1="6.449"` 会让 XMATIC_XML2OLB 直接报
+ * `value '6.5' does not match regular expression facet '[+\-]?[0-9]+'` 并整库导入失败。
+ *
+ * 立创的图形允许半单位坐标（椭圆按 24 边形近似后必然出小数），所以写入前统一取整。
+ * 实测案例：C2866150（LMK00301ARHST）带一个半径 1.5 的极性圆点，近似后 88 个坐标
+ * 带小数 → 整个符号写不进去；取整后 49 脚全部正常入库。
+ */
+const grid = (value: number): string => render(Math.round(value));
+
 const sectionSuffix = (index: number): string => {
   // 0→A、1→B … 25→Z，超过 26 段用 AA/AB（Cadence 自身也只到字母段）。
   let remaining = index;
@@ -89,14 +100,14 @@ const commentTextCommands = (shape: Extract<NormalizedSymbolShape, { kind: "text
   const boxHeight = Math.round(height * 1.556);
   const lines = [
     tag("Defn", {
-      locX: render(shape.at.x),
-      locY: render(shape.at.y),
+      locX: grid(shape.at.x),
+      locY: grid(shape.at.y),
       name: shape.text,
       textJustification: 0,
-      x1: render(shape.at.x),
-      x2: render(shape.at.x + width),
-      y1: render(shape.at.y),
-      y2: render(shape.at.y + boxHeight),
+      x1: grid(shape.at.x),
+      x2: grid(shape.at.x + width),
+      y1: grid(shape.at.y),
+      y2: grid(shape.at.y + boxHeight),
     }),
   ];
   return [
@@ -127,10 +138,10 @@ const shapeCommands = (shape: NormalizedSymbolShape): readonly string[] => {
         hatchStyle: SHAPE_HATCH_STYLE,
         lineStyle: SHAPE_LINE_STYLE,
         lineWidth: SHAPE_LINE_WIDTH,
-        x1: render(shape.min.x),
-        x2: render(shape.max.x),
-        y1: render(shape.min.y),
-        y2: render(shape.max.y),
+        x1: grid(shape.min.x),
+        x2: grid(shape.max.x),
+        y1: grid(shape.min.y),
+        y2: grid(shape.max.y),
       }),
       "    </Rect>",
     ];
@@ -146,10 +157,10 @@ const shapeCommands = (shape: NormalizedSymbolShape): readonly string[] => {
         tag("Defn", {
           lineStyle: SHAPE_LINE_STYLE,
           lineWidth: SHAPE_LINE_WIDTH,
-          x1: render(start.x),
-          x2: render(end.x),
-          y1: render(start.y),
-          y2: render(end.y),
+          x1: grid(start.x),
+          x2: grid(end.x),
+          y1: grid(start.y),
+          y2: grid(end.y),
         }),
         "    </Line>",
       );
@@ -162,12 +173,12 @@ const shapeCommands = (shape: NormalizedSymbolShape): readonly string[] => {
 const pinCommands = (pin: NormalizedSymbolPin, position: number): readonly string[] => [
   "    <SymbolPinScalar>",
   tag("Defn", {
-    hotptX: render(pin.connection.x),
-    hotptY: render(pin.connection.y),
+    hotptX: grid(pin.connection.x),
+    hotptY: grid(pin.connection.y),
     name: pin.name,
     position,
-    startX: render(pin.body.x),
-    startY: render(pin.body.y),
+    startX: grid(pin.body.x),
+    startY: grid(pin.body.y),
     type: PIN_TYPE_CODE[pin.type],
     visible: pin.visible ? 1 : 0,
   }),
@@ -198,8 +209,8 @@ const displayPropCommands = (
 ): readonly string[] => [
   "      <SymbolDisplayProp>",
   tag("Defn", {
-    locX: render(locX),
-    locY: render(locY),
+    locX: grid(locX),
+    locY: grid(locY),
     name,
     rotation: 0,
     textJustification: 0,
@@ -266,10 +277,10 @@ const normalViewCommands = (
     "        </SymbolColor>",
     "        <SymbolBBox>",
     tag("Defn", {
-      x1: render(body.minX),
-      x2: render(body.maxX),
-      y1: render(body.minY),
-      y2: render(body.maxY),
+      x1: grid(body.minX),
+      x2: grid(body.maxX),
+      y1: grid(body.minY),
+      y2: grid(body.maxY),
     }),
     "        </SymbolBBox>",
     "        <IsPinNumbersVisible>",
@@ -316,6 +327,7 @@ const normalViewCommands = (
 export const buildCaptureLibraryXml = (
   symbol: NormalizedSymbol,
   libraryPath: string,
+  options: { readonly fillPcbFootprint?: boolean } = {},
 ): string => {
   const multiSection = symbol.sections.length > 1;
   const now = Math.floor(Date.now() / 1000);
@@ -330,7 +342,8 @@ export const buildCaptureLibraryXml = (
       alphabeticNumbering: multiSection ? 1 : 2,
       isHomogeneous: multiSection ? 0 : 1,
       name: symbol.name,
-      pcbFootprint: symbol.pcbFootprint,
+      // 用户 2026-10-19 要求可选：关掉时留空，Capture 里就是空字段
+      pcbFootprint: options.fillPcbFootprint === false ? "" : symbol.pcbFootprint,
       pcbLib: "",
       refdesPrefix: symbol.refdesPrefix,
       timestamp: now,

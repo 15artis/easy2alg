@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { Elibz2Connector } from "../src/main/connectors/elibz2-connector";
-import { inspectLibraryPart } from "../src/main/connectors/capture-writer";
+import { autoLibraryPath, inspectLibraryPart } from "../src/main/connectors/capture-writer";
 import { buildCaptureLibraryXml } from "../src/main/conversion/capture-olb";
 import { applySymbolEdits, symbolShapeKey } from "../src/shared/symbol-edit";
 import { bodyBoxOf, estimateLabelWidth, pinIsVertical, pinSideOf } from "../src/shared/symbol-labels";
@@ -54,6 +54,43 @@ const singleSection = (): NormalizedSymbol => ({
 });
 
 describe("capture library XML", () => {
+  /**
+   * 坐标必须是整数：XMATIC_XML2OLB 的 XSD 对 x1/x2/y1/y2/hotpt/start/locX/locY
+   * 都有 `[+\-]?[0-9]+` 的 facet，出现 "6.449" 会整库导入失败。
+   * 实测案例：C2866150 的极性圆点（半径 1.5，按 24 边形近似）→ 整个符号写不进去。
+   */
+  it("把所有坐标吸附到符号网格（小数会让整库导入失败）", () => {
+    const symbol = singleSection();
+    const section = symbol.sections[0];
+    const fractional: NormalizedSymbol = {
+      ...symbol,
+      sections: [
+        {
+          ...section,
+          pins: section.pins.map((pin) => ({
+            ...pin,
+            connection: { x: pin.connection.x + 0.449, y: pin.connection.y + 0.5 },
+            body: { x: pin.body.x - 0.449, y: pin.body.y + 0.388 },
+          })),
+          shapes: [
+            { kind: "rect", min: { x: 0.4, y: 0.2 }, max: { x: 190.6, y: 260.2 }, cornerRadius: 0, filled: false },
+            {
+              kind: "polyline",
+              closed: false,
+              points: [{ x: 6.5, y: 15 }, { x: 6.449, y: 15.388 }, { x: 6.299, y: 15.75 }],
+            },
+            { kind: "text", text: "T", at: { x: 2.449, y: 25.5 }, rotation: 0, height: 12 },
+          ],
+        },
+      ],
+    };
+    const xml = buildCaptureLibraryXml(fractional, "C:/libs/target.OLB");
+    const coordinates = [...xml.matchAll(/\b(x1|x2|y1|y2|hotptX|hotptY|startX|startY|locX|locY)="([^"]*)"/g)];
+    expect(coordinates.length).toBeGreaterThan(10);
+    const offenders = coordinates.filter((match) => !/^-?\d+$/.test(match[2]));
+    expect(offenders.map((match) => `${match[1]}=${match[2]}`)).toEqual([]);
+  });
+
   it("emits the Package/LibPart/NormalView/PhysicalPart chain a real .olb export uses", () => {
     const xml = buildCaptureLibraryXml(singleSection(), "C:/libs/target.OLB");
     // 根 <Defn> 必须写成目标 .olb 的实际路径：导入器按它定位要写入的库。
@@ -177,7 +214,7 @@ describe("capture library XML", () => {
     const before = symbol!.sections[0].shapes[textIndex];
     expect(before.kind).toBe("text");
     const moved = applySymbolEdits(symbol!, {
-      [symbolShapeKey(0, textIndex)]: { kind: "offset", dx: 25, dy: -40 },
+      [symbolShapeKey(0, textIndex)]: { offset: { dx: 25, dy: -40 } },
     });
     const after = moved.sections[0].shapes[textIndex];
     expect(after.kind).toBe("text");
@@ -329,5 +366,30 @@ describe("inspectLibraryPart（回读解析）", () => {
     const parsed = inspectLibraryPart(library(), "SMALLPART");
     expect(parsed?.sectionCount).toBe(1);
     expect(parsed?.pinCount).toBe(3);
+  });
+});
+
+/**
+ * 两个可配置项（用户 2026-10-19 要求）：
+ *  - .olb 里的 PCB Footprint 字段可关（关掉就留空）；
+ *  - 输出目录可以合成一个文件夹（自动库路径不再进 schlib 子目录）。
+ */
+describe("输出可配置项", () => {
+  it("fillPcbFootprint=false 时 PCB Footprint 字段为空，其余不变", () => {
+    const filled = buildCaptureLibraryXml(singleSection(), "C:/libs/t.olb");
+    expect(filled).toContain('pcbFootprint="TESTPART_FOOTPRINT"');
+    const blank = buildCaptureLibraryXml(singleSection(), "C:/libs/t.olb", {
+      fillPcbFootprint: false,
+    });
+    expect(blank).toContain('pcbFootprint=""');
+    expect(blank).not.toContain("TESTPART_FOOTPRINT");
+    // 器件名/位号前缀不受影响
+    expect(blank).toContain('name="TESTPART"');
+    expect(blank).toContain('refdesPrefix="U"');
+  });
+
+  it("单文件夹模式下 .olb 直接落在库目录，不再建 schlib", () => {
+    expect(autoLibraryPath("D:/lib", "MyLib")).toBe("D:\\lib\\schlib\\MyLib.olb");
+    expect(autoLibraryPath("D:/lib", "MyLib", true)).toBe("D:\\lib\\MyLib.olb");
   });
 });

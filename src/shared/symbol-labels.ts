@@ -1,4 +1,5 @@
 import type { NormalizedSymbolPin, NormalizedSymbolSection } from "./schemas";
+import { isSymbolPinKey, parseSymbolEditKey, symbolPinKey, symbolShapeKey } from "./symbol-edit";
 
 /**
  * Capture 画引脚名/引脚号的规则 —— 预览、避让计算、写 OLB、验收测试共用同一份。
@@ -76,6 +77,18 @@ const normalize = (box: SymbolBox): SymbolBox => ({
   maxX: Math.max(box.minX, box.maxX),
   maxY: Math.max(box.minY, box.maxY),
 });
+
+/** 一组点的包围盒（点数组 → SymbolBox）。 */
+const boxOfPoints = (points: readonly { readonly x: number; readonly y: number }[]): SymbolBox => {
+  const xs = points.map((point) => point.x);
+  const ys = points.map((point) => point.y);
+  return {
+    minX: Math.min(...xs),
+    minY: Math.min(...ys),
+    maxX: Math.max(...xs),
+    maxY: Math.max(...ys),
+  };
+};
 
 export const boxesOverlap = (a: SymbolBox, b: SymbolBox, slack = 0): boolean =>
   a.minX < b.maxX - slack &&
@@ -220,4 +233,86 @@ export const sectionPreviewBounds = (section: NormalizedSymbolSection): SymbolBo
     maxY = Math.max(maxY, box.maxY);
   }
   return { minX, minY, maxX, maxY };
+};
+
+/**
+ * 一个可编辑元素在符号里的**近似占位盒** —— 框选（橡皮筋选择）用它命中判断。
+ *
+ * 与预览画出来的东西一一对应：
+ *  - rect      → 本体四边；
+ *  - polyline  → 折线各点的包围盒；
+ *  - text      → `commentTextBox`（与写库同一份模型）；
+ *  - 引脚      → 引脚线 + 名字盒 + 号盒三者并集。
+ *
+ * 用近似盒而不是精确几何：框选本来就允许"框到就算选中"，
+ * 而对带透明命中区的元素（引脚/文字）近似盒反而更符合手感。
+ */
+export const symbolElementBox = (
+  section: NormalizedSymbolSection,
+  key: string,
+): SymbolBox | null => {
+  const { index } = parseSymbolEditKey(key);
+  if (isSymbolPinKey(key)) {
+    const pin = section.pins[index];
+    if (pin === undefined) {
+      return null;
+    }
+    const body = bodyBoxOf(section);
+    return [pinNameBox(pin, body), pinNumberBox(pin, body), boxOfPoints([pin.connection, pin.body])].reduce(
+      (acc, box) => ({
+        minX: Math.min(acc.minX, box.minX),
+        minY: Math.min(acc.minY, box.minY),
+        maxX: Math.max(acc.maxX, box.maxX),
+        maxY: Math.max(acc.maxY, box.maxY),
+      }),
+    );
+  }
+  const shape = section.shapes[index];
+  if (shape === undefined) {
+    return null;
+  }
+  switch (shape.kind) {
+    case "rect":
+      return normalize({ minX: shape.min.x, minY: shape.min.y, maxX: shape.max.x, maxY: shape.max.y });
+    case "polyline":
+      return boxOfPoints(shape.points);
+    default:
+      // 文字用**预览画出来的占位**（基线在 at.y，字形向上长），而不是写库模型的
+      // commentTextBox（基线向下）—— 框选要跟着眼睛看到的走，两者差整整一个字高。
+      return normalize({
+        minX: shape.at.x,
+        minY: shape.at.y - shape.height,
+        maxX: shape.at.x + estimateLabelWidth(shape.text) * (shape.height / 9) * 1.15,
+        maxY: shape.at.y + shape.height * 0.25,
+      });
+  }
+};
+
+/** 两个盒是否相交（框选命中判据：碰到就算选中）。 */
+export const boxesIntersect = (a: SymbolBox, b: SymbolBox): boolean =>
+  a.minX <= b.maxX && a.maxX >= b.minX && a.minY <= b.maxY && a.maxY >= b.minY;
+
+/**
+ * 框选：返回本段里落在 `box` 内的所有元素键（图形 + 引脚）。
+ * 键要带上真实的段序号，才能直接喂给选中态与编辑记录。
+ */
+export const symbolKeysInBox = (
+  section: NormalizedSymbolSection,
+  sectionIndex: number,
+  box: SymbolBox,
+): readonly string[] => {
+  const keys: string[] = [];
+  section.shapes.forEach((_shape, index) => {
+    const element = symbolElementBox(section, symbolShapeKey(sectionIndex, index));
+    if (element !== null && boxesIntersect(element, box)) {
+      keys.push(symbolShapeKey(sectionIndex, index));
+    }
+  });
+  section.pins.forEach((_pin, index) => {
+    const element = symbolElementBox(section, symbolPinKey(sectionIndex, index));
+    if (element !== null && boxesIntersect(element, box)) {
+      keys.push(symbolPinKey(sectionIndex, index));
+    }
+  });
+  return keys;
 };

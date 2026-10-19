@@ -57,6 +57,7 @@ const api: Easy2AlgApi = {
   chooseLibraryDirectory: () => ipcRenderer.invoke(IpcChannels.chooseLibraryDirectory),
   chooseAllegroExecutable: () => ipcRenderer.invoke(IpcChannels.chooseAllegroExecutable),
   detectAllegro: () => ipcRenderer.invoke(IpcChannels.detectAllegro),
+  searchProducts: (keyword) => ipcRenderer.invoke(IpcChannels.searchProducts, keyword),
   fetchComponent: (lcscId) => ipcRenderer.invoke(IpcChannels.fetchComponent, lcscId),
   fetchSymbol: (lcscId) => ipcRenderer.invoke(IpcChannels.fetchSymbol, lcscId),
   chooseLocalLibraryFile: (defaultDirectory) => ipcRenderer.invoke(IpcChannels.chooseLocalLibraryFile, defaultDirectory),

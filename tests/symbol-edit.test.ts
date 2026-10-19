@@ -10,6 +10,7 @@ import {
   hasSymbolEdits,
   isSymbolPinKey,
   parseSymbolEditKey,
+  setRectBounds,
   symbolPinKey,
   symbolShapeKey,
   translateSymbolShape,
@@ -97,8 +98,8 @@ describe("symbol shape translation", () => {
   it("applies edits only to the addressed section/shape", () => {
     const base = symbol();
     const moved = applySymbolEdits(base, {
-      [symbolShapeKey(0, 2)]: { kind: "offset", dx: 40, dy: -7 },
-      [symbolShapeKey(1, 0)]: { kind: "offset", dx: 1, dy: 2 },
+      [symbolShapeKey(0, 2)]: { offset: { dx: 40, dy: -7 } },
+      [symbolShapeKey(1, 0)]: { offset: { dx: 1, dy: 2 } },
     });
     // 目标元素移动
     expect(moved.sections[0].shapes[2]).toMatchObject({ at: { x: 50, y: 13 } });
@@ -114,7 +115,7 @@ describe("symbol shape translation", () => {
     const base = symbol();
     expect(applySymbolEdits(base, EMPTY_SYMBOL_EDITS)).toBe(base);
     expect(hasSymbolEdits(EMPTY_SYMBOL_EDITS)).toBe(false);
-    expect(hasSymbolEdits({ [symbolShapeKey(0, 0)]: { kind: "offset", dx: 0, dy: 0 } })).toBe(true);
+    expect(hasSymbolEdits({ [symbolShapeKey(0, 0)]: { offset: { dx: 0, dy: 0 } } })).toBe(true);
   });
 });
 
@@ -136,7 +137,7 @@ describe("library name sanitizing", () => {
 describe("symbol edit model (v0.1.20)", () => {
   it("moves a pin's connection and body together", () => {
     const moved = applySymbolEdits(symbol(), {
-      [symbolPinKey(0, 0)]: { kind: "offset", dx: 7, dy: -3 },
+      [symbolPinKey(0, 0)]: { offset: { dx: 7, dy: -3 } },
     });
     expect(moved.sections[0].pins[0].connection).toEqual({ x: -3, y: 17 });
     expect(moved.sections[0].pins[0].body).toEqual({ x: 7, y: 17 });
@@ -149,8 +150,8 @@ describe("symbol edit model (v0.1.20)", () => {
   it("keeps pin and shape keys in separate namespaces", () => {
     // 图形键 "0:0" 与引脚键 "p0:0" 必须互不干扰 —— 两侧都用 0 开头很容易撞
     const moved = applySymbolEdits(symbol(), {
-      [symbolShapeKey(0, 0)]: { kind: "offset", dx: 1, dy: 1 },
-      [symbolPinKey(0, 0)]: { kind: "offset", dx: 2, dy: 2 },
+      [symbolShapeKey(0, 0)]: { offset: { dx: 1, dy: 1 } },
+      [symbolPinKey(0, 0)]: { offset: { dx: 2, dy: 2 } },
     });
     expect(moved.sections[0].shapes[0]).toMatchObject({ min: { x: 1, y: 1 } });
     expect(moved.sections[0].pins[0].connection).toEqual({ x: -8, y: 22 });
@@ -161,8 +162,8 @@ describe("symbol edit model (v0.1.20)", () => {
 
   it("rotates text by 90° steps and applies font scale", () => {
     const rotated = applySymbolEdits(symbol(), {
-      [symbolShapeKey(0, 2)]: { kind: "rotate", quarterTurns: 1 },
-      [symbolShapeKey(1, 0)]: { kind: "fontSize", scale: 1.5 },
+      [symbolShapeKey(0, 2)]: { rotate: 1 },
+      [symbolShapeKey(1, 0)]: { fontSize: 1.5 },
     });
     const text0 = rotated.sections[0].shapes[2];
     expect(text0.kind === "text" && text0.rotation).toBe(90);
@@ -172,7 +173,7 @@ describe("symbol edit model (v0.1.20)", () => {
 
   it("ignores rotation / font edits on non-text shapes", () => {
     const edited = applySymbolEdits(symbol(), {
-      [symbolShapeKey(0, 0)]: { kind: "rotate", quarterTurns: 1 },
+      [symbolShapeKey(0, 0)]: { rotate: 1 },
     });
     expect(edited.sections[0].shapes[0]).toEqual(symbol().sections[0].shapes[0]);
   });
@@ -180,7 +181,7 @@ describe("symbol edit model (v0.1.20)", () => {
   it("accumulates edits and clears a zero offset", () => {
     let edits = accumulateOffset(EMPTY_SYMBOL_EDITS, symbolShapeKey(0, 0), 5, 5);
     edits = accumulateOffset(edits, symbolShapeKey(0, 0), -5, 0);
-    expect(edits[symbolShapeKey(0, 0)]).toEqual({ kind: "offset", dx: 0, dy: 5 });
+    expect(edits[symbolShapeKey(0, 0)]).toEqual({ offset: { dx: 0, dy: 5 } });
     edits = accumulateOffset(edits, symbolShapeKey(0, 0), 0, -5);
     // 回到原点就该把记录删掉，不然"重置调整"按钮会一直显示
     expect(hasSymbolEdits(edits)).toBe(false);
@@ -191,21 +192,89 @@ describe("symbol edit model (v0.1.20)", () => {
     for (let i = 0; i < 4; i += 1) {
       edits = accumulateRotation(edits, symbolShapeKey(0, 2));
     }
-    expect(edits[symbolShapeKey(0, 2)]).toEqual({ kind: "rotate", quarterTurns: 0 });
+    // 转满一圈 = 回到原样：复合模型下这条编辑整个消失（等价状态不留记录）
+    expect(edits[symbolShapeKey(0, 2)]).toBeUndefined();
+    expect(hasSymbolEdits(edits)).toBe(false);
 
     let sized = EMPTY_SYMBOL_EDITS;
     for (let i = 0; i < 40; i += 1) {
       sized = accumulateFontSize(sized, symbolShapeKey(0, 2), 1.15);
     }
-    const scale = sized[symbolShapeKey(0, 2)];
-    expect(scale.kind === "fontSize" && scale.scale).toBeLessThanOrEqual(4);
+    expect(sized[symbolShapeKey(0, 2)]?.fontSize).toBeLessThanOrEqual(4);
 
     let shrunk = EMPTY_SYMBOL_EDITS;
     for (let i = 0; i < 40; i += 1) {
       shrunk = accumulateFontSize(shrunk, symbolShapeKey(0, 2), 1 / 1.15);
     }
-    const small = shrunk[symbolShapeKey(0, 2)];
-    expect(small.kind === "fontSize" && small.scale).toBeGreaterThanOrEqual(0.4);
+    expect(shrunk[symbolShapeKey(0, 2)]?.fontSize).toBeGreaterThanOrEqual(0.4);
+  });
+
+  /**
+   * 复合编辑：一个元素可以**同时**有位移 / 旋转 / 字号 / 本体四边。
+   * 早期是"一种编辑一个键"，先挪再转会把位移丢掉 —— 用户 2026-10-16 要求
+   * "改完大小还能微调位置"，所以改成按项目分字段。
+   */
+  describe("复合编辑（互不覆盖）", () => {
+    const key = symbolShapeKey(0, 2);
+
+    it("位移 + 旋转 + 字号 共存", () => {
+      let edits = accumulateOffset(EMPTY_SYMBOL_EDITS, key, 5, 5);
+      edits = accumulateRotation(edits, key);
+      edits = accumulateFontSize(edits, key, 1.5);
+      expect(edits[key]).toEqual({ offset: { dx: 5, dy: 5 }, rotate: 1, fontSize: 1.5 });
+
+      const applied = applySymbolEdits(symbol(), edits);
+      const text = applied.sections[0].shapes[2];
+      expect(text.kind === "text" && text.at).toEqual({ x: 15, y: 25 });
+      expect(text.kind === "text" && text.rotation).toBe(90);
+      expect(text.kind === "text" && text.height).toBe(18);
+    });
+
+    it("本体四边（改大小）+ 位移 共存：先改大小再挪，两者都在", () => {
+      const rectKey = symbolShapeKey(0, 0);
+      let edits = setRectBounds(EMPTY_SYMBOL_EDITS, rectKey, {
+        min: { x: 0, y: 0 },
+        max: { x: 200, y: 50 },
+      });
+      edits = accumulateOffset(edits, rectKey, 10, 0);
+
+      const rect = applySymbolEdits(symbol(), edits).sections[0].shapes[0];
+      expect(rect.kind === "rect" && rect.min).toEqual({ x: 10, y: 0 });
+      expect(rect.kind === "rect" && rect.max).toEqual({ x: 210, y: 50 });
+    });
+
+    it("改大小不会把值反过来，也不会压成一条线", () => {
+      const rectKey = symbolShapeKey(0, 0);
+      // 拖过头：左右边对调
+      const flipped = setRectBounds(EMPTY_SYMBOL_EDITS, rectKey, {
+        min: { x: 120, y: 0 },
+        max: { x: 20, y: 50 },
+      });
+      expect(flipped[rectKey]?.bounds).toEqual({ min: { x: 20, y: 0 }, max: { x: 120, y: 50 } });
+      // 压到几乎没宽度 → 只把**被拖的边**按最小边长顶回去，另一边不动
+      const squashedRight = setRectBounds(
+        EMPTY_SYMBOL_EDITS,
+        rectKey,
+        { min: { x: 0, y: 0 }, max: { x: 1, y: 50 } },
+        { left: false, right: true, top: false, bottom: false },
+      );
+      expect(squashedRight[rectKey]?.bounds).toEqual({ min: { x: 0, y: 0 }, max: { x: 10, y: 50 } });
+      const squashedLeft = setRectBounds(
+        EMPTY_SYMBOL_EDITS,
+        rectKey,
+        { min: { x: 0, y: 0 }, max: { x: 1, y: 50 } },
+        { left: true, right: false, top: false, bottom: false },
+      );
+      expect(squashedLeft[rectKey]?.bounds).toEqual({ min: { x: -9, y: 0 }, max: { x: 1, y: 50 } });
+    });
+
+    it("各项回到默认值就把整条编辑删掉", () => {
+      let edits = accumulateOffset(EMPTY_SYMBOL_EDITS, key, 5, 0);
+      expect(edits[key]).toBeDefined();
+      edits = accumulateOffset(edits, key, -5, 0);
+      expect(edits[key]).toBeUndefined();
+      expect(hasSymbolEdits(edits)).toBe(false);
+    });
   });
 
   /**

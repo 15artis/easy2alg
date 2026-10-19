@@ -2087,25 +2087,112 @@ select:focus,
   cursor: default;
 }
 
-/* 画布光标：默认 grab；元素上由内联 style 覆盖成 move。
- * 编辑模式下缩放/平移照常可用（用户要求"编辑时允许符号缩放"）。 */
+/* 画布光标：默认箭头（用户 2026-10-16 要求编辑模式别用 move 光标）；
+ * 框线上由内联 style 按方向显示 resize 光标。 */
+
+/* 关键字搜索结果（输入型号时列在导入框下方） */
+.search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  padding: 8px;
+  background: #f7f9ff;
+  border: 1px solid #d7e2fb;
+  border-radius: 8px;
+}
+
+.search-results-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #5f6b7d;
+  font-size: 11px;
+}
+
+.search-hit {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 8px;
+  align-items: baseline;
+  padding: 6px 8px;
+  text-align: left;
+  background: white;
+  border: 1px solid #e2e9f6;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.search-hit:hover {
+  border-color: #2458d3;
+  background: #f2f6ff;
+}
+
+.search-hit strong {
+  color: #1d49b7;
+  font-size: 12px;
+}
+
+.search-hit-mpn {
+  color: #1f2937;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-hit-meta {
+  grid-column: 2;
+  color: #7d8794;
+  font-size: 10px;
+}
+
+/* 设置页的复选行 */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: #36434e;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.toggle-row input {
+  width: 15px;
+  height: 15px;
+  accent-color: #2458d3;
+}
+
+/* 橡皮筋框选：画在世界坐标里，dash 线宽不随缩放变粗 */
+.panzoom-svg .marquee {
+  fill: rgb(36 88 211 / 8%);
+  stroke: #2458d3;
+  stroke-dasharray: 5 4;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
 
 /* ---------- 缩放平移画布 ---------- */
+/* 光标用默认箭头（用户 2026-10-16 要求：编辑模式别用 move/grab 这类"会动"的光标）；
+ * 框线上由内联 style 按方向显示 resize 光标。 */
 .panzoom {
   position: absolute;
   inset: 14px 12px 12px;
-  cursor: grab;
+  cursor: default;
   touch-action: none;
-}
-
-.panzoom:active {
-  cursor: grabbing;
 }
 
 .panzoom-svg {
   display: block;
   width: 100%;
   height: 100%;
+  /* 禁文本选择：框选拖动会把 SVG 文本"选中"，之后在选中文本上拖动会被浏览器
+   * 当成原生文字拖放 → pointercancel → 我们自己的拖动/框选半途夭折
+   * （实测：拖动只走一步就停、pointerup 消失）。画布类应用的标准做法。 */
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .panzoom-controls {

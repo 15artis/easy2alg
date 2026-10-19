@@ -31,6 +31,7 @@ import {
 } from "../../shared/symbol-edit";
 import { avoidLabelOverlapInSection } from "../../shared/symbol-layout";
 import { DEFAULT_SYMBOL_TEXT_HEIGHT } from "../../shared/symbol-labels";
+import { dedupePinNames } from "../../shared/symbol-normalize";
 import { writeLog } from "../logging";
 
 /**
@@ -841,6 +842,9 @@ export class Elibz2Connector {
       // 往本体内长、横排引脚名也往本体内长，两者在四角必相交。逐脚 PinDisplayProp
       // 那条路实测被导入器静默丢弃，只能改几何 —— 见 shared/symbol-layout.ts。
       // 放在这里而不是写 OLB 时：预览与写库必须看到同一份几何。
+      // 引脚名去重（用户 2026-10-19：Cadence 不接受重复引脚文本）
+      // 必须在避让之前：避让按引脚名宽度算竖带深度，要用最终名字
+      .map(dedupePinNames)
       .map(avoidLabelOverlapInSection);
     if (sections.length === 0) {
       return null;

@@ -147,9 +147,19 @@ export const resolveCaptureToolchain = async (
 };
 
 /** 未指定 OLB 时的落点：<封装库目录>/schlib/<源库名>.olb（多器件累加到同一个库）。 */
-export const autoLibraryPath = (libraryDirectory: string, libraryName: string): string => {
+/**
+ * 未指定 .olb 路径时的默认位置。
+ * `unified=true`（设置里选了"所有输出放同一个文件夹"）时直接落在库目录下，
+ * 不再建 schlib 子目录。
+ */
+export const autoLibraryPath = (
+  libraryDirectory: string,
+  libraryName: string,
+  unified = false,
+): string => {
   const safe = libraryName.replace(/[^A-Za-z0-9_.-]+/g, "_").replace(/^_+|_+$/g, "");
-  return join(libraryDirectory, "schlib", `${safe.length > 0 ? safe : "easy2alg"}.olb`);
+  const fileName = `${safe.length > 0 ? safe : "easy2alg"}.olb`;
+  return unified ? join(libraryDirectory, fileName) : join(libraryDirectory, "schlib", fileName);
 };
 
 export const olbLibraryNameFrom = (sourcePath: string): string => {
@@ -256,6 +266,8 @@ export type OlbWriteOptions = {
    * false（默认）= 先返回 needsConfirm，由界面做二次确认（用户要求）。
    */
   readonly confirmOverwrite?: boolean;
+  /** 是否把 PCB 封装名写进器件的 PCB Footprint 字段（默认写） */
+  readonly fillPcbFootprint?: boolean;
 };
 
 /** 本次要写进去的器件概览（用来和库里的旧内容比对）。 */
@@ -340,7 +352,11 @@ export const writeCaptureLibrary = async (
   const exportPath = join(workDirectory, "verify.xml");
 
   // 导入器按根 <Defn name> 定位目标库，必须与实际路径一致。
-  await writeFile(xmlPath, buildCaptureLibraryXml(symbol, libraryPath), "utf8");
+  await writeFile(
+    xmlPath,
+    buildCaptureLibraryXml(symbol, libraryPath, { fillPcbFootprint: options.fillPcbFootprint }),
+    "utf8",
+  );
   await writeFile(
     runnerPath,
     RUNNER_TEMPLATE(

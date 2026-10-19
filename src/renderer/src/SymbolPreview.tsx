@@ -11,7 +11,9 @@ import {
   dragDelta,
   symbolPinKey,
   symbolShapeKey,
+  type RectEdges,
   type SymbolEdits,
+  type SymbolShapeBounds,
 } from "../../shared/symbol-edit";
 import {
   bodyBoxOf,
@@ -25,15 +27,15 @@ import {
 /**
  * 原理图符号预览（OrCAD Capture 符号坐标系）。
  *
- * **y 轴向下**，与 Capture 符号编辑器一致（实测：源数据左侧引脚按 y 升序与实机
- * 截图的从上到下顺序完全相同），所以这里不做任何翻转 —— 预览看到的就是
- * 在 Capture 里打开的样子。
+ * **y 轴向下**，与 Capture 符号编辑器一致，所以这里不做任何翻转 ——
+ * 预览看到的就是在 Capture 里打开的样子。
  *
- * 两种模式（用户 2026-10-16 要求"编辑"与"缩放"互斥）：
- *  - 浏览（`editing=false`）：PanZoom 接管，滚轮缩放 / 空白处拖动平移；
- *  - 编辑（`editing=true`）：**鼠标左键按住元素即拖动移动**（图形与引脚同一套逻辑），
- *    空白处按住仍可平移画布（否则编辑大符号时视图动不了）；滚轮缩放让位，方向键微调。
- *    按在元素与按在空白处是两条互斥的路径（元素侧 stopPropagation），不会同时触发。
+ * 编辑模式（`editing=true`）的鼠标语义（用户 2026-10-16 定）：
+ *  - **图形/引脚本体**：按住左键拖动 = 移动它；已选中多个时 = **一起移动**所选内容；
+ *  - **本体框的线**：按住拖动 = **改本体大小**（抓哪条边改哪条，四角改两条）；
+ *    框**内部空白不参与命中**，不会误抓；
+ *  - **空白处**：由 PanZoom 接管 —— 拖出橡皮筋框选（图形 + 引脚），点一下取消选中；
+ *  - 光标：编辑模式恢复默认箭头，只在框线上按方向显示 resize 光标。
  */
 
 const EDGE = "#2458d3";
@@ -48,6 +50,8 @@ const TEXT = "#1d49b7";
 const PIN_TEXT_MIN_SCALE = 0.12;
 /** 世界单位下的字号。Capture 的引脚名/号同为 height≈9，这里照抄以便预览比例一致。 */
 const PIN_FONT = 9;
+/** 拖框线时判定"抓住了哪条边"的容差（屏幕像素，按缩放换算成世界单位）。 */
+const EDGE_TOLERANCE_PX = 14;
 
 /** 文字锚点与书写方向 —— 与 shared/symbol-labels.ts 的盒模型一一对应。 */
 type LabelPlacement = {
@@ -77,9 +81,7 @@ const Label = ({
   readonly placement: LabelPlacement;
   readonly color: string;
 }): ReactElement => (
-  /* 不设 dominant-baseline：默认基线正好落在引脚线上，与 Capture 的画法一致
-   * （实测 Capture 把引脚号/名的基线放在引脚线上，文字整体偏上；之前用 middle
-   * 居中反而和 Capture 对不上 —— 用户 2026-10-16 指出）。 */
+  /* 不设 dominant-baseline：默认基线正好落在引脚线上，与 Capture 的画法一致。 */
   <text
     x={placement.x}
     y={placement.y}
@@ -96,53 +98,150 @@ const Label = ({
   </text>
 );
 
-type DragState = {
-  readonly key: string;
-  readonly pointerId: number;
-  lastX: number;
-  lastY: number;
+type RectBounds = {
+  readonly minX: number;
+  readonly minY: number;
+  readonly maxX: number;
+  readonly maxY: number;
+};
+
+type DragState =
+  | {
+      readonly mode: "move";
+      readonly keys: readonly string[];
+      readonly pointerId: number;
+      lastX: number;
+      lastY: number;
+    }
+  | {
+      readonly mode: "resize";
+      readonly key: string;
+      readonly pointerId: number;
+      readonly startX: number;
+      readonly startY: number;
+      readonly edges: RectEdges;
+      readonly origin: RectBounds;
+    };
+
+const resizeCursor = (edges: RectEdges): string => {
+  const horizontal = edges.left || edges.right;
+  const vertical = edges.top || edges.bottom;
+  if (horizontal && vertical) {
+    return (edges.left && edges.top) || (edges.right && edges.bottom)
+      ? "nwse-resize"
+      : "nesw-resize";
+  }
+  return horizontal ? "ew-resize" : "ns-resize";
 };
 
 /**
- * 元素拖动：**按住鼠标左键拖动 = 移动元素**（用户 2026-10-16 要求）。
+ * 把屏幕坐标换算成符号世界坐标。
  *
- * 图形与引脚共用这一份实现，避免两边各写一遍导致行为漂移（曾经引脚那份漏除了
- * `scale`，缩放后引脚拖动速度与图形对不上）。位移换算见 `dragDelta`。
+ * **必须用元素自己的 getScreenCTM()**（含祖先 `<g>` 的 translate+scale），
+ * 用 `ownerSVGElement.getScreenCTM()` 拿到的是 svg 根坐标系（像素），
+ * 判边全错 —— 实测拖右边线会被判成拖下边线，宽度纹丝不动。
+ */
+const worldPoint = (
+  event: ReactPointerEvent<SVGElement>,
+): { readonly x: number; readonly y: number } | null => {
+  const element = event.currentTarget as SVGGraphicsElement;
+  const matrix = element.getScreenCTM?.();
+  if (matrix == null) {
+    return null;
+  }
+  const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix.inverse());
+  return { x: point.x, y: point.y };
+};
+
+/** 按容差判断抓住了哪几条边；都没命中就取最近的那条。 */
+const edgesAt = (
+  point: { readonly x: number; readonly y: number },
+  bounds: RectBounds,
+  tolerance: number,
+): RectEdges => {
+  const nearLeft = Math.abs(point.x - bounds.minX) <= tolerance;
+  const nearRight = Math.abs(point.x - bounds.maxX) <= tolerance;
+  const nearTop = Math.abs(point.y - bounds.minY) <= tolerance;
+  const nearBottom = Math.abs(point.y - bounds.maxY) <= tolerance;
+  if (nearLeft || nearRight || nearTop || nearBottom) {
+    return { left: nearLeft, right: nearRight, top: nearTop, bottom: nearBottom };
+  }
+  const distances: readonly (readonly [keyof RectEdges, number])[] = [
+    ["left", Math.abs(point.x - bounds.minX)],
+    ["right", Math.abs(point.x - bounds.maxX)],
+    ["top", Math.abs(point.y - bounds.minY)],
+    ["bottom", Math.abs(point.y - bounds.maxY)],
+  ];
+  const nearest = [...distances].sort((a, b) => a[1] - b[1])[0][0];
+  return {
+    left: nearest === "left",
+    right: nearest === "right",
+    top: nearest === "top",
+    bottom: nearest === "bottom",
+  };
+};
+
+/**
+ * 元素拖动 / 本体改大小 —— 图形与引脚共用一份实现。
  *
  * `scaleRef` 用 ref 而不是普通 prop：676 脚的器件里引脚层是 memo 的，把 scale
- * 当 prop 传会让每级缩放都重渲染整层引脚 —— 拖动的热路径上正好不能这么干。
+ * 当 prop 传会让每级缩放都重渲染整层引脚。
  */
 const useElementDrag = (
   editing: boolean,
   scaleRef: RefObject<number>,
-  onSelect: (key: string) => void,
-  onMoveElement: (key: string, dx: number, dy: number) => void,
-): {
-  readonly start: (key: string) => (event: ReactPointerEvent<SVGElement>) => void;
-  readonly move: (event: ReactPointerEvent<SVGElement>) => void;
-  readonly end: (event: ReactPointerEvent<SVGElement>) => void;
-} => {
+  selectedKeys: ReadonlySet<string>,
+  onSelectKeys: (keys: readonly string[]) => void,
+  onMoveElements: (keys: readonly string[], dx: number, dy: number) => void,
+  onResizeRect: (key: string, bounds: SymbolShapeBounds, dragged: RectEdges) => void,
+) => {
   const dragRef = useRef<DragState | null>(null);
 
-  const start = useCallback(
+  const startMove =
     (key: string) =>
-      (event: ReactPointerEvent<SVGElement>): void => {
-        if (!editing || event.button !== 0) {
-          return;
-        }
-        // 阻止 PanZoom 把这次按下当成平移 —— "按元素移动元素 / 按空白移动画布"靠这里分流
-        event.stopPropagation();
-        onSelect(key);
-        dragRef.current = {
-          key,
-          pointerId: event.pointerId,
-          lastX: event.clientX,
-          lastY: event.clientY,
-        };
-        event.currentTarget.setPointerCapture(event.pointerId);
-      },
-    [editing, onSelect],
-  );
+    (event: ReactPointerEvent<SVGElement>): void => {
+      if (!editing || event.button !== 0) {
+        return;
+      }
+      // 按在元素上就是"移动元素"，别让 PanZoom 抢去框选
+      event.stopPropagation();
+      // 已选中的元素 → 整组一起移动；没选中 → 只选它自己（替换选中态）
+      const alreadySelected = selectedKeys.has(key);
+      const keys = alreadySelected ? [...selectedKeys] : [key];
+      if (!alreadySelected) {
+        onSelectKeys(keys);
+      }
+      dragRef.current = {
+        mode: "move",
+        keys,
+        pointerId: event.pointerId,
+        lastX: event.clientX,
+        lastY: event.clientY,
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+    };
+
+  const startResize =
+    (key: string, bounds: RectBounds) =>
+    (event: ReactPointerEvent<SVGElement>): void => {
+      if (!editing || event.button !== 0) {
+        return;
+      }
+      event.stopPropagation();
+      const point = worldPoint(event);
+      const tolerance = EDGE_TOLERANCE_PX / (scaleRef.current > 0 ? scaleRef.current : 1);
+      onSelectKeys([key]);
+      dragRef.current = {
+        mode: "resize",
+        key,
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        edges: point === null ? { left: false, right: true, top: false, bottom: false } : edgesAt(point, bounds, tolerance),
+        origin: bounds,
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+    };
 
   const move = useCallback(
     (event: ReactPointerEvent<SVGElement>): void => {
@@ -151,19 +250,37 @@ const useElementDrag = (
         return;
       }
       event.stopPropagation();
-      if (event.clientX === drag.lastX && event.clientY === drag.lastY) {
+      const scale = scaleRef.current > 0 ? scaleRef.current : 1;
+      if (drag.mode === "move") {
+        if (event.clientX === drag.lastX && event.clientY === drag.lastY) {
+          return;
+        }
+        const { dx, dy } = dragDelta(event.clientX - drag.lastX, event.clientY - drag.lastY, scale);
+        drag.lastX = event.clientX;
+        drag.lastY = event.clientY;
+        onMoveElements(drag.keys, dx, dy);
         return;
       }
-      const { dx, dy } = dragDelta(
-        event.clientX - drag.lastX,
-        event.clientY - drag.lastY,
-        scaleRef.current,
+      // 改大小：用"从按下点起算的绝对位移"算新四边，避免逐帧累加漂移
+      const dx = (event.clientX - drag.startX) / scale;
+      const dy = (event.clientY - drag.startY) / scale;
+      const { origin, edges } = drag;
+      onResizeRect(
+        drag.key,
+        {
+          min: {
+            x: edges.left ? origin.minX + dx : origin.minX,
+            y: edges.top ? origin.minY + dy : origin.minY,
+          },
+          max: {
+            x: edges.right ? origin.maxX + dx : origin.maxX,
+            y: edges.bottom ? origin.maxY + dy : origin.maxY,
+          },
+        },
+        edges,
       );
-      drag.lastX = event.clientX;
-      drag.lastY = event.clientY;
-      onMoveElement(drag.key, dx, dy);
     },
-    [onMoveElement, scaleRef],
+    [onMoveElements, onResizeRect, scaleRef],
   );
 
   const end = useCallback((event: ReactPointerEvent<SVGElement>): void => {
@@ -176,7 +293,34 @@ const useElementDrag = (
     }
   }, []);
 
-  return { start, move, end };
+  /**
+   * 框线命中区的 onPointerMove：拖动中走 resize，没在拖就按位置切换 resize 光标。
+   *
+   * **必须挂在这一层** —— startResize 把 pointer capture 设在命中区上，
+   * 拖动期间所有 move 都派发给它；漏挂的话拖动事件一个都到不了（实测框改不动）。
+   */
+  const strokePointerMove = useCallback(
+    (key: string, bounds: RectBounds) =>
+      (event: ReactPointerEvent<SVGElement>): void => {
+        const drag = dragRef.current;
+        if (drag !== null && drag.mode === "resize" && drag.pointerId === event.pointerId) {
+          move(event);
+          return;
+        }
+        if (event.buttons !== 0) {
+          return;
+        }
+        const point = worldPoint(event);
+        if (point === null) {
+          return;
+        }
+        const tolerance = EDGE_TOLERANCE_PX / (scaleRef.current > 0 ? scaleRef.current : 1);
+        event.currentTarget.style.cursor = resizeCursor(edgesAt(point, bounds, tolerance));
+      },
+    [move, scaleRef],
+  );
+
+  return { startMove, startResize, move, end, strokePointerMove };
 };
 
 /**
@@ -190,37 +334,45 @@ const SymbolPins = memo(
     body,
     showText,
     editing,
-    selectedKey,
+    selectedKeys,
     scaleRef,
-    onSelect,
-    onMove,
+    onSelectKeys,
+    onMoveElements,
+    onResizeRect,
   }: {
     readonly sectionIndex: number;
     readonly pins: readonly NormalizedSymbolPin[];
     readonly body: SymbolBox;
     readonly showText: boolean;
     readonly editing: boolean;
-    readonly selectedKey: string | null;
+    readonly selectedKeys: ReadonlySet<string>;
     readonly scaleRef: RefObject<number>;
-    readonly onSelect: (key: string | null) => void;
-    readonly onMove: (key: string, dx: number, dy: number) => void;
+    readonly onSelectKeys: (keys: readonly string[]) => void;
+    readonly onMoveElements: (keys: readonly string[], dx: number, dy: number) => void;
+    readonly onResizeRect: (key: string, bounds: SymbolShapeBounds, dragged: RectEdges) => void;
   }): ReactElement => {
-    const drag = useElementDrag(editing, scaleRef, onSelect, onMove);
+    const drag = useElementDrag(
+      editing,
+      scaleRef,
+      selectedKeys,
+      onSelectKeys,
+      onMoveElements,
+      onResizeRect,
+    );
 
     return (
       <>
         {pins.map((pin, pinIndex) => {
           const key = symbolPinKey(sectionIndex, pinIndex);
-          const active = selectedKey === key;
+          const active = selectedKeys.has(key);
           return (
             <g
               key={`${key}-${pin.number}-${pin.connection.x}-${pin.connection.y}`}
               data-draggable={editing ? "true" : undefined}
-              onPointerDown={editing ? drag.start(key) : undefined}
+              onPointerDown={editing ? drag.startMove(key) : undefined}
               onPointerMove={editing ? drag.move : undefined}
               onPointerUp={editing ? drag.end : undefined}
               onPointerCancel={editing ? drag.end : undefined}
-              style={editing ? { cursor: "move", pointerEvents: "all" } : undefined}
             >
               <line
                 x1={pin.connection.x}
@@ -277,19 +429,21 @@ export const SymbolPreview = ({
   scale,
   edits,
   editing,
-  selectedKey,
-  onSelect,
-  onMoveElement,
+  selectedKeys,
+  onSelectKeys,
+  onMoveElements,
+  onResizeRect,
 }: {
   readonly symbol: NormalizedSymbol;
   readonly sectionIndex: number;
   readonly scale: number;
   readonly edits: SymbolEdits;
-  /** 编辑模式：按住左键拖动元素；浏览模式交给 PanZoom */
+  /** 编辑模式：按住左键拖动元素 / 拖框线改大小；浏览模式交给 PanZoom */
   readonly editing: boolean;
-  readonly selectedKey: string | null;
-  readonly onSelect: (key: string | null) => void;
-  readonly onMoveElement: (key: string, dx: number, dy: number) => void;
+  readonly selectedKeys: ReadonlySet<string>;
+  readonly onSelectKeys: (keys: readonly string[]) => void;
+  readonly onMoveElements: (keys: readonly string[], dx: number, dy: number) => void;
+  readonly onResizeRect: (key: string, bounds: SymbolShapeBounds, dragged: RectEdges) => void;
 }): ReactElement => {
   const section = symbol.sections[Math.min(sectionIndex, symbol.sections.length - 1)];
 
@@ -297,22 +451,27 @@ export const SymbolPreview = ({
   const scaleRef = useRef(scale);
   scaleRef.current = scale;
 
-  const drag = useElementDrag(editing, scaleRef, onSelect, onMoveElement);
+  const drag = useElementDrag(
+    editing,
+    scaleRef,
+    selectedKeys,
+    onSelectKeys,
+    onMoveElements,
+    onResizeRect,
+  );
 
-  const dragProps = (key: string): Record<string, unknown> =>
+  const moveProps = (key: string): Record<string, unknown> =>
     editing
       ? {
           "data-draggable": "true",
-          onPointerDown: drag.start(key),
+          onPointerDown: drag.startMove(key),
           onPointerMove: drag.move,
           onPointerUp: drag.end,
           onPointerCancel: drag.end,
-          // 注意：这里**不设** pointerEvents:all —— 框这类 fill="none" 的元素只应该
-          // 在"描边"上可点可拖，内部空白不能抢走里面元素的点击（用户 2026-10-16 要求）。
-          // 细线不好点的问题由每个元素自己的透明粗线命中区解决（见下方 hitStroke）。
-          style: { cursor: "move" },
+          // 光标恢复默认箭头（用户 2026-10-16 要求）；框线单独用 resize 光标
+          style: { cursor: "default" },
         }
-      : {  };
+      : {};
 
   const showPinText = scale >= PIN_TEXT_MIN_SCALE;
   const body = bodyBoxOf(section);
@@ -321,24 +480,27 @@ export const SymbolPreview = ({
     <g className="symbol-preview">
       {section.shapes.map((shape, shapeIndex) => {
         const key = symbolShapeKey(sectionIndex, shapeIndex);
-        const active = selectedKey === key;
-        const offset = edits[key];
-        const moved = offset?.kind === "offset";
+        const active = selectedKeys.has(key);
+        const edit = edits[key];
+        const offset = edit?.offset;
         const translate =
-          moved && (offset.dx !== 0 || offset.dy !== 0)
+          offset !== undefined && (offset.dx !== 0 || offset.dy !== 0)
             ? `translate(${offset.dx} ${offset.dy})`
             : undefined;
         const stroke = active ? ACTIVE : EDGE;
         if (shape.kind === "rect") {
-          const x = Math.min(shape.min.x, shape.max.x);
-          const y = Math.min(shape.min.y, shape.max.y);
-          const width = Math.abs(shape.max.x - shape.min.x);
-          const height = Math.abs(shape.max.y - shape.min.y);
+          // 本体四边：编辑记录里的 bounds 优先（框线拖动改过大小）
+          const stored = edit?.bounds;
+          const minX = Math.min(stored?.min.x ?? shape.min.x, stored?.max.x ?? shape.max.x);
+          const minY = Math.min(stored?.min.y ?? shape.min.y, stored?.max.y ?? shape.max.y);
+          const width = Math.abs((stored?.max.x ?? shape.max.x) - (stored?.min.x ?? shape.min.x));
+          const height = Math.abs((stored?.max.y ?? shape.max.y) - (stored?.min.y ?? shape.min.y));
+          const bounds: RectBounds = { minX, minY, maxX: minX + width, maxY: minY + height };
           return (
-            <g key={key} transform={translate} {...dragProps(key)}>
+            <g key={key} transform={translate} {...moveProps(key)}>
               <rect
-                x={x}
-                y={y}
+                x={minX}
+                y={minY}
                 width={width}
                 height={height}
                 rx={shape.cornerRadius}
@@ -348,11 +510,12 @@ export const SymbolPreview = ({
                 vectorEffect="non-scaling-stroke"
               />
               {editing ? (
-                /* 命中区：只有这条透明粗描边能点/拖，框内部空白不算（否则一个本体框
-                 * 会把里面所有标签的点击都吃掉 —— 用户 2026-10-16 反馈）。 */
+                /* 命中区只覆盖**框线**：框内部空白不参与命中，免得把里面元素的点击全吃掉
+                 * （用户 2026-10-16 要求）；抓住框线拖动 = 改本体大小。 */
                 <rect
-                  x={x}
-                  y={y}
+                  data-hit="stroke"
+                  x={minX}
+                  y={minY}
                   width={width}
                   height={height}
                   rx={shape.cornerRadius}
@@ -360,6 +523,10 @@ export const SymbolPreview = ({
                   stroke="transparent"
                   strokeWidth={9}
                   vectorEffect="non-scaling-stroke"
+                  onPointerDown={drag.startResize(key, bounds)}
+                  onPointerMove={drag.strokePointerMove(key, bounds)}
+                  onPointerUp={drag.end}
+                  onPointerCancel={drag.end}
                 />
               ) : null}
             </g>
@@ -371,7 +538,7 @@ export const SymbolPreview = ({
             ? `${points} ${shape.points[0].x},${shape.points[0].y}`
             : points;
           return (
-            <g key={key} transform={translate} {...dragProps(key)}>
+            <g key={key} transform={translate} {...moveProps(key)}>
               <polyline
                 points={closed}
                 fill="none"
@@ -392,13 +559,12 @@ export const SymbolPreview = ({
           );
         }
         /* 文字（CommentText）：glyph 本身的命中区太窄，垫一个透明矩形把整块文字都变成
-         * 可点区域，这样"想再拖一次同一个标签"就不会抓到别的东西（用户 2026-10-16 反馈）。
-         * 宽度按模型估算再放 35% + 12 单位余量 —— 预览用的是源字号，实际渲染比
-         * 模型（按 Capture 字号标定）略宽，不放够会出现"点文字右边一点点就落空"。 */
+         * 可点区域，这样"想再拖同一个标签"就不会抓到别的东西。宽度按模型估算再放
+         * 35% + 12 单位余量 —— 预览用的是源字号，实际渲染比模型略宽。 */
         const hitWidth = estimateLabelWidth(shape.text) * (shape.height / PIN_FONT) * 1.35 + 12;
         const hitHeight = shape.height * 1.4 + 6;
         return (
-          <g key={key} transform={translate} {...dragProps(key)}>
+          <g key={key} transform={translate} {...moveProps(key)}>
             <g
               transform={
                 shape.rotation === 0
@@ -434,10 +600,11 @@ export const SymbolPreview = ({
         body={body}
         showText={showPinText}
         editing={editing}
-        selectedKey={selectedKey}
+        selectedKeys={selectedKeys}
         scaleRef={scaleRef}
-        onSelect={onSelect}
-        onMove={onMoveElement}
+        onSelectKeys={onSelectKeys}
+        onMoveElements={onMoveElements}
+        onResizeRect={onResizeRect}
       />
     </g>
   );

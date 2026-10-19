@@ -10,6 +10,7 @@ import type {
   NormalizedFootprint,
   NormalizedSymbol,
   OlbWriteOutcome,
+  ProductSearchResult,
   UiSettingsPatch,
 } from "./schemas";
 
@@ -35,6 +36,8 @@ export type Easy2AlgApi = {
   chooseLibraryDirectory: () => Promise<string | null>;
   chooseAllegroExecutable: () => Promise<AllegroInstall | null>;
   detectAllegro: () => Promise<AllegroInstall[]>;
+  /** 按关键字（厂商型号 / 描述）模糊搜索立创元件；C 编号由调用方直接导入，不走这里。 */
+  searchProducts: (keyword: string) => Promise<ProductSearchResult>;
   fetchComponent: (lcscId: string) => Promise<NormalizedFootprint>;
   /** 立创编号链路的原理图符号（同一份接口响应里的 dataStr）；没有符号时返回 null。 */
   fetchSymbol: (lcscId: string) => Promise<NormalizedSymbol | null>;
@@ -64,6 +67,7 @@ export const IpcChannels = {
   chooseLibraryDirectory: "dialog:choose-library-directory",
   chooseAllegroExecutable: "dialog:choose-allegro-executable",
   detectAllegro: "allegro:detect",
+  searchProducts: "easyeda:search-products",
   fetchComponent: "easyeda:fetch-component",
   fetchSymbol: "easyeda:fetch-symbol",
   chooseLocalLibraryFile: "dialog:choose-local-library",

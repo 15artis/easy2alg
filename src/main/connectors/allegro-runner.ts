@@ -206,9 +206,20 @@ const writeSources = async (
   );
 };
 
+/**
+ * 输出目录布局（用户 2026-10-19 要求"可以选择使用一个文件夹"）：
+ *  - 默认：库目录下分 padstacks/ 与 symbols/ 两个子目录；
+ *  - unified：两个都直接放库目录，Allegro 的库路径指到库目录即可。
+ */
+const padstackDirectoryFor = (unified: boolean, libraryDirectory: string): string =>
+  unified ? libraryDirectory : join(libraryDirectory, "padstacks");
+const symbolDirectoryFor = (unified: boolean, libraryDirectory: string): string =>
+  unified ? libraryDirectory : join(libraryDirectory, "symbols");
+
 const copyVerifiedOutputs = async (
   jobDirectory: string,
   libraryDirectory: string,
+  unifiedLibraryFolder: boolean,
   expectedOutputs: readonly string[],
 ): Promise<readonly GeneratedFile[]> => {
   const files: GeneratedFile[] = [];
@@ -242,8 +253,8 @@ const copyVerifiedOutputs = async (
       );
     }
     const outputDirectory = relativeOutput.endsWith(".pad")
-      ? join(libraryDirectory, "padstacks")
-      : join(libraryDirectory, "symbols");
+      ? padstackDirectoryFor(unifiedLibraryFolder, libraryDirectory)
+      : symbolDirectoryFor(unifiedLibraryFolder, libraryDirectory);
     const destinationPath = join(outputDirectory, basename(relativeOutput));
     await mkdir(outputDirectory, { recursive: true });
     await copyFile(sourcePath, destinationPath);
@@ -343,8 +354,12 @@ export class AllegroRunner {
     }
 
     await Promise.all([
-      mkdir(join(settings.libraryDirectory, "padstacks"), { recursive: true }),
-      mkdir(join(settings.libraryDirectory, "symbols"), { recursive: true }),
+      mkdir(padstackDirectoryFor(settings.unifiedLibraryFolder, settings.libraryDirectory), {
+        recursive: true,
+      }),
+      mkdir(symbolDirectoryFor(settings.unifiedLibraryFolder, settings.libraryDirectory), {
+        recursive: true,
+      }),
     ]);
     progress("launching", 30, `正在启动 Allegro ${settings.allegroVersion}`);
     progress("generating", 42, "Allegro 正在生成焊盘和封装");
@@ -393,6 +408,7 @@ export class AllegroRunner {
     const files = await copyVerifiedOutputs(
       jobDirectory,
       settings.libraryDirectory,
+      settings.unifiedLibraryFolder,
       bundle.expectedOutputs,
     );
     if (files.length !== bundle.expectedOutputs.length) {

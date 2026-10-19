@@ -31,25 +31,33 @@ const DRAGGABLE_SELECTOR = "[data-draggable]";
  * 内容整体挂在 `<g transform="translate(tx ty) scale(s)">` 上，缩放平移只改
  * 这一个 transform，内容不用重算。
  *
- * 交互：滚轮以光标为中心缩放；**按住鼠标拖动**移动内容或选中元素；右下角有 −/＋/适应 按钮。
+ * 交互：滚轮以光标为中心缩放；**中键按住拖动 = 平移画布**；右下角有 −/＋/适应 按钮。
  * 标了 `data-draggable` 的子元素会自行处理 pointerdown（并 stopPropagation），
- * 不会被这里的逻辑抢走 —— 按在元素上是"移动元素"，按在空白处才走画布/选中元素分支。
+ * 不会被这里的逻辑抢走 —— 按在元素上是"移动/改大小"，按在空白处才是画布的事。
  *
- * 三种模式（按"光标底下是什么"分流，不按全局状态分流）：
- *  - 按在元素上：元素自己消化（移动它）；
- *  - 空白处 + 传了 `onBackgroundDrag`（编辑模式且已有选中元素）：拖动 = 继续移动那个
- *    已选中的元素（用户 2026-10-16 要求"按住移动激活的对象，而不是重新抓起新对象"）；
- *  - 其余：拖动 = 平移画布（中键恒为平移，任何模式下都能用）。
+ * 按"光标底下是什么"分流（不按全局模式分流）：
+ *  - 按在元素上：元素自己消化；
+ *  - 空白处 + 传了 `onMarquee`（符号编辑模式）：左键拖出**橡皮筋框选**
+ *    （用户 2026-10-16 要求"支持框选内容一起移动"），光标保持默认箭头；
+ *  - 其余（含 PCB 预览）：左键拖动 = 平移画布；中键任何模式下都能平移。
  *
  * 缩放与平移在编辑模式下同样可用（用户要求"编辑时允许符号缩放"）。
  */
+
+/** 橡皮筋框（世界坐标）。 */
+export type MarqueeBox = {
+  readonly minX: number;
+  readonly minY: number;
+  readonly maxX: number;
+  readonly maxY: number;
+};
 export const PanZoom = ({
   bounds,
   resetKey,
   children,
   ariaLabel,
   onBackgroundClick,
-  onBackgroundDrag,
+  onMarquee,
 }: {
   readonly bounds: PanZoomBounds;
   /** 变化时自动适应窗口（切换器件 / 切换分页） */
@@ -59,12 +67,11 @@ export const PanZoom = ({
   /** 在空白处按下并原地松开（没有拖动）时触发，用于取消选中。 */
   readonly onBackgroundClick?: () => void;
   /**
-   * 空白处按住左键拖动时改走这里（世界单位位移）—— 编辑模式下"已经选中了某个
-   * 标签/图形，再按住拖动就继续移动它"，而不是重新抓一个对象或平移画布
-   * （用户 2026-10-16 要求）。传了它，左键空白拖动就不再是平移；
-   * 平移仍可用中键拖动 / 先 Esc 取消选中。
+   * 空白处左键拖出橡皮筋框选。世界坐标盒；拖动中 `done=false`，松手时 `done=true`
+   * （框太小视作点击：传 `null` 并触发 onBackgroundClick 取消选中）。
+   * 传了它，左键空白拖动就不再是平移 —— 平移走中键。
    */
-  readonly onBackgroundDrag?: (dx: number, dy: number) => void;
+  readonly onMarquee?: (box: MarqueeBox | null, done: boolean) => void;
 }): ReactElement => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState({ width: 900, height: 600 });
@@ -75,14 +82,13 @@ export const PanZoom = ({
     readonly startY: number;
     readonly tx: number;
     readonly ty: number;
-    /** 这次按下是"移动选中元素"还是"平移画布"（中键恒为平移） */
-    readonly mode: "move" | "pan";
-    /** 已转发出去的世界位移，用来算增量 */
-    sentX: number;
-    sentY: number;
+    /** 这次按下是框选、平移还是（未用）其它 */
+    readonly mode: "marquee" | "pan";
     /** 是否已经越过点击死区 */
     moved: boolean;
   } | null>(null);
+  /** 正在拖的橡皮筋框（世界坐标）—— 只用于画出来 */
+  const [marquee, setMarquee] = useState<MarqueeBox | null>(null);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -167,8 +173,19 @@ export const PanZoom = ({
     return () => element.removeEventListener("wheel", handler);
   }, [zoomAt]);
 
-  /** 按下到抬起之间不超过这个像素位移就算"点击空白处"（而非拖动平移）。 */
+  /** 按下到抬起之间不超过这个像素位移就算"点击空白处"（而非拖动）。 */
   const CLICK_SLOP = 3;
+
+  /** 屏幕坐标 → 世界坐标（与滚轮缩放同一套换算）。 */
+  const toWorld = (clientX: number, clientY: number): { readonly x: number; readonly y: number } => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    const left = rect?.left ?? 0;
+    const top = rect?.top ?? 0;
+    return {
+      x: (clientX - left - view.tx) / view.scale,
+      y: (clientY - top - view.ty) / view.scale,
+    };
+  };
 
   const onPointerDown = (event: ReactPointerEvent<SVGSVGElement>): void => {
     // 左键(0)与中键(1)都能拖动；中键永远是平移画布
@@ -185,9 +202,8 @@ export const PanZoom = ({
       startY: event.clientY,
       tx: view.tx,
       ty: view.ty,
-      mode: event.button === 0 && onBackgroundDrag !== undefined ? "move" : "pan",
-      sentX: 0,
-      sentY: 0,
+      // 左键 + 调用方要框选 → 框选；其余（含中键）→ 平移
+      mode: event.button === 0 && onMarquee !== undefined ? "marquee" : "pan",
       moved: false,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -198,26 +214,29 @@ export const PanZoom = ({
     if (pan === null || pan.pointerId !== event.pointerId) {
       return;
     }
-    if (pan.mode === "move") {
-      const dxPx = event.clientX - pan.startX;
-      const dyPx = event.clientY - pan.startY;
-      // 死区：点击（按下即抬起）不该把元素挪走几十分之一单位
-      if (!pan.moved && Math.abs(dxPx) + Math.abs(dyPx) <= CLICK_SLOP) {
+    const travelled = Math.abs(event.clientX - pan.startX) + Math.abs(event.clientY - pan.startY);
+    if (pan.mode === "marquee") {
+      // 死区：点击（按下即抬起）不算框选，交给 endPan 当取消选中处理
+      if (!pan.moved && travelled <= CLICK_SLOP) {
         return;
       }
       pan.moved = true;
-      const worldX = dxPx / view.scale;
-      const worldY = dyPx / view.scale;
-      const stepX = worldX - pan.sentX;
-      const stepY = worldY - pan.sentY;
-      if (stepX === 0 && stepY === 0) {
-        return;
-      }
-      pan.sentX = worldX;
-      pan.sentY = worldY;
-      onBackgroundDrag?.(stepX, stepY);
+      const from = toWorld(pan.startX, pan.startY);
+      const to = toWorld(event.clientX, event.clientY);
+      const box: MarqueeBox = {
+        minX: Math.min(from.x, to.x),
+        minY: Math.min(from.y, to.y),
+        maxX: Math.max(from.x, to.x),
+        maxY: Math.max(from.y, to.y),
+      };
+      setMarquee(box);
+      onMarquee?.(box, false);
       return;
     }
+    if (!pan.moved && travelled <= CLICK_SLOP) {
+      return;
+    }
+    pan.moved = true;
     setView((current) => ({
       ...current,
       tx: pan.tx + (event.clientX - pan.startX),
@@ -236,6 +255,25 @@ export const PanZoom = ({
     }
     const travelled =
       Math.abs(event.clientX - pan.startX) + Math.abs(event.clientY - pan.startY);
+    if (pan.mode === "marquee") {
+      setMarquee(null);
+      if (pan.moved) {
+        const from = toWorld(pan.startX, pan.startY);
+        const to = toWorld(event.clientX, event.clientY);
+        onMarquee?.(
+          {
+            minX: Math.min(from.x, to.x),
+            minY: Math.min(from.y, to.y),
+            maxX: Math.max(from.x, to.x),
+            maxY: Math.max(from.y, to.y),
+          },
+          true,
+        );
+        return;
+      }
+      // 没拖动 = 点在空白处 → 取消选中
+      onMarquee?.(null, true);
+    }
     if (event.button === 0 && travelled <= CLICK_SLOP) {
       onBackgroundClick?.();
     }
@@ -249,7 +287,6 @@ export const PanZoom = ({
         width={size.width}
         height={size.height}
         aria-label={ariaLabel}
-        style={onBackgroundDrag === undefined ? undefined : { cursor: "move" }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={endPan}
@@ -259,6 +296,16 @@ export const PanZoom = ({
         <rect x={0} y={0} width={size.width} height={size.height} fill="transparent" />
         <g transform={`translate(${view.tx} ${view.ty}) scale(${view.scale})`}>
           {children({ scale: view.scale })}
+          {/* 橡皮筋框：画在世界坐标里，线宽用 non-scaling-stroke 不随缩放变粗 */}
+          {marquee === null ? null : (
+            <rect
+              className="marquee"
+              x={marquee.minX}
+              y={marquee.minY}
+              width={Math.max(marquee.maxX - marquee.minX, 0)}
+              height={Math.max(marquee.maxY - marquee.minY, 0)}
+            />
+          )}
         </g>
       </svg>
       <div className="panzoom-controls">

@@ -63,12 +63,22 @@ export const AppSettingsSchema = z
     // 原理图符号库（OrCAD Capture .olb）目标路径。null = 未指定，转换时在
     // libraryDirectory/schlib 下按源库名自动新建（见 capture-writer.autoLibraryPath）。
     olbLibraryPath: z.string().min(1).nullable().optional(),
+    /**
+     * 输出目录结构（用户 2026-10-19 要求"可以选择使用一个文件夹"）：
+     *  false = 分 padstacks/ 与 symbols/ 两个子目录（老行为）
+     *  true  = 焊盘、封装（以及未指定 olbLibraryPath 时的 .olb）全部落在 libraryDirectory 下
+     */
+    unifiedLibraryFolder: z.boolean().optional(),
+    /** 是否把 PCB 封装名写进 .olb 的 PCB Footprint 字段（用户 2026-10-19 要求可选） */
+    fillPcbFootprint: z.boolean().optional(),
     ui: UiSettingsSchema,
   })
   .transform((settings) => ({
     ...settings,
     allegroExecutablePath: settings.allegroExecutablePath ?? null,
     olbLibraryPath: settings.olbLibraryPath ?? null,
+    unifiedLibraryFolder: settings.unifiedLibraryFolder ?? false,
+    fillPcbFootprint: settings.fillPcbFootprint ?? true,
     ui: {
       leftRailWidth: settings.ui?.leftRailWidth ?? LEFT_RAIL_DEFAULT_WIDTH,
       rightRailWidth: settings.ui?.rightRailWidth ?? RIGHT_RAIL_DEFAULT_WIDTH,
@@ -373,8 +383,26 @@ export const HistoryEntrySchema = ConversionResultSchema.extend({
 });
 export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
 
-export const QueueItemSchema = z.object({
-  id: z.string().regex(/^C\d+$/),
+/**
+ * 元件搜索的一条结果（用户 2026-10-19 要求"支持输入元件名模糊搜索"）。
+ * 字段取自立创商城搜索接口：number = C 编号，mpn = 厂商型号。
+ */
+export const ProductSearchHitSchema = z.object({
+  lcscId: z.string().regex(/^C\d+$/),
+  mpn: z.string(),
+  package: z.string(),
+  manufacturer: z.string(),
+  stock: z.number().int().nonnegative(),
+});
+export type ProductSearchHit = z.infer<typeof ProductSearchHitSchema>;
+
+export const ProductSearchResultSchema = z.object({
+  keyword: z.string(),
+  hits: z.array(ProductSearchHitSchema),
+});
+export type ProductSearchResult = z.infer<typeof ProductSearchResultSchema>;
+
+export const QueueItemSchema = z.object({  id: z.string().regex(/^C\d+$/),
   state: z.enum([
     "ready",
     "loading",

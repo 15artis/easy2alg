@@ -79,16 +79,59 @@ export const parseSymbolEditKey = (key: string): { readonly section: number; rea
 
 export type SymbolShapeOffset = { readonly dx: number; readonly dy: number };
 
-export type SymbolEdit =
-  | ({ readonly kind: "offset" } & SymbolShapeOffset)
-  | { readonly kind: "rotate"; readonly quarterTurns: number }
-  | { readonly kind: "fontSize"; readonly scale: number };
+/** 本体四边（框线拖动改大小用；只对 rect 有意义）。 */
+export type SymbolShapeBounds = {
+  readonly min: { readonly x: number; readonly y: number };
+  readonly max: { readonly x: number; readonly y: number };
+};
+
+/** 拖框线时抓住了哪几条边（决定最小边长夹持时顶回哪条边）。 */
+export type RectEdges = {
+  readonly left: boolean;
+  readonly right: boolean;
+  readonly top: boolean;
+  readonly bottom: boolean;
+};
+
+/**
+ * 一个元素的编辑记录 —— **各项可共存**。
+ *
+ * 早期版本是"一种编辑一个键"（`{kind:"offset"}` / `{kind:"rotate"}` …），
+ * 于是"先挪再用空格转一下"会把位移丢掉、"改完大小再微调位置"会把大小丢掉。
+ * 现在按项目分字段：只写用到的、全默认就把这个键删掉（`hasSymbolEdits` 依赖这点）。
+ */
+export type SymbolEdit = {
+  readonly offset?: SymbolShapeOffset;
+  /** 文本旋转，90° 的整数倍（叠加在源 rotation 上） */
+  readonly rotate?: number;
+  /** 文本字号缩放 */
+  readonly fontSize?: number;
+  /** 本体四边（仅 rect） */
+  readonly bounds?: SymbolShapeBounds;
+};
 
 export type SymbolEdits = Readonly<Record<string, SymbolEdit>>;
 
 export const EMPTY_SYMBOL_EDITS: SymbolEdits = {};
 
 const MIN_TEXT_HEIGHT = 4;
+/** 本体最小边长（拖动框线时不允许压成一条线或反向）。 */
+export const MIN_RECT_SIDE = 10;
+
+const isDefaultEdit = (edit: SymbolEdit): boolean =>
+  (edit.offset === undefined || (edit.offset.dx === 0 && edit.offset.dy === 0)) &&
+  (edit.rotate === undefined || edit.rotate === 0) &&
+  (edit.fontSize === undefined || edit.fontSize === 1) &&
+  edit.bounds === undefined;
+
+/** 写入一个键的编辑；整条变成默认值就把键删掉（避免留下一堆空记录）。 */
+const putEdit = (edits: SymbolEdits, key: string, edit: SymbolEdit): SymbolEdits => {
+  if (isDefaultEdit(edit)) {
+    const { [key]: _removed, ...rest } = edits;
+    return rest;
+  }
+  return { ...edits, [key]: edit };
+};
 
 export const applySymbolEdits = (
   symbol: NormalizedSymbol,
@@ -109,35 +152,39 @@ export const applySymbolEdits = (
     sections: symbol.sections.map((section, sectionIndex) => ({
       ...section,
       shapes: section.shapes.map((shape, shapeIndex) => {
+        const edit = shapeEdits.get(symbolShapeKey(sectionIndex, shapeIndex));
         let next = shape;
-        const offset = shapeEdits.get(symbolShapeKey(sectionIndex, shapeIndex));
-        if (offset?.kind === "offset" && (offset.dx !== 0 || offset.dy !== 0)) {
-          next = translateSymbolShape(next, offset.dx, offset.dy);
+        // ① 本体四边（框线拖动改大小）
+        if (edit?.bounds !== undefined && next.kind === "rect") {
+          next = { ...next, min: edit.bounds.min, max: edit.bounds.max };
+        }
+        // ② 整体平移
+        if (edit?.offset !== undefined && (edit.offset.dx !== 0 || edit.offset.dy !== 0)) {
+          next = translateSymbolShape(next, edit.offset.dx, edit.offset.dy);
         }
         if (next.kind !== "text") {
           return next;
         }
-        const extra = shapeEdits.get(symbolShapeKey(sectionIndex, shapeIndex));
-        if (extra?.kind === "rotate" && extra.quarterTurns !== 0) {
-          next = { ...next, rotation: next.rotation + extra.quarterTurns * 90 };
+        if (edit?.rotate !== undefined && edit.rotate !== 0) {
+          next = { ...next, rotation: next.rotation + edit.rotate * 90 };
         }
-        if (extra?.kind === "fontSize" && extra.scale !== 1) {
+        if (edit?.fontSize !== undefined && edit.fontSize !== 1) {
           next = {
             ...next,
-            height: Math.max(Math.round(next.height * extra.scale * 10) / 10, MIN_TEXT_HEIGHT),
+            height: Math.max(Math.round(next.height * edit.fontSize * 10) / 10, MIN_TEXT_HEIGHT),
           };
         }
         return next;
       }),
       pins: section.pins.map((pin, pinIndex) => {
-        const offset = pinEdits.get(symbolPinKey(sectionIndex, pinIndex));
-        if (offset?.kind !== "offset" || (offset.dx === 0 && offset.dy === 0)) {
+        const edit = pinEdits.get(symbolPinKey(sectionIndex, pinIndex));
+        if (edit?.offset === undefined || (edit.offset.dx === 0 && edit.offset.dy === 0)) {
           return pin;
         }
         return {
           ...pin,
-          connection: translateSymbolPoint(pin.connection, offset.dx, offset.dy),
-          body: translateSymbolPoint(pin.body, offset.dx, offset.dy),
+          connection: translateSymbolPoint(pin.connection, edit.offset.dx, edit.offset.dy),
+          body: translateSymbolPoint(pin.body, edit.offset.dx, edit.offset.dy),
         };
       }),
     })),
@@ -147,30 +194,27 @@ export const applySymbolEdits = (
 export const hasSymbolEdits = (edits: SymbolEdits): boolean =>
   Object.keys(edits).length > 0;
 
-/** 累加一条位移编辑（拖动 / 方向键都会走到这里）。 */
+/**
+ * 里记一条位移（拖动 / 方向键都会走到这里）。
+ * 与旋转、字号、本体四边**互不覆盖**（见 SymbolEdit 的说明）。
+ */
 export const accumulateOffset = (
   edits: SymbolEdits,
   key: string,
   dx: number,
   dy: number,
 ): SymbolEdits => {
-  const previous = edits[key];
-  const base =
-    previous?.kind === "offset"
-      ? { dx: previous.dx + dx, dy: previous.dy + dy }
-      : { dx, dy };
-  if (base.dx === 0 && base.dy === 0) {
-    const { [key]: _removed, ...rest } = edits;
-    return rest;
-  }
-  return { ...edits, [key]: { kind: "offset", ...base } };
+  const previous = edits[key]?.offset;
+  return putEdit(edits, key, {
+    ...edits[key],
+    offset: { dx: (previous?.dx ?? 0) + dx, dy: (previous?.dy ?? 0) + dy },
+  });
 };
 
 /** 叠加一次 90° 旋转（文本）。 */
 export const accumulateRotation = (edits: SymbolEdits, key: string): SymbolEdits => {
-  const previous = edits[key];
-  const turns = previous?.kind === "rotate" ? previous.quarterTurns + 1 : 1;
-  return { ...edits, [key]: { kind: "rotate", quarterTurns: ((turns % 4) + 4) % 4 } };
+  const turns = (edits[key]?.rotate ?? 0) + 1;
+  return putEdit(edits, key, { ...edits[key], rotate: ((turns % 4) + 4) % 4 });
 };
 
 /** 叠加一次字号缩放（文本）。 */
@@ -179,7 +223,48 @@ export const accumulateFontSize = (
   key: string,
   factor: number,
 ): SymbolEdits => {
-  const previous = edits[key];
-  const scale = Math.min(Math.max((previous?.kind === "fontSize" ? previous.scale : 1) * factor, 0.4), 4);
-  return { ...edits, [key]: { kind: "fontSize", scale: Math.round(scale * 100) / 100 } };
+  const scale = Math.min(Math.max((edits[key]?.fontSize ?? 1) * factor, 0.4), 4);
+  return putEdit(edits, key, { ...edits[key], fontSize: Math.round(scale * 100) / 100 });
 };
+
+/**
+ * 直接设定本体四边（框线拖动改大小；绝对值，不是增量）。
+ *
+ * `dragged` 告诉这里是哪几条边在被拖 —— 拖过头时只把**被拖的边**按最小边长顶回去，
+ * 没动的那条边保持不动（否则框会自己"长"到另一边去）。
+ */
+export const setRectBounds = (
+  edits: SymbolEdits,
+  key: string,
+  bounds: SymbolShapeBounds,
+  dragged?: RectEdges,
+): SymbolEdits => {
+  const min: { x: number; y: number } = {
+    x: Math.min(bounds.min.x, bounds.max.x),
+    y: Math.min(bounds.min.y, bounds.max.y),
+  };
+  const max: { x: number; y: number } = {
+    x: Math.max(bounds.min.x, bounds.max.x),
+    y: Math.max(bounds.min.y, bounds.max.y),
+  };
+  if (dragged !== undefined) {
+    if (max.x - min.x < MIN_RECT_SIDE) {
+      if (dragged.left) {
+        min.x = max.x - MIN_RECT_SIDE;
+      }
+      if (dragged.right) {
+        max.x = min.x + MIN_RECT_SIDE;
+      }
+    }
+    if (max.y - min.y < MIN_RECT_SIDE) {
+      if (dragged.top) {
+        min.y = max.y - MIN_RECT_SIDE;
+      }
+      if (dragged.bottom) {
+        max.y = min.y + MIN_RECT_SIDE;
+      }
+    }
+  }
+  return putEdit(edits, key, { ...edits[key], bounds: { min, max } });
+};
+
