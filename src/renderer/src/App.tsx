@@ -176,7 +176,7 @@ type OlbOutcome =
   | { readonly status: "ok"; readonly result: OlbWriteResult }
   | { readonly status: "failed"; readonly message: string };
 
-/** 单个器件上用户做过的调整：输出改名 + 原理图符号元素位移。 */
+/** 单个器件上用户做过的调整：输出改名 + 原理图元件元素位移。 */
 type DeviceEdit = {
   readonly pcbName: string | null;
   readonly symbolName: string | null;
@@ -855,7 +855,7 @@ const ConverterPage = ({
 }): ReactElement => {
   const [input, setInput] = useState("C2040");
   const [plans, setPlans] = useState<Readonly<Record<string, ConversionPlan>>>({});
-  // 本地库导入时从同一份 .elibz2 里顺带取出的原理图符号（C 编号链路没有符号）。
+  // 本地库导入时从同一份 .elibz2 里顺带取出的原理图元件（C 编号链路没有符号）。
   const [symbols, setSymbols] = useState<Readonly<Record<string, SymbolEntry>>>({});
   const [olbOutcomes, setOlbOutcomes] = useState<Readonly<Record<string, OlbOutcome>>>({});
   const [running, setRunning] = useState(false);
@@ -867,7 +867,7 @@ const ConverterPage = ({
   const [searchKeyword, setSearchKeyword] = useState<string | null>(null);
   const [searchHits, setSearchHits] = useState<readonly ProductSearchHit[] | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
-  // 生成哪些产物：PCB 封装（.dra/.psm/.pad）与原理图符号（.olb）各自独立开关。
+  // 生成哪些产物：PCB 封装（.dra/.psm/.pad）与原理图元件（.olb）各自独立开关。
   const [targets, setTargets] = useState<{ pcb: boolean; symbol: boolean }>({
     pcb: true,
     symbol: true,
@@ -965,7 +965,7 @@ const ConverterPage = ({
    * 符号条目自愈：选中的器件在 symbols 表里缺条目时自动补拉一次。
    *
    * 正常流程里导入就会带上符号，但"清空列表 → 重新导入"等路径可能只恢复了
-   * 队列行（封装还在、能看 PCB 预览），符号却是空的 —— 表现为"原理图符号"
+   * 队列行（封装还在、能看 PCB 预览），符号却是空的 —— 表现为"原理图元件"
    * tab 灰掉点不动（用户 2026-10-19）。每台只试一次（ref 去重），器件真没
    * 符号时也不会反复打接口。
    */
@@ -1004,6 +1004,38 @@ const ConverterPage = ({
       cancelled = true;
     };
   }, [selectedQueueItem, symbols]);
+
+  /**
+   * 封装计划自愈：右侧"检查结果"面板依赖 plans 表，队列行还留着旧数据（封装在、
+   * 状态绿勾）但计划丢了时，面板会一直显示"等待器件数据"。选中时补建一次。
+   */
+  const planRetryRef = useRef<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    const item = selectedQueueItem;
+    if (item === null || item === undefined || item.footprint === null) {
+      return;
+    }
+    if (plans[item.id] !== undefined || planRetryRef.current.has(item.id)) {
+      return;
+    }
+    planRetryRef.current = new Set([...planRetryRef.current, item.id]);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const plan = await api.createPlan(item.footprint!);
+        if (!cancelled) {
+          setPlans((current) =>
+            current[item.id] !== undefined ? current : { ...current, [item.id]: plan },
+          );
+        }
+      } catch {
+        // 建不出计划就保持空态提示，不打断用户
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedQueueItem, plans]);
   const selectedKeyId = selected?.id ?? null;
   useEffect(() => {
     setSectionIndex(0);
@@ -1454,7 +1486,7 @@ const ConverterPage = ({
           try {
             const footprint = await api.fetchComponent(item.id);
             const plan = await api.createPlan(footprint);
-            // 原理图符号就在同一次接口响应里（主进程缓存了原始响应，不额外发请求）；
+            // 原理图元件就在同一次接口响应里（主进程缓存了原始响应，不额外发请求）；
             // 器件本来就没有符号时为 null，不算错误。
             const symbol = await api.fetchSymbol(item.id).catch(() => null);
             return {
@@ -1592,7 +1624,7 @@ const ConverterPage = ({
         local: { sourcePath: device.sourcePath, deviceUuid: device.deviceUuid },
       });
       // 合并规则：同 id 已存在且是 error 项 → 替换重读；**符号条目丢了也重读**
-      // （用户 2026-10-19：重新导入后"原理图符号"tab 灰掉点不动 —— 旧的"非 error
+      // （用户 2026-10-19：重新导入后"原理图元件"tab 灰掉点不动 —— 旧的"非 error
       // 就跳过"会让 symbols 表缺了之后永远补不回来，PCB 预览正常但符号没了）。
       const nextQueue = [...queue];
       const targets: LocalLibraryDeviceSummary[] = [];
@@ -1726,7 +1758,7 @@ const ConverterPage = ({
 
       updateItem(item.id, {
         state: "loading",
-        message: wantPcb ? "Allegro 正在生成并检查…" : "正在写入原理图符号库（.olb）…",
+        message: wantPcb ? "Allegro 正在生成并检查…" : "正在写入原理图元件库（.olb）…",
       });
 
       // ① PCB 封装（.dra/.psm/.pad）
@@ -1754,9 +1786,9 @@ const ConverterPage = ({
         }
       }
 
-      // ② 原理图符号（.olb）—— 与封装相互独立：封装失败也不该拦着符号落库。
+      // ② 原理图元件（.olb）—— 与封装相互独立：封装失败也不该拦着符号落库。
       if (wantSymbol && symbol !== null && entry !== undefined) {
-        updateItem(item.id, { state: "loading", message: "正在写入原理图符号库（.olb）…" });
+        updateItem(item.id, { state: "loading", message: "正在写入原理图元件库（.olb）…" });
         try {
           const request = {
             symbol,
@@ -1796,7 +1828,7 @@ const ConverterPage = ({
             ...current,
             [item.id]: { status: "failed", message },
           }));
-          notes.push(`原理图符号库未写入：${message}`);
+          notes.push(`原理图元件库未写入：${message}`);
           if (pcbFailure === null) {
             pcbFailure = message;
           }
@@ -1909,9 +1941,9 @@ const ConverterPage = ({
       : readyCount === 0
         ? // 只勾符号且确实勾了器件 → 是"没有符号数据"，不是"没勾选"
           (!targets.pcb && queue.some((item) => item.selected)
-            ? "勾选的器件没有原理图符号数据"
+            ? "勾选的器件没有原理图元件数据"
             : runnableItems.length > 0
-              ? "勾选的器件没有原理图符号数据（立创编号链路只有封装）"
+              ? "勾选的器件没有原理图元件数据（立创编号链路只有封装）"
               : "先在左侧勾选至少一个已读取的器件")
         : pcbBlocked
           ? "生成 PCB 封装需要先检测到 Allegro"
@@ -1929,7 +1961,7 @@ const ConverterPage = ({
               ? "生成并验证"
               : targets.pcb
                 ? "生成 PCB 封装"
-                : "写入原理图符号"
+                : "写入原理图元件"
           }`;
   return (
     <>
@@ -2130,10 +2162,10 @@ const ConverterPage = ({
               className={previewTab === "sch" ? "active" : ""}
               onClick={() => setPreviewTab("sch")}
               disabled={editedSymbol === null}
-              title={editedSymbol === null ? "该器件的源数据里没有原理图符号" : undefined}
+              title={editedSymbol === null ? "该器件的源数据里没有原理图元件" : undefined}
               data-testid="tab-sch"
             >
-              原理图符号
+              原理图元件
             </button>
           </div>
           {previewTab === "sch" && editedSymbol !== null ? (
@@ -2204,7 +2236,7 @@ const ConverterPage = ({
             <PanZoom
               bounds={previewBounds!}
               resetKey={`sch:${selected?.id ?? ""}:${sectionIndex}:${editedSymbol.sections.length}`}
-              ariaLabel="原理图符号预览"
+              ariaLabel="原理图元件预览"
               onBackgroundClick={editMode ? clearSymbolSelection : undefined}
               onMarquee={
                 editMode
@@ -2308,14 +2340,14 @@ const ConverterPage = ({
                 />
                 PCB 封装
               </label>
-              <label title="生成 OrCAD Capture 原理图符号并写入 .olb（仅本地库器件有符号数据）">
+              <label title="生成 OrCAD Capture 原理图元件并写入 .olb（仅本地库器件有符号数据）">
                 <input
                   type="checkbox"
                   checked={targets.symbol}
                   onChange={(event) => setTargets((current) => ({ ...current, symbol: event.target.checked }))}
                   data-testid="target-symbol"
                 />
-                原理图符号
+                原理图元件
               </label>
             </div>
             <button
@@ -2360,7 +2392,7 @@ const ConverterPage = ({
                 </label>
                 {selectedSymbolEntry === undefined ? null : (
                   <label>
-                    <span>原理图符号名 <em>.olb 内的器件名</em></span>
+                    <span>原理图元件名 <em>.olb 内的器件名</em></span>
                     <input
                       value={selectedEdit.symbolName ?? selectedSymbolEntry.symbol.name}
                       onChange={(event) => updateDeviceEdit(selected.id, { symbolName: event.target.value })}
@@ -2432,12 +2464,12 @@ const ConverterPage = ({
             <InspectorSection id="model" title="三维模型" collapsed={collapsedSections.includes("model")} onToggle={toggleSection}>
               <div className="model-row"><Check size={15} />{selected.footprint.model3d?.name ?? "源数据未提供模型"}</div>
             </InspectorSection>
-            <InspectorSection id="olb" title="原理图符号库" collapsed={collapsedSections.includes("olb")} onToggle={toggleSection}>
+            <InspectorSection id="olb" title="原理图元件库" collapsed={collapsedSections.includes("olb")} onToggle={toggleSection}>
               {selectedOlb === null ? (
                 <div className="model-row">
                   <span className="muted">
                     {symbols[selected.id] === undefined
-                      ? "源数据不含原理图符号"
+                      ? "源数据不含原理图元件"
                       : "生成封装时会一并写入 .olb"}
                   </span>
                 </div>
@@ -2696,7 +2728,7 @@ const SettingsPage = ({
         <div className="setting-section">
           <div className="setting-icon"><FileCode2 size={21} /></div>
           <div className="setting-content">
-            <label htmlFor="olb-library">原理图符号库（.olb）</label>
+            <label htmlFor="olb-library">原理图元件库（.olb）</label>
             <p>填写本地库时生成的 OrCAD Capture 符号会写入此文件；留空则自动新建。</p>
             <div className="directory-row">
               <input

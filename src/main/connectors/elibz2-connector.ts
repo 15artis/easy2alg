@@ -911,11 +911,15 @@ export class Elibz2Connector {
     const attributes = device.attributes ?? {};
     const fallbackName = `SYM_${deviceUuid.slice(0, 8)}`;
     const symbol: NormalizedSymbol = {
+      // 器件名优先取属性里的真实型号（用户 2026-10-19：自建 ProLib 库里
+      // device/symbol/footprint 三者的 display_title 常被起成同一个名字 —— 都是
+      // 封装名 PEX8748_BACA，"原理图元件名"必须去 Manufacturer/LCSC Part 拿）。
       name: sanitizeSymbolName(
         String(
-          device.display_title ??
-            device.title ??
+          attributes["LCSC Part Name"] ??
             attributes["Manufacturer Part"] ??
+            device.display_title ??
+            device.title ??
             fallbackName,
         ),
         fallbackName,

@@ -137,8 +137,9 @@ describe("capture library XML", () => {
     const symbol = await connector.loadSymbol(fixturePath, deviceUuid);
     const xml = buildCaptureLibraryXml(symbol!, "C:/libs/target.OLB");
     expect(xml).toContain('alphabeticNumbering="1" isHomogeneous="0"');
-    expect(xml).toContain('<Defn CellName="PEX8748_BACAA" />');
-    expect(xml).toContain('<Defn CellName="PEX8748_BACAF" />');
+    // 器件名取属性里的真实型号（Manufacturer/LCSC Part），不再是 display_title
+    expect(xml).toContain('<Defn CellName="PEX8748-CA80BC_GA" />');
+    expect(xml).toContain('<Defn CellName="PEX8748-CA80BC_GF" />');
     expect(xml.match(/<LibPart>/g)).toHaveLength(6);
     // 676 个引脚，每脚一个 SymbolPinScalar + 一个 PinNumber
     expect(xml.match(/<SymbolPinScalar>/g)).toHaveLength(676);
