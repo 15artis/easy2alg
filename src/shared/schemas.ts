@@ -27,6 +27,15 @@ export const UiSettingsSchema = z
     localLibraryDir: z.string().min(1).nullable().optional(),
     /** 旧字段（0.1.20 及以前记的是文件本身），读设置时迁移成它所在的目录 */
     localLibraryPath: z.string().min(1).nullable().optional(),
+    /**
+     * 原理图元件预览的网格吸附（用户 2026-10-20）：
+     *  - enabled：磁吸开关。关掉后拖动自由，写 .olb 也按实际坐标（仍取整成整数）
+     *  - grid：档位，10 单位 = 100 mil / 5 单位 = 50 mil（默认 100 mil）
+     *  - visible：背景网格显示开关（独立于吸附，可以只看不吸）
+     */
+    symbolSnapEnabled: z.boolean().optional(),
+    symbolSnapGrid: z.union([z.literal(5), z.literal(10)]).optional(),
+    symbolGridVisible: z.boolean().optional(),
   })
   .optional();
 
@@ -46,12 +55,18 @@ export const defaultUiSettings = (): UiSettings & {
   collapsedSections: string[];
   layerColors: Record<string, string>;
   localLibraryDir: string | null;
+  symbolSnapEnabled: boolean;
+  symbolSnapGrid: 5 | 10;
+  symbolGridVisible: boolean;
 } => ({
   leftRailWidth: LEFT_RAIL_DEFAULT_WIDTH,
   rightRailWidth: RIGHT_RAIL_DEFAULT_WIDTH,
   collapsedSections: [],
   layerColors: {},
   localLibraryDir: null,
+  symbolSnapEnabled: true,
+  symbolSnapGrid: 10,
+  symbolGridVisible: true,
 });
 
 export const AppSettingsSchema = z
@@ -87,6 +102,10 @@ export const AppSettingsSchema = z
       // 旧配置里存的是文件路径 → 迁移成它所在的目录
       localLibraryDir:
         settings.ui?.localLibraryDir ?? directoryOfPath(settings.ui?.localLibraryPath),
+      // 必须在这里补默认值：transform 没列出的字段读一次设置就消失
+      symbolSnapEnabled: settings.ui?.symbolSnapEnabled ?? true,
+      symbolSnapGrid: settings.ui?.symbolSnapGrid ?? 10,
+      symbolGridVisible: settings.ui?.symbolGridVisible ?? true,
     },
   }));
 export type AppSettings = z.infer<typeof AppSettingsSchema>;

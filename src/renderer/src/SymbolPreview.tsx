@@ -10,7 +10,6 @@ import {
 import type { NormalizedSymbol, NormalizedSymbolPin } from "../../shared/schemas";
 import {
   dragDelta,
-  isSymbolPinKey,
   symbolPinKey,
   symbolShapeKey,
   type RectEdges,
@@ -18,6 +17,12 @@ import {
   type SymbolShapeBounds,
 } from "../../shared/symbol-edit";
 import { SYMBOL_PIN_GRID } from "../../shared/symbol-layout";
+import {
+  snapDragDelta,
+  snapRectBounds,
+  type SnapState,
+} from "../../shared/symbol-snap";
+import type { SelectionMode } from "./selection";
 import {
   bodyBoxOf,
   estimateLabelWidth,
@@ -128,6 +133,8 @@ type DragState =
       /** 已经下发给 onMoveElements 的累计位移（吸附后） */
       appliedX: number;
       appliedY: number;
+      /** 按下瞬间冻结的吸附设置：中途改档位不会让当前拖动抖一下 */
+      readonly snap: SnapState;
       /** 越过死区才算真的在拖（只是点一下 = 选中，不移动） */
       moved: boolean;
     }
@@ -139,6 +146,7 @@ type DragState =
       readonly startY: number;
       readonly edges: RectEdges;
       readonly origin: RectBounds;
+      readonly snap: SnapState;
     };
 
 /** 按下后移动不到这么多像素就当"点击选中"，不移动元素。 */
@@ -212,9 +220,10 @@ const useElementDrag = (
   editing: boolean,
   scaleRef: RefObject<number>,
   selectedKeys: ReadonlySet<string>,
-  onSelectKeys: (keys: readonly string[]) => void,
+  onSelectKeys: (keys: readonly string[], mode?: SelectionMode) => void,
   onMoveElements: (keys: readonly string[], dx: number, dy: number) => void,
   onResizeRect: (key: string, bounds: SymbolShapeBounds, dragged: RectEdges) => void,
+  snap: SnapState,
 ) => {
   const dragRef = useRef<DragState | null>(null);
 
@@ -247,6 +256,13 @@ const useElementDrag = (
       }
       // 按在元素上就是"移动元素"，别让 PanZoom 抢去框选
       event.stopPropagation();
+      // 修饰键只改选中态、不启动拖动（Ctrl=切换、Shift=追加；OrCAD 也是这个手感）
+      const mode: SelectionMode =
+        event.ctrlKey || event.metaKey ? "toggle" : event.shiftKey ? "add" : "replace";
+      if (mode !== "replace") {
+        onSelectKeys([key], mode);
+        return;
+      }
       // 已选中的元素 → 整组一起移动；没选中 → 只选它自己（替换选中态）
       const alreadySelected = selectedKeys.has(key);
       const keys = alreadySelected ? [...selectedKeys] : [key];
@@ -265,6 +281,7 @@ const useElementDrag = (
         rawY: 0,
         appliedX: 0,
         appliedY: 0,
+        snap,
         moved: false,
       };
       event.currentTarget.setPointerCapture(event.pointerId);
@@ -288,6 +305,7 @@ const useElementDrag = (
         startY: event.clientY,
         edges: point === null ? { left: false, right: true, top: false, bottom: false } : edgesAt(point, bounds, tolerance),
         origin: bounds,
+        snap,
       };
       event.currentTarget.setPointerCapture(event.pointerId);
     };
@@ -325,43 +343,40 @@ const useElementDrag = (
         );
         drag.lastX = event.clientX;
         drag.lastY = event.clientY;
-        // 组里有引脚 → 整组吸附到 100 mil 网格。预览里拖到哪，生成的就是哪；
-        // 只吸附引脚会让文本留在原处，反而把标签与引脚拉出间距。
+        // 整组按同一份位移量化（引脚、文本、图形、本体一视同仁）。
+        // 只量化引脚会让文本留在原处，反而把标签与引脚拉出间距 —— 所以组内一致。
         drag.rawX += stepDx;
         drag.rawY += stepDy;
-        const snap = drag.keys.some(isSymbolPinKey);
-        const targetX = snap
-          ? Math.round(drag.rawX / SYMBOL_PIN_GRID) * SYMBOL_PIN_GRID
-          : drag.rawX;
-        const targetY = snap
-          ? Math.round(drag.rawY / SYMBOL_PIN_GRID) * SYMBOL_PIN_GRID
-          : drag.rawY;
-        const dx = targetX - drag.appliedX;
-        const dy = targetY - drag.appliedY;
-        drag.appliedX = targetX;
-        drag.appliedY = targetY;
-        if (dx === 0 && dy === 0) {
+        const delta = snapDragDelta(
+          { dx: drag.rawX, dy: drag.rawY },
+          { dx: drag.appliedX, dy: drag.appliedY },
+          drag.snap,
+        );
+        drag.appliedX = delta.appliedX;
+        drag.appliedY = delta.appliedY;
+        if (delta.dx === 0 && delta.dy === 0) {
           return;
         }
-        onMoveElements(drag.keys, dx, dy);
+        onMoveElements(drag.keys, delta.dx, delta.dy);
         return;
       }
       // 改大小：用"从按下点起算的绝对位移"算新四边，避免逐帧累加漂移
       const dx = (event.clientX - drag.startX) / scale;
       const dy = (event.clientY - drag.startY) / scale;
       const { origin, edges } = drag;
+      const rawBounds: SymbolShapeBounds = {
+        min: {
+          x: edges.left ? origin.minX + dx : origin.minX,
+          y: edges.top ? origin.minY + dy : origin.minY,
+        },
+        max: {
+          x: edges.right ? origin.maxX + dx : origin.maxX,
+          y: edges.bottom ? origin.maxY + dy : origin.maxY,
+        },
+      };
       onResizeRect(
         drag.key,
-        {
-          min: {
-            x: edges.left ? origin.minX + dx : origin.minX,
-            y: edges.top ? origin.minY + dy : origin.minY,
-          },
-          max: {
-            x: edges.right ? origin.maxX + dx : origin.maxX,
-            y: edges.bottom ? origin.maxY + dy : origin.maxY,
-          },
-        },
+        drag.snap.enabled ? snapRectBounds(rawBounds, edges, drag.snap.grid) : rawBounds,
         edges,
       );
     },
@@ -424,6 +439,7 @@ const SymbolPins = memo(
     onSelectKeys,
     onMoveElements,
     onResizeRect,
+    snap,
   }: {
     readonly sectionIndex: number;
     readonly pins: readonly NormalizedSymbolPin[];
@@ -432,9 +448,10 @@ const SymbolPins = memo(
     readonly editing: boolean;
     readonly selectedKeys: ReadonlySet<string>;
     readonly scaleRef: RefObject<number>;
-    readonly onSelectKeys: (keys: readonly string[]) => void;
+    readonly onSelectKeys: (keys: readonly string[], mode?: SelectionMode) => void;
     readonly onMoveElements: (keys: readonly string[], dx: number, dy: number) => void;
     readonly onResizeRect: (key: string, bounds: SymbolShapeBounds, dragged: RectEdges) => void;
+    readonly snap: SnapState;
   }): ReactElement => {
     const drag = useElementDrag(
       editing,
@@ -443,6 +460,7 @@ const SymbolPins = memo(
       onSelectKeys,
       onMoveElements,
       onResizeRect,
+      snap,
     );
 
     return (
@@ -524,6 +542,7 @@ export const SymbolPreview = ({
   onSelectKeys,
   onMoveElements,
   onResizeRect,
+  snap = { enabled: true, grid: SYMBOL_PIN_GRID },
 }: {
   readonly symbol: NormalizedSymbol;
   readonly sectionIndex: number;
@@ -532,9 +551,14 @@ export const SymbolPreview = ({
   /** 编辑模式：按住左键拖动元素 / 拖框线改大小；浏览模式交给 PanZoom */
   readonly editing: boolean;
   readonly selectedKeys: ReadonlySet<string>;
-  readonly onSelectKeys: (keys: readonly string[]) => void;
+  readonly onSelectKeys: (keys: readonly string[], mode?: SelectionMode) => void;
   readonly onMoveElements: (keys: readonly string[], dx: number, dy: number) => void;
   readonly onResizeRect: (key: string, bounds: SymbolShapeBounds, dragged: RectEdges) => void;
+  /**
+   * 网格吸附（用户 2026-10-20）。省略时沿用旧行为：100 mil 吸附开启 ——
+   * 现有测试与调用点不传也不会变。
+   */
+  readonly snap?: SnapState;
 }): ReactElement => {
   const section = symbol.sections[Math.min(sectionIndex, symbol.sections.length - 1)];
 
@@ -549,6 +573,7 @@ export const SymbolPreview = ({
     onSelectKeys,
     onMoveElements,
     onResizeRect,
+    snap,
   );
 
   const moveProps = (key: string): Record<string, unknown> =>
@@ -701,6 +726,7 @@ export const SymbolPreview = ({
         onSelectKeys={onSelectKeys}
         onMoveElements={onMoveElements}
         onResizeRect={onResizeRect}
+        snap={snap}
       />
     </g>
   );

@@ -30,6 +30,35 @@ describe("ui settings persistence", () => {
     expect(settings.ui.localLibraryDir).toBeNull();
   });
 
+  /**
+   * 用户 2026-10-20：网格吸附开关 + 100/50 mil 两档 + 背景网格显示，都要记住。
+   * 三个字段必须在 transform 里显式补默认值，否则读一次设置就消失。
+   */
+  it("defaults the symbol grid settings for older config files", () => {
+    const settings = AppSettingsSchema.parse(minimal);
+    expect(settings.ui.symbolSnapEnabled).toBe(true);
+    expect(settings.ui.symbolSnapGrid).toBe(10);
+    expect(settings.ui.symbolGridVisible).toBe(true);
+  });
+
+  it("round-trips the symbol grid settings", () => {
+    const settings = AppSettingsSchema.parse({
+      ...minimal,
+      ui: { symbolSnapEnabled: false, symbolSnapGrid: 5, symbolGridVisible: false },
+    });
+    expect(settings.ui.symbolSnapEnabled).toBe(false);
+    expect(settings.ui.symbolSnapGrid).toBe(5);
+    expect(settings.ui.symbolGridVisible).toBe(false);
+    const again = AppSettingsSchema.parse(JSON.parse(JSON.stringify(settings)));
+    expect(again.ui.symbolSnapGrid).toBe(5);
+  });
+
+  it("rejects grid values outside the two supported tiers", () => {
+    expect(() =>
+      AppSettingsSchema.parse({ ...minimal, ui: { symbolSnapGrid: 7 } }),
+    ).toThrow();
+  });
+
   it("keeps a partial ui section while filling the rest", () => {
     const settings = AppSettingsSchema.parse({
       ...minimal,

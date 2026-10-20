@@ -1,13 +1,16 @@
 import {
   useCallback,
   useEffect,
+  useImperativeHandle,
   useLayoutEffect,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
   type ReactElement,
   type ReactNode,
+  type Ref,
 } from "react";
+import { fitBoxToView } from "../../shared/symbol-snap";
 
 export type PanZoomBounds = {
   readonly minX: number;
@@ -51,6 +54,17 @@ export type MarqueeBox = {
   readonly maxX: number;
   readonly maxY: number;
 };
+
+/**
+ * 命令式接口（用户 2026-10-20："缩放到选中"）。
+ * 只暴露最小命令面，视图状态仍由组件内部管理。
+ */
+export type PanZoomHandle = {
+  readonly fitAll: () => void;
+  readonly fitTo: (box: PanZoomBounds) => void;
+  readonly zoomBy: (factor: number) => void;
+  readonly reset: () => void;
+};
 export const PanZoom = ({
   bounds,
   resetKey,
@@ -58,11 +72,18 @@ export const PanZoom = ({
   ariaLabel,
   onBackgroundClick,
   onMarquee,
+  ref,
 }: {
   readonly bounds: PanZoomBounds;
   /** 变化时自动适应窗口（切换器件 / 切换分页） */
   readonly resetKey: string;
-  readonly children: (view: { readonly scale: number }) => ReactNode;
+  readonly children: (view: {
+    readonly scale: number;
+    readonly tx: number;
+    readonly ty: number;
+    readonly width: number;
+    readonly height: number;
+  }) => ReactNode;
   readonly ariaLabel: string;
   /** 在空白处按下并原地松开（没有拖动）时触发，用于取消选中。 */
   readonly onBackgroundClick?: () => void;
@@ -72,6 +93,7 @@ export const PanZoom = ({
    * 传了它，左键空白拖动就不再是平移 —— 平移走中键。
    */
   readonly onMarquee?: (box: MarqueeBox | null, done: boolean) => void;
+  readonly ref?: Ref<PanZoomHandle>;
 }): ReactElement => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState({ width: 900, height: 600 });
@@ -105,16 +127,14 @@ export const PanZoom = ({
     return () => observer.disconnect();
   }, []);
 
-  const fit = useCallback(() => {
-    const width = Math.max(bounds.maxX - bounds.minX, 1e-6);
-    const height = Math.max(bounds.maxY - bounds.minY, 1e-6);
-    const scale = Math.min(size.width / width, size.height / height) * FIT_PADDING;
-    setView({
-      scale,
-      tx: size.width / 2 - ((bounds.minX + bounds.maxX) / 2) * scale,
-      ty: size.height / 2 - ((bounds.minY + bounds.maxY) / 2) * scale,
-    });
-  }, [bounds.minX, bounds.maxX, bounds.minY, bounds.maxY, size.width, size.height]);
+  const fitToBox = useCallback(
+    (box: PanZoomBounds) => {
+      setView(fitBoxToView(box, size, FIT_PADDING, { min: MIN_SCALE, max: MAX_SCALE }));
+    },
+    [size.height, size.width],
+  );
+
+  const fit = useCallback(() => fitToBox(bounds), [fitToBox, bounds]);
 
   /**
    * 自动"适应窗口"只在**换器件/换分页**（resetKey）与容器尺寸变化时跑。
@@ -155,6 +175,17 @@ export const PanZoom = ({
       ty: size.height / 2 - (bounds.minY + bounds.maxY) / 2,
     });
   }, [bounds.minX, bounds.maxX, bounds.minY, bounds.maxY, size.height, size.width]);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      fitAll: fit,
+      fitTo: fitToBox,
+      zoomBy: (factor: number) => zoomCenter(factor),
+      reset: () => reset(),
+    }),
+    [fit, fitToBox, zoomCenter, reset],
+  );
 
   // React 的 onWheel 在部分环境是 passive，preventDefault 会被忽略 → 手挂原生监听。
   useEffect(() => {
@@ -302,7 +333,13 @@ export const PanZoom = ({
         {/* 透明底板：让 .engineering-canvas 的网格纹理透出来 */}
         <rect x={0} y={0} width={size.width} height={size.height} fill="transparent" />
         <g transform={`translate(${view.tx} ${view.ty}) scale(${view.scale})`}>
-          {children({ scale: view.scale })}
+          {children({
+            scale: view.scale,
+            tx: view.tx,
+            ty: view.ty,
+            width: size.width,
+            height: size.height,
+          })}
           {/* 橡皮筋框：画在世界坐标里，线宽用 non-scaling-stroke 不随缩放变粗 */}
           {marquee === null ? null : (
             <rect

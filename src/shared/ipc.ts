@@ -22,6 +22,11 @@ export type OlbWriteRequest = {
   readonly libraryName: string;
   /** 库里已有同名器件时是否直接覆盖（false = 先返回 needsConfirm 让界面确认） */
   readonly confirmOverwrite?: boolean;
+  /**
+   * 写库前是否把引脚连接端强制吸附到 100 mil（用户 2026-10-20：跟随界面吸附开关）。
+   * 省略 = true（老行为）；false 时按实际坐标写入，但仍会取整成整数（XSD 要求）。
+   */
+  readonly snapPins?: boolean;
 };
 
 export type Easy2AlgApi = {

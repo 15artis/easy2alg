@@ -322,6 +322,18 @@ export const commentTextBox = (shape: {
 export const sectionPreviewBounds = (section: NormalizedSymbolSection): SymbolBox => {
   const body = normalize(section.bounds);
   let { minX, minY, maxX, maxY } = body;
+  // 图元（本体被拖大、折线/文字被拖出界）也要并进来 —— 只取 section.bounds 是
+  // 解析阶段的静态值，"缩放到选中/适应窗口"会把编辑后的内容裁掉（用户 2026-10-20）。
+  section.shapes.forEach((_shape, index) => {
+    const box = symbolElementBox(section, symbolShapeKey(0, index));
+    if (box === null) {
+      return;
+    }
+    minX = Math.min(minX, box.minX);
+    minY = Math.min(minY, box.minY);
+    maxX = Math.max(maxX, box.maxX);
+    maxY = Math.max(maxY, box.maxY);
+  });
   const rect = bodyBoxOf(section);
   for (const pin of section.pins) {
     const box = pinNumberBox(pin, rect);
@@ -329,8 +341,37 @@ export const sectionPreviewBounds = (section: NormalizedSymbolSection): SymbolBo
     minY = Math.min(minY, box.minY);
     maxX = Math.max(maxX, box.maxX);
     maxY = Math.max(maxY, box.maxY);
+    // 引脚线本身也要算（尤其是被拖到本体外的引脚）
+    minX = Math.min(minX, pin.connection.x, pin.body.x);
+    minY = Math.min(minY, pin.connection.y, pin.body.y);
+    maxX = Math.max(maxX, pin.connection.x, pin.body.x);
+    maxY = Math.max(maxY, pin.connection.y, pin.body.y);
   }
   return { minX, minY, maxX, maxY };
+};
+
+/** 一组编辑键的并集包围盒（"缩放到选中"用）；没有可命中的元素返回 null。 */
+export const selectionBox = (
+  section: NormalizedSymbolSection,
+  keys: readonly string[],
+): SymbolBox | null => {
+  let result: SymbolBox | null = null;
+  for (const key of keys) {
+    const box = symbolElementBox(section, key);
+    if (box === null) {
+      continue;
+    }
+    result =
+      result === null
+        ? box
+        : {
+            minX: Math.min(result.minX, box.minX),
+            minY: Math.min(result.minY, box.minY),
+            maxX: Math.max(result.maxX, box.maxX),
+            maxY: Math.max(result.maxY, box.maxY),
+          };
+  }
+  return result;
 };
 
 /**
@@ -439,3 +480,19 @@ export const symbolKeysInBox = (
   });
   return keys;
 };
+
+/**
+ * 全选（Ctrl+A）的键集合 —— **语义与框选一致**：所有引脚 + 非 rect 图形。
+ *
+ * 本体（rect）不参与：它的包围盒覆盖整个符号，一旦进选择集，"整体移动"就会把
+ * 整个符号挪走（0.1.27 的框选也是同样取舍）。
+ */
+export const symbolSelectableKeys = (
+  section: NormalizedSymbolSection,
+  sectionIndex: number,
+): readonly string[] => [
+  ...section.shapes.flatMap((shape, index) =>
+    shape.kind === "rect" ? [] : [symbolShapeKey(sectionIndex, index)],
+  ),
+  ...section.pins.map((_pin, index) => symbolPinKey(sectionIndex, index)),
+];

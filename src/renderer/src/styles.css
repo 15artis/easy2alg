@@ -2138,6 +2138,56 @@ select:focus,
   gap: 6px;
 }
 
+/* 原理图元件编辑：画布左上角的网格工具条。
+ * 不放进 52px 的 .stage-heading —— 1120px 最小窗口下 header 已被
+ * 标题 / tabs / 撤销按钮占满，再加带文字的控件会把标题挤掉。 */
+.symbol-toolbar {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  background: rgb(255 255 255 / 94%);
+  border: 1px solid #cbd4e0;
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgb(23 32 51 / 10%);
+}
+
+.symbol-tool {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  color: #4a5561;
+  background: white;
+  border: 1px solid #d7dfea;
+  border-radius: 6px;
+}
+
+.symbol-tool:hover {
+  border-color: #9fb2cc;
+}
+
+.symbol-tool.on {
+  color: white;
+  background: #2459d3;
+  border-color: #2459d3;
+}
+
+.symbol-tool-select {
+  height: 30px;
+  padding: 0 6px;
+  color: #172033;
+  background: white;
+  border: 1px solid #d7dfea;
+  border-radius: 6px;
+  font-size: 11px;
+}
+
 .edit-history-button {
   display: inline-flex;
   align-items: center;
@@ -2495,4 +2545,57 @@ select:focus,
 .panzoom-controls .panzoom-fit + .panzoom-fit {
   border-left: 1px solid #e4e9f0;
   margin-left: 2px;
+}
+
+/* 精确属性面板（用户 2026-10-20）：画布右上、缩放控件下方的小卡片。
+ * 放画布而不是右侧 rail —— 没有封装计划的器件右侧 rail 是空态，面板会跟着消失。 */
+.symbol-props {
+  position: absolute;
+  top: 52px;
+  right: 10px;
+  z-index: 5;
+  width: 178px;
+  padding: 8px 10px 10px;
+  background: rgb(255 255 255 / 96%);
+  border: 1px solid #cbd4e0;
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgb(23 32 51 / 10%);
+}
+
+.symbol-props-title {
+  margin-bottom: 6px;
+  color: #5f6b7d;
+  font-size: 10px;
+  letter-spacing: 0.4px;
+}
+
+.symbol-props-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 8px;
+}
+
+.symbol-prop {
+  display: grid;
+  gap: 2px;
+  color: #8791a2;
+  font-size: 9px;
+}
+
+.symbol-prop input,
+.symbol-prop select {
+  width: 100%;
+  height: 24px;
+  padding: 0 6px;
+  color: #172033;
+  background: white;
+  border: 1px solid #d7dfea;
+  border-radius: 5px;
+  font-size: 11px;
+}
+
+.symbol-prop input:focus,
+.symbol-prop select:focus {
+  outline: 2px solid rgb(36 89 211 / 35%);
+  outline-offset: 0;
 }

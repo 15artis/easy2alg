@@ -288,6 +288,11 @@ export type OlbWriteOptions = {
   readonly confirmOverwrite?: boolean;
   /** 是否把 PCB 封装名写进器件的 PCB Footprint 字段（默认写） */
   readonly fillPcbFootprint?: boolean;
+  /**
+   * 写库前是否强制把引脚连接端吸附到 100 mil（用户 2026-10-20：跟随界面吸附开关）。
+   * 默认 true；false 时按实际坐标写，整数仍由生成器的 grid() 保证。
+   */
+  readonly snapPins?: boolean;
 };
 
 /** 本次要写进去的器件概览（用来和库里的旧内容比对）。 */
@@ -386,7 +391,10 @@ export const writeCaptureLibrary = async (
   // 导入器按根 <Defn name> 定位目标库，必须与实际路径一致。
   await writeFile(
     xmlPath,
-    buildCaptureLibraryXml(symbol, libraryPath, { fillPcbFootprint: options.fillPcbFootprint }),
+    buildCaptureLibraryXml(symbol, libraryPath, {
+      fillPcbFootprint: options.fillPcbFootprint,
+      snapPins: options.snapPins,
+    }),
     "utf8",
   );
   await writeFile(

@@ -375,11 +375,13 @@ const normalViewCommands = (
 export const buildCaptureLibraryXml = (
   symbol: NormalizedSymbol,
   libraryPath: string,
-  options: { readonly fillPcbFootprint?: boolean } = {},
+  options: { readonly fillPcbFootprint?: boolean; readonly snapPins?: boolean } = {},
 ): string => {
   // 写库出口统一吸附：解析阶段已对齐过一次，但用户可能在预览里手动拖过元素
   // （offset 是任意小数）。不吸附的话生成出来的引脚在 Capture 里接不上线。
-  const sections = symbol.sections.map(snapPinsToGrid);
+  // 用户 2026-10-20 定：**跟随界面吸附开关** —— 关掉后按实际坐标写（仍取整）。
+  const sections =
+    options.snapPins === false ? symbol.sections : symbol.sections.map(snapPinsToGrid);
   const multiSection = sections.length > 1;
   const now = Math.floor(Date.now() / 1000);
   const lines: string[] = [

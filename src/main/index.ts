@@ -37,6 +37,7 @@ const OlbWriteRequestSchema = z.object({
   libraryPath: z.string().min(1).nullable(),
   libraryName: z.string().min(1),
   confirmOverwrite: z.boolean().optional(),
+  snapPins: z.boolean().optional(),
 });
 
 const resolveInstall = async (
@@ -250,6 +251,7 @@ const registerHandlers = (): void => {
       // 必须转发：漏掉它 => 用户点了「覆盖写入」也依然返回 needsConfirm，弹窗无限重来
       confirmOverwrite: request.confirmOverwrite,
       fillPcbFootprint: settings.fillPcbFootprint,
+      snapPins: request.snapPins ?? true,
     });
   });
   ipcMain.handle(IpcChannels.createPlan, (_event, rawFootprint: unknown) =>

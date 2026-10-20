@@ -87,4 +87,20 @@ describe("原理图符号引脚落入 100 mil 网格", () => {
       expect(Math.abs(y % 10)).toBe(0);
     }
   });
+
+  it("关闭吸附（snapPins:false）时按实际坐标写入，但仍取整", () => {
+    const edited = applySymbolEdits(symbol(), {
+      "p0:0": { offset: { dx: 3.4, dy: 7.2 } },
+    });
+    const xml = buildCaptureLibraryXml(edited, "C:/libs/test.OLB", { snapPins: false });
+    const points = hotPoints(xml);
+    expect(points.length).toBe(2);
+    for (const [x, y] of points) {
+      // XSD 只收整数：无论吸附开关如何，写出去的一定是整数
+      expect(Number.isInteger(x)).toBe(true);
+      expect(Number.isInteger(y)).toBe(true);
+    }
+    // 至少有一个坐标不再落在 10 的倍数上（说明确实没有强制吸附）
+    expect(points.some(([x, y]) => x % 10 !== 0 || y % 10 !== 0)).toBe(true);
+  });
 });

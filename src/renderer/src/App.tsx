@@ -6,12 +6,15 @@ import {
   CircleHelp,
   Clock3,
   FileCode2,
+  Focus,
   Folder,
   FolderOpen,
+  Grid3x3,
   History,
   Layers3,
   LibraryBig,
   LoaderCircle,
+  Magnet,
   PackageCheck,
   PenLine,
   Redo2,
@@ -61,9 +64,11 @@ import type {
   QueueItem,
 } from "../../shared/schemas";
 import { createMockApi } from "./mock-api";
-import { PanZoom } from "./PanZoom";
+import { PanZoom, type PanZoomHandle } from "./PanZoom";
+import { SymbolGrid } from "./SymbolGrid";
+import { SymbolProperties } from "./SymbolProperties";
 import { SymbolPreview } from "./SymbolPreview";
-import { selectRunnableItems, shouldOfferRegeneration } from "./selection";
+import { applySelection, selectRunnableItems, shouldOfferRegeneration } from "./selection";
 import {
   accumulateFontSize,
   accumulateOffset,
@@ -99,7 +104,24 @@ import {
   RIGHT_RAIL_RANGE,
   type UiSettingsPatch,
 } from "../../shared/schemas";
-import { sectionPreviewBounds, symbolKeysInBox } from "../../shared/symbol-labels";
+import {
+  sectionPreviewBounds,
+  selectionBox,
+  symbolKeysInBox,
+  symbolSelectableKeys,
+} from "../../shared/symbol-labels";
+import { collectBoxes, planLayoutAction } from "../../shared/symbol-align";
+import { arrowStep, gridMil } from "../../shared/symbol-snap";
+import {
+  readElementProps,
+  writeElementHeight,
+  writeElementWidth,
+  writeElementX,
+  writeElementY,
+  writeTextHeight,
+  writeTextRotation,
+  type ElementField,
+} from "../../shared/symbol-property";
 
 type Page = "convert" | "history" | "settings";
 
@@ -901,6 +923,11 @@ const ConverterPage = ({
    * 键盘快捷键生效（见 onSymbolEditorKeyDown 的注释）。
    */
   const [editMode, setEditMode] = useState(false);
+  // 原理图元件预览的网格设置（用户 2026-10-20）：100 mil / 50 mil 两档
+  const snapEnabled = settings.ui.symbolSnapEnabled;
+  const snapGrid = settings.ui.symbolSnapGrid;
+  const gridVisible = settings.ui.symbolGridVisible;
+  const snapState = useMemo(() => ({ enabled: snapEnabled, grid: snapGrid }), [snapEnabled, snapGrid]);
   // 覆盖同名器件的二次确认（promise 化，生成流程里 await 它）
   const [overwriteAsk, setOverwriteAsk] = useState<{
     readonly request: Extract<OlbWriteOutcome, { status: "needsConfirm" }>;
@@ -927,6 +954,47 @@ const ConverterPage = ({
   // 引脚号排在**本体外面**（上下边引脚的脚号比引脚本身还长），包围盒要并进去，
   // 否则「适应窗口」会把它们裁掉。
   const previewBounds = previewSection === null ? null : sectionPreviewBounds(previewSection);
+
+  /** 属性面板要读**未套编辑**的原始段（读的是"原始值 + 当前编辑"，套过的会双重叠加）。 */
+  const rawSection =
+    selectedSymbolEntry === undefined || selectedSymbolEntry === null
+      ? null
+      : (selectedSymbolEntry.symbol.sections[
+          Math.min(sectionIndex, selectedSymbolEntry.symbol.sections.length - 1)
+        ] ?? null);
+  const elementProps = useMemo(() => {
+    if (!editMode || rawSection === null || selectedKeys.length !== 1) {
+      return null;
+    }
+    return readElementProps(rawSection, selectedEdit.symbolEdits, selectedKeys[0]);
+  }, [editMode, rawSection, selectedEdit.symbolEdits, selectedKeys]);
+
+  /**
+   * 画布命令面（用户 2026-10-20）：缩放到选中。
+   * 有选中 → 选中包围盒外扩半格；无选中 → 回到整个符号。
+   */
+  const symbolPanRef = useRef<PanZoomHandle | null>(null);
+  const focusSelection = useCallback((): void => {
+    const pad = Math.max(settings.ui.symbolSnapGrid, 4);
+    const box =
+      previewSection === null
+        ? null
+        : selectionBox(previewSection, selectedKeys.length > 0 ? selectedKeys : []);
+    const target =
+      box !== null
+        ? { minX: box.minX - pad, minY: box.minY - pad, maxX: box.maxX + pad, maxY: box.maxY + pad }
+        : previewBounds === null
+          ? null
+          : {
+              minX: previewBounds.minX - pad,
+              minY: previewBounds.minY - pad,
+              maxX: previewBounds.maxX + pad,
+              maxY: previewBounds.maxY + pad,
+            };
+    if (target !== null) {
+      symbolPanRef.current?.fitTo(target);
+    }
+  }, [previewBounds, previewSection, selectedKeys, settings.ui.symbolSnapGrid]);
 
   // 编辑模式下当前选中的是不是文本（旋转/字号只对文本有意义）
   const selectedIsText =
@@ -1249,10 +1317,67 @@ const ConverterPage = ({
     [mutateSymbolEdits, selectedKeyId],
   );
 
+  /**
+   * 对齐 / 分布（用户 2026-10-20）：算出每个元素的位移后一次性写入。
+   * `continuous=false` → 先结算上一步、再压一个新撤销点：一次对齐 = 一次 Ctrl+Z。
+   */
+  const applyLayoutAction = useCallback(
+    (action: string): void => {
+      if (selectedKeyId === null || previewSection === null || selectedKeys.length < 2) {
+        return;
+      }
+      const offsets = planLayoutAction(collectBoxes(previewSection, selectedKeys), action);
+      if (offsets.size === 0) {
+        return;
+      }
+      mutateSymbolEdits(
+        selectedKeyId,
+        (edits) =>
+          [...offsets].reduce(
+            (acc, [key, offset]) => accumulateOffset(acc, key, offset.dx, offset.dy),
+            edits,
+          ),
+        false,
+      );
+    },
+    [mutateSymbolEdits, previewSection, selectedKeyId, selectedKeys],
+  );
+
   /** 编辑模式下点画布空白处 = 取消选中当前元素。 */
   const clearSymbolSelection = useCallback((): void => {
     setSelectedKeys([]);
   }, []);
+
+  /** 属性面板提交：绝对值写入（rect 的 X/Y 只动 offset，宽高只动 bounds）。 */
+  const commitElementField = useCallback(
+    (field: ElementField, value: number): void => {
+      if (selectedKeyId === null || rawSection === null || selectedKeys.length !== 1) {
+        return;
+      }
+      const key = selectedKeys[0];
+      mutateSymbolEdits(
+        selectedKeyId,
+        (edits) => {
+          switch (field) {
+            case "x":
+              return writeElementX(rawSection, edits, key, value);
+            case "y":
+              return writeElementY(rawSection, edits, key, value);
+            case "width":
+              return writeElementWidth(rawSection, edits, key, value);
+            case "height":
+              return writeElementHeight(rawSection, edits, key, value);
+            case "textHeight":
+              return writeTextHeight(rawSection, edits, key, value);
+            default:
+              return writeTextRotation(rawSection, edits, key, value);
+          }
+        },
+        false,
+      );
+    },
+    [mutateSymbolEdits, rawSection, selectedKeyId, selectedKeys],
+  );
 
   /** 旋转一个文本（90° 步进）。单次操作：每按一次一个撤销点。 */
   const rotateSymbolText = (id: string, key: string): void => {
@@ -1266,7 +1391,8 @@ const ConverterPage = ({
 
   /**
    * 编辑模式快捷键（用户 2026-10-16 要求"空格旋转、上下左右移动、更多按键"）：
-   *   ← ↑ → ↓  平移 5 单位（Shift=1 精调，Alt=20 粗调）—— 选中的**全部**元素一起动
+   *   ← ↑ → ↓  平移一格（吸附开：按当前档位 10/5 单位；Shift=1 单位精调，
+   *             Alt=10 格粗调；吸附关：1/1/10 单位）—— 选中的**全部**元素一起动
    *   空格 / R  文本旋转 90°（仅单选一个文本时）
    *   [ / -    文本字号缩小（仅单选一个文本时）
    *   ] / =    文本字号放大（仅单选一个文本时）
@@ -1285,10 +1411,14 @@ const ConverterPage = ({
     }
     const onKeyDown = (event: KeyboardEvent): void => {
       const target = event.target;
-      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+      // 新增的档位/对齐 <select> 也会吞方向键 —— 统一用 closest 判输入控件
+      if (
+        target instanceof HTMLElement &&
+        target.closest("input, textarea, select, [contenteditable]") !== null
+      ) {
         return;
       }
-      const step = event.shiftKey ? 1 : event.altKey ? 20 : 5;
+      const step = arrowStep(snapState, { shift: event.shiftKey, alt: event.altKey });
       const deltas: Record<string, readonly [number, number]> = {
         ArrowLeft: [-step, 0],
         ArrowRight: [step, 0],
@@ -1339,7 +1469,34 @@ const ConverterPage = ({
     moveSelectedElements,
     rotateSymbolText,
     scaleSymbolText,
+    snapState,
   ]);
+
+  /**
+   * Ctrl/Cmd+A 全选（用户 2026-10-20）：语义与框选一致 —— 引脚 + 非 rect 图形。
+   * 单独一条 effect：不要求"已经选中了什么"（上面那条在空选时直接 return）。
+   */
+  useEffect(() => {
+    if (!editMode || previewTab !== "sch" || previewSection === null) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "a") {
+        return;
+      }
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        target.closest("input, textarea, select, [contenteditable]") !== null
+      ) {
+        return;
+      }
+      event.preventDefault();
+      setSelectedKeys(symbolSelectableKeys(previewSection, sectionIndex));
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [editMode, previewTab, previewSection, sectionIndex]);
 
   /**
    * 撤销 / 重做快捷键（用户 2026-10-16 要求"编辑支持退回步骤 + 添加快捷键"）：
@@ -1353,7 +1510,10 @@ const ConverterPage = ({
     }
     const onKeyDown = (event: KeyboardEvent): void => {
       const target = event.target;
-      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+      if (
+        target instanceof HTMLElement &&
+        target.closest("input, textarea, select, [contenteditable]") !== null
+      ) {
         return;
       }
       if (!event.ctrlKey && !event.metaKey) {
@@ -1794,6 +1954,8 @@ const ConverterPage = ({
             symbol,
             libraryPath: settings.olbLibraryPath,
             libraryName: entry.libraryName,
+            // 跟随界面磁吸开关（用户 2026-10-20）：关掉后写库按实际坐标，仍取整
+            snapPins: settings.ui.symbolSnapEnabled,
           };
           let outcome = await api.writeOlb(request);
           // 库里已有同名器件 → 二次确认后再覆盖（用户 2026-10-16 要求）。
@@ -2232,8 +2394,98 @@ const ConverterPage = ({
           ) : null}
         </header>
         <div className="engineering-canvas">
+          {previewTab === "sch" && editedSymbol !== null && editMode ? (
+            /* 网格/对齐工具条：放画布左上角而不是 52px 的 stage-heading ——
+             * 1120px 最小窗口下 header 已经被标题、tabs、撤销按钮占满。 */
+            <div className="symbol-toolbar" role="toolbar" aria-label="网格与对齐">
+              <button
+                type="button"
+                className={`symbol-tool ${snapEnabled ? "on" : ""}`}
+                onClick={() => onUiChange({ symbolSnapEnabled: !snapEnabled })}
+                title={
+                  snapEnabled
+                    ? "吸附到网格：开（点击关闭；关闭后写库也按实际坐标）"
+                    : "吸附到网格：关（点击开启）"
+                }
+                aria-pressed={snapEnabled}
+                data-testid="snap-toggle"
+              >
+                <Magnet size={15} />
+              </button>
+              <select
+                className="symbol-tool-select"
+                value={snapGrid}
+                onChange={(event) =>
+                  onUiChange({ symbolSnapGrid: Number(event.target.value) === 5 ? 5 : 10 })
+                }
+                title="网格档位（背景网格与吸附同步）"
+                aria-label="网格档位"
+                data-testid="snap-grid"
+              >
+                <option value={10}>100 mil</option>
+                <option value={5}>50 mil</option>
+              </select>
+              <button
+                type="button"
+                className={`symbol-tool ${gridVisible ? "on" : ""}`}
+                onClick={() => onUiChange({ symbolGridVisible: !gridVisible })}
+                title={gridVisible ? "隐藏背景网格" : "显示背景网格"}
+                aria-pressed={gridVisible}
+                data-testid="grid-toggle"
+              >
+                <Grid3x3 size={15} />
+              </button>
+              <select
+                className="symbol-tool-select"
+                value=""
+                onChange={(event) => applyLayoutAction(event.target.value)}
+                disabled={selectedKeys.length < 2}
+                title={
+                  selectedKeys.length < 2
+                    ? "选中 2 个以上元素后可对齐（3 个以上可等距分布）"
+                    : "对齐 / 等距分布"
+                }
+                aria-label="对齐与分布"
+                data-testid="align-select"
+              >
+                <option value="" disabled>
+                  对齐
+                </option>
+                <optgroup label="对齐">
+                  <option value="align:left">左对齐</option>
+                  <option value="align:right">右对齐</option>
+                  <option value="align:top">顶对齐</option>
+                  <option value="align:bottom">底对齐</option>
+                  <option value="align:centerX">水平居中</option>
+                  <option value="align:centerY">垂直居中</option>
+                </optgroup>
+                <optgroup label="等距分布">
+                  <option value="distribute:horizontal" disabled={selectedKeys.length < 3}>
+                    水平等距
+                  </option>
+                  <option value="distribute:vertical" disabled={selectedKeys.length < 3}>
+                    垂直等距
+                  </option>
+                </optgroup>
+              </select>
+              <button
+                type="button"
+                className="symbol-tool"
+                onClick={focusSelection}
+                title={selectedKeys.length > 0 ? "缩放到选中（Focus）" : "缩放到整个符号"}
+                aria-label="缩放到选中"
+                data-testid="focus-selection"
+              >
+                <Focus size={15} />
+              </button>
+            </div>
+          ) : null}
+          {previewTab === "sch" && editMode && elementProps !== null ? (
+            <SymbolProperties element={elementProps} snap={snapState} onField={commitElementField} />
+          ) : null}
           {previewTab === "sch" && editedSymbol !== null && previewSection !== null ? (
             <PanZoom
+              ref={symbolPanRef}
               bounds={previewBounds!}
               resetKey={`sch:${selected?.id ?? ""}:${sectionIndex}:${editedSymbol.sections.length}`}
               ariaLabel="原理图元件预览"
@@ -2256,18 +2508,28 @@ const ConverterPage = ({
                   : undefined
               }
             >
-              {({ scale }) => (
-                <SymbolPreview
-                  symbol={editedSymbol}
-                  sectionIndex={Math.min(sectionIndex, editedSymbol.sections.length - 1)}
-                  scale={scale}
-                  edits={selectedEdit.symbolEdits}
-                  editing={editMode}
-                  selectedKeys={effectiveSelectedKeys}
-                  onSelectKeys={setSelectedKeys}
-                  onMoveElements={moveSelectedElements}
-                  onResizeRect={resizeSelectedRect}
-                />
+              {({ scale, tx, ty, width, height }) => (
+                <>
+                  <SymbolGrid
+                    view={{ tx, ty, width, height, scale }}
+                    grid={snapGrid}
+                    visible={gridVisible}
+                  />
+                  <SymbolPreview
+                    symbol={editedSymbol}
+                    sectionIndex={Math.min(sectionIndex, editedSymbol.sections.length - 1)}
+                    scale={scale}
+                    edits={selectedEdit.symbolEdits}
+                    editing={editMode}
+                    selectedKeys={effectiveSelectedKeys}
+                    onSelectKeys={(keys, mode) =>
+                      setSelectedKeys((current) => applySelection(current, keys, mode ?? "replace"))
+                    }
+                    onMoveElements={moveSelectedElements}
+                    onResizeRect={resizeSelectedRect}
+                    snap={snapState}
+                  />
+                </>
               )}
             </PanZoom>
           ) : selected?.footprint !== null && selected?.footprint !== undefined ? (
@@ -2306,7 +2568,7 @@ const ConverterPage = ({
               <span><i className="legend-pad" />引脚</span>
               <span>
                 {editMode
-                  ? "编辑中：拖元素移动（可框选多个一起动，本体框需点它的线选中） · 拖框线改大小 · 中键平移 · ←↑→↓ 微调 · 空格 旋转文本 · [ ] 字号 · Ctrl+Z 退回 · Esc 取消"
+                  ? `编辑中：拖元素移动 · 框选/Shift 追加/Ctrl 切换 · Ctrl+A 全选 · 拖框线改大小 · ←↑→↓ 一格（Shift 精调/Alt 粗调） · 空格 旋转文本 · [ ] 字号 · Ctrl+Z 退回 · Esc 取消 · 网格 ${gridMil(snapGrid)} mil${snapEnabled ? " 吸附开" : " 吸附关（写库按实际坐标）"}`
                   : "点「编辑」后按住鼠标左键拖动文字、图形与引脚（滚轮缩放照常可用）"}
                 {hasSymbolEdits(selectedEdit.symbolEdits) ? (
                   <button

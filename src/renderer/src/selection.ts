@@ -28,3 +28,37 @@ export const shouldOfferRegeneration = (
 ): boolean =>
   runnableItems.length > 0 &&
   runnableItems.every((item) => item.state === "generated");
+
+/**
+ * 选择集的修饰键语义（用户 2026-10-20，参考 OrCAD）：
+ *  - replace：普通点击/框选 —— 整体替换
+ *  - add：Shift+点击 —— 并集
+ *  - toggle：Ctrl/Cmd+点击 —— 有则移除、无则加入
+ */
+export type SelectionMode = "replace" | "add" | "toggle";
+
+export const applySelection = (
+  current: readonly string[],
+  incoming: readonly string[],
+  mode: SelectionMode,
+): readonly string[] => {
+  if (mode === "replace") {
+    return incoming;
+  }
+  if (mode === "add") {
+    const merged = new Set(current);
+    for (const key of incoming) {
+      merged.add(key);
+    }
+    return [...merged];
+  }
+  const next = new Set(current);
+  for (const key of incoming) {
+    if (next.has(key)) {
+      next.delete(key);
+    } else {
+      next.add(key);
+    }
+  }
+  return [...next];
+};

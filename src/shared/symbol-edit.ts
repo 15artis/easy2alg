@@ -240,6 +240,31 @@ export const accumulateFontSize = (
 };
 
 /**
+ * 直接设定位移（绝对值，不是增量）—— 属性面板输入精确坐标时用。
+ *
+ * 与 `accumulateOffset` 的差别很重要：属性面板显示的是"原始坐标 + 当前 offset"，
+ * 用户输入 100 时应该写 `100 - 原始坐标`，而不是在旧 offset 上再加 100。
+ */
+export const setOffset = (
+  edits: SymbolEdits,
+  key: string,
+  offset: { readonly dx: number; readonly dy: number },
+): SymbolEdits =>
+  putEdit(edits, key, { ...edits[key], offset: { dx: offset.dx, dy: offset.dy } });
+
+/** 直接设定字号倍数（0.4–4）。 */
+export const setFontSize = (edits: SymbolEdits, key: string, factor: number): SymbolEdits => {
+  const scale = Math.min(Math.max(factor, 0.4), 4);
+  return putEdit(edits, key, { ...edits[key], fontSize: Math.round(scale * 100) / 100 });
+};
+
+/** 直接设定文本旋转（90° 的倍数，0..3 圈）。 */
+export const setRotationTurns = (edits: SymbolEdits, key: string, turns: number): SymbolEdits => {
+  const normalized = ((Math.round(turns) % 4) + 4) % 4;
+  return putEdit(edits, key, { ...edits[key], rotate: normalized });
+};
+
+/**
  * 直接设定本体四边（框线拖动改大小；绝对值，不是增量）。
  *
  * `dragged` 告诉这里是哪几条边在被拖 —— 拖过头时只把**被拖的边**按最小边长顶回去，
