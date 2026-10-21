@@ -12,8 +12,8 @@ import { worldRectOf, type CanvasView } from "../../shared/symbol-snap";
  * 线宽用 `1 / scale` 补偿，屏幕上线宽恒定 1px。
  */
 
-const MINOR_COLOR = "#dbe3ee";
-const MAJOR_COLOR = "#c2cddb";
+const MINOR_COLOR = "#d3ddeb";
+const MAJOR_COLOR = "#b3c2d4";
 /** 屏幕像素：格子小于它就不画（5 单位档在 2% 缩放下会密到卡死浏览器）。 */
 const MIN_GRID_PX = 3;
 

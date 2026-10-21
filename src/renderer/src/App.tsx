@@ -76,9 +76,11 @@ import {
   applySymbolEdits,
   EMPTY_SYMBOL_EDITS,
   hasSymbolEdits,
+  setPinPoints,
   setRectBounds,
   type RectEdges,
   type SymbolEdits,
+  type SymbolPinPoints,
   type SymbolShapeBounds,
 } from "../../shared/symbol-edit";
 import {
@@ -1343,6 +1345,25 @@ const ConverterPage = ({
     [mutateSymbolEdits, previewSection, selectedKeyId, selectedKeys],
   );
 
+  /**
+   * 拖动结束后的引脚重定向（用户 2026-10-21）：拖到本体另一侧时方向要翻过来。
+   * continuous=true → 并进当前拖动那一步撤销，不额外多一个撤销点。
+   */
+  const reorientPins = useCallback(
+    (entries: readonly { readonly key: string; readonly points: SymbolPinPoints }[]): void => {
+      if (selectedKeyId === null || entries.length === 0) {
+        return;
+      }
+      mutateSymbolEdits(
+        selectedKeyId,
+        (edits) =>
+          entries.reduce((acc, entry) => setPinPoints(acc, entry.key, entry.points), edits),
+        true,
+      );
+    },
+    [mutateSymbolEdits, selectedKeyId],
+  );
+
   /** 编辑模式下点画布空白处 = 取消选中当前元素。 */
   const clearSymbolSelection = useCallback((): void => {
     setSelectedKeys([]);
@@ -2393,7 +2414,7 @@ const ConverterPage = ({
             </div>
           ) : null}
         </header>
-        <div className="engineering-canvas">
+        <div className={`engineering-canvas${previewTab === "sch" ? " symbol-canvas" : ""}`}>
           {previewTab === "sch" && editedSymbol !== null && editMode ? (
             /* 网格/对齐工具条：放画布左上角而不是 52px 的 stage-heading ——
              * 1120px 最小窗口下 header 已经被标题、tabs、撤销按钮占满。 */
@@ -2527,6 +2548,7 @@ const ConverterPage = ({
                     }
                     onMoveElements={moveSelectedElements}
                     onResizeRect={resizeSelectedRect}
+                    onReorientPins={reorientPins}
                     snap={snapState}
                   />
                 </>

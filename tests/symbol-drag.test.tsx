@@ -77,6 +77,7 @@ type Snap = { readonly enabled: boolean; readonly grid: number };
 const mount = (
   options: {
     readonly snap?: Snap;
+    readonly symbol?: NormalizedSymbol;
     readonly onMove?: (keys: readonly string[], dx: number, dy: number) => void;
     readonly onSelectKeys?: (
       keys: readonly string[],
@@ -87,11 +88,20 @@ const mount = (
       bounds: { readonly min: { x: number; y: number }; readonly max: { x: number; y: number } },
       dragged: unknown,
     ) => void;
+    readonly onReorientPins?: (
+      entries: readonly {
+        readonly key: string;
+        readonly points: {
+          readonly connection: { readonly x: number; readonly y: number };
+          readonly body: { readonly x: number; readonly y: number };
+        };
+      }[],
+    ) => void;
   } = {},
 ) => {
   const view = render(
     <SymbolPreview
-      symbol={symbol}
+      symbol={options.symbol ?? symbol}
       sectionIndex={0}
       scale={1}
       edits={{}}
@@ -106,6 +116,7 @@ const mount = (
         })
       }
       snap={options.snap}
+      onReorientPins={options.onReorientPins}
     />,
   );
   const draggable = view.container.querySelectorAll('[data-draggable="true"]');
@@ -252,5 +263,45 @@ describe("symbol element dragging", () => {
     firePointer(pin, "pointermove", { x: 160, y: 100, buttons: 1 });
     expect(onSelect).toHaveBeenCalledWith(["p0:0"], "add");
     expect(onMove).not.toHaveBeenCalled();
+  });
+
+  /**
+   * 用户 2026-10-21：把引脚拖到本体另一侧后，松手要按"贴边朝外"重建方向。
+   * 这里用一个"body 端在本体外、连接端却在边缘"的错向引脚，验证松手结算真的被触发。
+   */
+  it("松手时触发引脚重定向（错向引脚被翻正）", () => {
+    const misoriented: NormalizedSymbol = {
+      ...symbol,
+      sections: [
+        {
+          ...symbol.sections[0],
+          pins: [
+            {
+              name: "P1",
+              number: "1",
+              connection: { x: 100, y: 20 },
+              body: { x: 110, y: 20 },
+              length: 10,
+              type: "passive",
+              visible: true,
+            },
+          ],
+        },
+      ],
+    };
+    const onReorient = vi.fn();
+    const { pin } = mount({ symbol: misoriented, onReorientPins: onReorient });
+    drag(pin, { x: 100, y: 100 }, { x: 120, y: 100 });
+    firePointer(pin, "pointerup", { x: 120, y: 100, buttons: 0 });
+
+    expect(onReorient).toHaveBeenCalledTimes(1);
+    const entries = onReorient.mock.calls[0][0] as readonly {
+      key: string;
+      points: { connection: { x: number; y: number }; body: { x: number; y: number } };
+    }[];
+    expect(entries).toHaveLength(1);
+    expect(entries[0].key).toBe("p0:0");
+    expect(entries[0].points.body).toEqual({ x: 100, y: 20 });
+    expect(entries[0].points.connection).toEqual({ x: 110, y: 20 });
   });
 });

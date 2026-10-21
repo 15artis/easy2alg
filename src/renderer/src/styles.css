@@ -2599,3 +2599,11 @@ select:focus,
   outline: 2px solid rgb(36 89 211 / 35%);
   outline-offset: 0;
 }
+
+/* 符号页只显示**世界坐标网格**（SymbolGrid，按 100/50 mil 档位）。
+ * 容器自带的那层 10px 屏幕像素网格与符号坐标无关：100 mil 档下用户会看到
+ * 一格 10px 的细格，误以为"档位没生效 / 和引脚对不上"（用户 2026-10-21）。
+ * 注意只关符号页，PCB 预览仍用原来的底纹。 */
+.engineering-canvas.symbol-canvas {
+  background: #f8fafc;
+}

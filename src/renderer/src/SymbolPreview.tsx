@@ -10,13 +10,17 @@ import {
 import type { NormalizedSymbol, NormalizedSymbolPin } from "../../shared/schemas";
 import {
   dragDelta,
+  isSymbolPinKey,
+  parseSymbolEditKey,
   symbolPinKey,
   symbolShapeKey,
+  type SymbolPinPoints,
   type RectEdges,
   type SymbolEdits,
   type SymbolShapeBounds,
 } from "../../shared/symbol-edit";
 import { SYMBOL_PIN_GRID } from "../../shared/symbol-layout";
+import { reorientPin } from "../../shared/symbol-pin";
 import {
   snapDragDelta,
   snapRectBounds,
@@ -224,8 +228,12 @@ const useElementDrag = (
   onMoveElements: (keys: readonly string[], dx: number, dy: number) => void,
   onResizeRect: (key: string, bounds: SymbolShapeBounds, dragged: RectEdges) => void,
   snap: SnapState,
+  onMoveEnd?: (keys: readonly string[]) => void,
 ) => {
   const dragRef = useRef<DragState | null>(null);
+  /** 松手回调（引脚换边重定向）走 ref：capture 监听只挂一次，不能因回调换引用重装。 */
+  const onMoveEndRef = useRef(onMoveEnd);
+  onMoveEndRef.current = onMoveEnd;
 
   /**
    * 兜底：**任何** pointerup / pointercancel / 窗口失焦都要把拖动状态清掉。
@@ -235,16 +243,24 @@ const useElementDrag = (
    * 也会继续拖元素**（用户 2026-10-19 报的"鼠标移动让文本引脚一起跑"）。
    */
   useEffect(() => {
+    /** 松手：先结算"引脚换边"，再清拖动状态（window capture 先于元素自己的 handler）。 */
     const stop = (): void => {
+      const drag = dragRef.current;
+      if (drag !== null && drag.mode === "move" && drag.moved) {
+        onMoveEndRef.current?.(drag.keys);
+      }
+      dragRef.current = null;
+    };
+    const clear = (): void => {
       dragRef.current = null;
     };
     window.addEventListener("pointerup", stop, true);
     window.addEventListener("pointercancel", stop, true);
-    window.addEventListener("blur", stop);
+    window.addEventListener("blur", clear);
     return () => {
       window.removeEventListener("pointerup", stop, true);
       window.removeEventListener("pointercancel", stop, true);
-      window.removeEventListener("blur", stop);
+      window.removeEventListener("blur", clear);
     };
   }, []);
 
@@ -440,6 +456,7 @@ const SymbolPins = memo(
     onMoveElements,
     onResizeRect,
     snap,
+    onMoveEnd,
   }: {
     readonly sectionIndex: number;
     readonly pins: readonly NormalizedSymbolPin[];
@@ -452,6 +469,7 @@ const SymbolPins = memo(
     readonly onMoveElements: (keys: readonly string[], dx: number, dy: number) => void;
     readonly onResizeRect: (key: string, bounds: SymbolShapeBounds, dragged: RectEdges) => void;
     readonly snap: SnapState;
+    readonly onMoveEnd?: (keys: readonly string[]) => void;
   }): ReactElement => {
     const drag = useElementDrag(
       editing,
@@ -461,6 +479,7 @@ const SymbolPins = memo(
       onMoveElements,
       onResizeRect,
       snap,
+      onMoveEnd,
     );
 
     return (
@@ -542,6 +561,7 @@ export const SymbolPreview = ({
   onSelectKeys,
   onMoveElements,
   onResizeRect,
+  onReorientPins,
   snap = { enabled: true, grid: SYMBOL_PIN_GRID },
 }: {
   readonly symbol: NormalizedSymbol;
@@ -559,12 +579,48 @@ export const SymbolPreview = ({
    * 现有测试与调用点不传也不会变。
    */
   readonly snap?: SnapState;
+  /**
+   * 拖动结束后重定向过的引脚（用户 2026-10-21）：拖到本体另一侧时引脚要翻方向。
+   * 返回绝对端点，App 写成 `points` 编辑。
+   */
+  readonly onReorientPins?: (
+    entries: readonly { readonly key: string; readonly points: SymbolPinPoints }[],
+  ) => void;
 }): ReactElement => {
   const section = symbol.sections[Math.min(sectionIndex, symbol.sections.length - 1)];
 
   // 拖动要除以缩放，但 scale 不能当 prop 传进 memo 的引脚层（见 useElementDrag）
   const scaleRef = useRef(scale);
   scaleRef.current = scale;
+
+  /** 松手时结算：被拖过本体边界的引脚按"贴边朝外"重建两点。 */
+  const finishMove = useCallback(
+    (keys: readonly string[]): void => {
+      if (onReorientPins === undefined) {
+        return;
+      }
+      const body = bodyBoxOf(section);
+      const entries: { key: string; points: SymbolPinPoints }[] = [];
+      for (const key of keys) {
+        if (!isSymbolPinKey(key)) {
+          continue;
+        }
+        const { index } = parseSymbolEditKey(key);
+        const pin = section.pins[index];
+        if (pin === undefined) {
+          continue;
+        }
+        const points = reorientPin(pin, body, snap);
+        if (points !== null) {
+          entries.push({ key, points });
+        }
+      }
+      if (entries.length > 0) {
+        onReorientPins(entries);
+      }
+    },
+    [section, snap, onReorientPins],
+  );
 
   const drag = useElementDrag(
     editing,
@@ -574,6 +630,7 @@ export const SymbolPreview = ({
     onMoveElements,
     onResizeRect,
     snap,
+    finishMove,
   );
 
   const moveProps = (key: string): Record<string, unknown> =>
@@ -727,6 +784,7 @@ export const SymbolPreview = ({
         onMoveElements={onMoveElements}
         onResizeRect={onResizeRect}
         snap={snap}
+        onMoveEnd={finishMove}
       />
     </g>
   );

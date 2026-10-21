@@ -101,6 +101,12 @@ export type RectEdges = {
  * 于是"先挪再用空格转一下"会把位移丢掉、"改完大小再微调位置"会把大小丢掉。
  * 现在按项目分字段：只写用到的、全默认就把这个键删掉（`hasSymbolEdits` 依赖这点）。
  */
+/** 引脚两个端点的绝对坐标（连接端在外、body 端贴本体边）。 */
+export type SymbolPinPoints = {
+  readonly connection: { readonly x: number; readonly y: number };
+  readonly body: { readonly x: number; readonly y: number };
+};
+
 export type SymbolEdit = {
   readonly offset?: SymbolShapeOffset;
   /** 文本旋转，90° 的整数倍（叠加在源 rotation 上） */
@@ -109,6 +115,11 @@ export type SymbolEdit = {
   readonly fontSize?: number;
   /** 本体四边（仅 rect） */
   readonly bounds?: SymbolShapeBounds;
+  /**
+   * 引脚重定向后的绝对端点（用户 2026-10-21：把右侧引脚拖到左侧后，
+   * 引脚方向必须跟着翻过来）。设置它时 offset 会被清零 —— 两点已是最终坐标。
+   */
+  readonly points?: SymbolPinPoints;
 };
 
 export type SymbolEdits = Readonly<Record<string, SymbolEdit>>;
@@ -123,7 +134,8 @@ const isDefaultEdit = (edit: SymbolEdit): boolean =>
   (edit.offset === undefined || (edit.offset.dx === 0 && edit.offset.dy === 0)) &&
   (edit.rotate === undefined || edit.rotate === 0) &&
   (edit.fontSize === undefined || edit.fontSize === 1) &&
-  edit.bounds === undefined;
+  edit.bounds === undefined &&
+  edit.points === undefined;
 
 /** 写入一个键的编辑；整条变成默认值就把键删掉（避免留下一堆空记录）。 */
 const putEdit = (edits: SymbolEdits, key: string, edit: SymbolEdit): SymbolEdits => {
@@ -179,16 +191,27 @@ export const applySymbolEdits = (
       }),
       pins: section.pins.map((pin, pinIndex) => {
         const edit = pinEdits.get(symbolPinKey(sectionIndex, pinIndex));
-        if (edit?.offset === undefined || (edit.offset.dx === 0 && edit.offset.dy === 0)) {
-          return pin;
+        // ① 重定向：两点是绝对坐标，直接覆盖；标签锚点作废（换边后旧锚点全错），
+        //    让预览回退到"按新边重新推导"。
+        let next = pin;
+        if (edit?.points !== undefined) {
+          next = {
+            ...pin,
+            connection: edit.points.connection,
+            body: edit.points.body,
+            labelAnchor: undefined,
+          };
         }
-        // 引脚文字锚点必须跟引脚一起平移，否则"拖引脚时标签不动、拖本体时标签乱跑"
+        if (edit?.offset === undefined || (edit.offset.dx === 0 && edit.offset.dy === 0)) {
+          return next;
+        }
+        // ② 平移。引脚文字锚点必须跟引脚一起平移，否则"拖引脚时标签不动、拖本体时标签乱跑"
         // （用户 2026-10-19 反馈的"标签与引脚分离/间距越拖越宽"）。
-        const anchor = pin.labelAnchor;
+        const anchor = next.labelAnchor;
         return {
-          ...pin,
-          connection: translateSymbolPoint(pin.connection, edit.offset.dx, edit.offset.dy),
-          body: translateSymbolPoint(pin.body, edit.offset.dx, edit.offset.dy),
+          ...next,
+          connection: translateSymbolPoint(next.connection, edit.offset.dx, edit.offset.dy),
+          body: translateSymbolPoint(next.body, edit.offset.dx, edit.offset.dy),
           ...(anchor === undefined
             ? {}
             : {
@@ -251,6 +274,16 @@ export const setOffset = (
   offset: { readonly dx: number; readonly dy: number },
 ): SymbolEdits =>
   putEdit(edits, key, { ...edits[key], offset: { dx: offset.dx, dy: offset.dy } });
+
+/**
+ * 直接设定引脚两端（绝对值）—— 拖过本体另一侧后重定向用。
+ * offset 一并清掉：points 已经是最终坐标，再叠 offset 会二次位移。
+ */
+export const setPinPoints = (
+  edits: SymbolEdits,
+  key: string,
+  points: SymbolPinPoints,
+): SymbolEdits => putEdit(edits, key, { points });
 
 /** 直接设定字号倍数（0.4–4）。 */
 export const setFontSize = (edits: SymbolEdits, key: string, factor: number): SymbolEdits => {
