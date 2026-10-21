@@ -8,7 +8,11 @@ import {
   verifyPinReport,
 } from "../src/main/connectors/allegro-runner";
 import { createAllegroSourceBundle } from "../src/main/conversion/allegro-skill";
-import { derivePadstackName, deriveTargetPackageName } from "../src/main/conversion/naming";
+import {
+  derivePadstackName,
+  deriveTargetPackageName,
+  friendlyPackageNameFromSource,
+} from "../src/main/conversion/naming";
 import { createConversionPlan } from "../src/main/conversion/validate";
 import { getDemoFootprint } from "../src/shared/demo-fixtures";
 import {
@@ -260,5 +264,33 @@ describe("application shutdown", () => {
     expect(lastWindowCloseAction("win32")).toBe("exit");
     expect(lastWindowCloseAction("linux")).toBe("quit");
     expect(lastWindowCloseAction("darwin")).toBe("stay");
+  });
+});
+
+describe("friendly package name from LCSC source", () => {
+  it("keeps type/suffix and rewrites dimensions to 0.1mm integers (user 2026-10-21)", () => {
+    expect(friendlyPackageNameFromSource("VQFN-24_L5.0-W4.0-P0.50-BL-EP")).toBe(
+      "VQFN-24_L50-W40-P5-BL-EP",
+    );
+    expect(friendlyPackageNameFromSource("QFN-32_L5.0-W5.0-P0.50-BL-EP")).toBe(
+      "QFN-32_L50-W50-P5-BL-EP",
+    );
+  });
+
+  it("keeps sub-0.1mm precision as one decimal (P1.27 stays readable)", () => {
+    expect(friendlyPackageNameFromSource("SOIC-8_L4.9-W3.9-P1.27-BL")).toBe(
+      "SOIC-8_L49-W39-P12.7-BL",
+    );
+  });
+
+  it("returns null when the source has no dotted dimension tokens", () => {
+    expect(friendlyPackageNameFromSource("PEX8748_BACA")).toBeNull();
+    expect(friendlyPackageNameFromSource("SOT-23")).toBeNull();
+  });
+
+  it("deriveTargetPackageName prefers the friendly source name", () => {
+    expect(deriveTargetPackageName("VQFN-24_L5.0-W4.0-P0.50-BL-EP", [])).toBe(
+      "VQFN-24_L50-W40-P5-BL-EP",
+    );
   });
 });

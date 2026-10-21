@@ -238,6 +238,7 @@ describe("elibz2 connector", () => {
     expect(footprint.info.name).toBe("LMK00301ARHST");
     expect(footprint.info.sourcePackageName).toBe("WQFN-48_L7.0-W7.0-P0.50-BL-EP5.1");
     // 立创的 L7.0-W7.0 也要能推出本体尺寸（0.5mm 间距 / 7×7mm / 48 脚 + 散热焊盘 49）
-    expect(footprint.info.targetPackageName).toBe("QFN50P700X700X100-49N");
+        // 0.1.44：目标名沿用立创源名（0.1mm 精度整数、去点号），不再用几何推导
+    expect(footprint.info.targetPackageName).toBe("WQFN-48_L70-W70-P5-BL-EP51");
   });
 });
