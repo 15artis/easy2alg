@@ -54,6 +54,7 @@ const sideOfOuterPoint = (
   outer: Point,
   body: SymbolBox,
   bias: DragBias,
+  currentSide: PinSide,
   tolerance = 0.5,
 ): PinSide | null => {
   const overshoot: readonly (readonly [PinSide, number])[] = [
@@ -69,6 +70,40 @@ const sideOfOuterPoint = (
     const preferredHits = outside.filter(([side]) => preferred.includes(side));
     const pool = preferredHits.length > 0 ? preferredHits : outside;
     return [...pool].sort((a, b) => b[1] - a[1])[0][0];
+  }
+  // 外端点**正好贴在某条边线上**（用户 2026-10-21："放到线上没有进行切换"）：
+  // 距离为 0，既不满足"在外面"也不满足"在内部"，之前直接判"不用改"——
+  // 引脚保持横排躺在边框上。这里补上：贴的边与当前方向不同、且拖动方向
+  // 与这条边垂直时，切换到这条边。
+  const onEdge: PinSide | null = (() => {
+    const withinX = outer.x >= body.minX - tolerance && outer.x <= body.maxX + tolerance;
+    const withinY = outer.y >= body.minY - tolerance && outer.y <= body.maxY + tolerance;
+    if (withinX && Math.abs(outer.y - body.minY) <= tolerance) {
+      return "top";
+    }
+    if (withinX && Math.abs(outer.y - body.maxY) <= tolerance) {
+      return "bottom";
+    }
+    if (withinY && Math.abs(outer.x - body.minX) <= tolerance) {
+      return "left";
+    }
+    if (withinY && Math.abs(outer.x - body.maxX) <= tolerance) {
+      return "right";
+    }
+    return null;
+  })();
+  if (onEdge !== null) {
+    if (onEdge === currentSide) {
+      return null; // 已经是这条边的引脚，别折腾
+    }
+    const verticalEdge = onEdge === "top" || onEdge === "bottom";
+    return verticalEdge
+      ? bias === "vertical"
+        ? onEdge
+        : null
+      : bias === "horizontal"
+        ? onEdge
+        : null;
   }
   // 端点落在本体内部：吸到最近的一条边（引脚不应悬在体内）
   const inside: readonly (readonly [PinSide, number])[] = [
@@ -95,7 +130,7 @@ export const reorientPin = (
   bias: DragBias = "horizontal",
 ): SymbolPinPoints | null => {
   const outer = outerPointOf(pin, body);
-  const side = sideOfOuterPoint(outer, body, bias);
+  const side = sideOfOuterPoint(outer, body, bias, pinSideOf(pin));
   if (side === null) {
     return null;
   }

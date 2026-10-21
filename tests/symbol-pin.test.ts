@@ -68,7 +68,7 @@ describe("pin reorientation", () => {
   });
 
   it("已经贴边且朝外时不做多余编辑", () => {
-    expect(reorientPin(pin({ x: 10, y: 20 }, { x: 0, y: 20 }), body, snapOn)).toBeNull();
+    expect(reorientPin(pin({ x: -10, y: 20 }, { x: 0, y: 20 }), body, snapOn)).toBeNull();
     expect(reorientPin(pin({ x: 40, y: 0 }, { x: 40, y: 10 }), body, snapOn)).toBeNull();
   });
 });
@@ -301,5 +301,34 @@ describe("reattach pins after body resize", () => {
     const top = entries.find((entry) => entry.key === "p0:4");
     expect(top!.points.body.x).toBe(30);
     expect(top!.points.connection.y).toBe(-10);
+  });
+});
+
+/**
+ * 0.1.43 补充：把引脚**正好放到边框线上**（外端点到边距离 = 0）。
+ * 之前既不算"在外面"也不算"在内部"，直接判"不用改"——引脚横着躺在边框上
+ * （用户截图：EP25 放到顶边，标签还是横排）。
+ */
+describe("pin dropped exactly on the border line", () => {
+  const onTopEdge = (): NormalizedSymbolPin => pin({ x: 20, y: 0 }, { x: 10, y: 0 });
+
+  it("竖直拖到顶边线上：切换成朝上，标签竖排", () => {
+    const points = reorientPin(onTopEdge(), body, snapOn, "vertical");
+    expect(points).not.toBeNull();
+    expect(points!.body).toEqual({ x: 20, y: 0 });
+    expect(points!.connection).toEqual({ x: 20, y: -10 });
+    expect(points!.labelAnchor).toBeDefined();
+    // 名称锚点应在本体内（竖排），脚号在本体外
+    expect(points!.labelAnchor!.name.y).toBeGreaterThan(body.minY);
+    expect(points!.labelAnchor!.number.y).toBeLessThan(body.minY);
+  });
+
+  it("水平拖动（沿边走）时不折腾", () => {
+    expect(reorientPin(onTopEdge(), body, snapOn, "horizontal")).toBeNull();
+  });
+
+  it("本来就是这条边的引脚（贴线摆放）不产生编辑", () => {
+    // 顶引脚横跨在顶边线上：conn 在上、body 在下
+    expect(reorientPin(pin({ x: 40, y: 0 }, { x: 40, y: 10 }), body, snapOn, "vertical")).toBeNull();
   });
 });
