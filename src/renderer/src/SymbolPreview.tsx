@@ -3,6 +3,8 @@ import {
   useCallback,
   useEffect,
   useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactElement,
   type RefObject,
@@ -565,6 +567,8 @@ export const SymbolPreview = ({
   onMoveElements,
   onResizeRect,
   onReorientPins,
+  onTextEdit,
+  textEditRequest,
   snap = { enabled: true, grid: SYMBOL_PIN_GRID },
 }: {
   readonly symbol: NormalizedSymbol;
@@ -589,6 +593,10 @@ export const SymbolPreview = ({
   readonly onReorientPins?: (
     entries: readonly { readonly key: string; readonly points: SymbolPinPoints }[],
   ) => void;
+  /** 双击文本提交新内容（用户 2026-10-21）；未传 = 不可编辑 */
+  readonly onTextEdit?: (key: string, text: string) => void;
+  /** 「添加文本」后请求打开行内编辑（nonce 变化即触发） */
+  readonly textEditRequest?: { readonly key: string; readonly nonce: number } | null;
 }): ReactElement => {
   const section = symbol.sections[Math.min(sectionIndex, symbol.sections.length - 1)];
 
@@ -638,6 +646,46 @@ export const SymbolPreview = ({
     snap,
     finishMove,
   );
+
+  /** 双击文本的行内编辑（用户 2026-10-21）。foreignObject 里放 input，随世界坐标缩放。 */
+  const [textEditKey, setTextEditKey] = useState<string | null>(null);
+  const [textDraft, setTextDraft] = useState("");
+  const textInputElement = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (textEditKey === null) {
+      return;
+    }
+    // 换段 / 换器件 / 退出编辑模式后，正在编辑的文本可能已经不存在
+    const index = Number(textEditKey.split(":")[1] ?? -1);
+    const shape = section.shapes[index];
+    if (!editing || shape === undefined || shape.kind !== "text") {
+      setTextEditKey(null);
+      return;
+    }
+    textInputElement.current?.focus();
+  }, [editing, section, textEditKey]);
+
+  // 「添加文本」请求：打开对应形状的行内编辑器，草稿预填形状当前文本
+  const requestNonce = textEditRequest === undefined || textEditRequest === null ? -1 : textEditRequest.nonce;
+  const requestKey = textEditRequest === undefined || textEditRequest === null ? null : textEditRequest.key;
+  useEffect(() => {
+    if (requestKey === null || requestNonce < 0) {
+      return;
+    }
+    const shape = section.shapes[Number(requestKey.split(":")[1] ?? -1)];
+    if (shape === undefined || shape.kind !== "text") {
+      return;
+    }
+    setTextDraft(shape.text);
+    setTextEditKey(requestKey);
+  }, [requestKey, requestNonce, section]);
+
+  const commitTextEdit = useCallback((): void => {
+    if (textEditKey !== null && onTextEdit !== undefined) {
+      onTextEdit(textEditKey, textDraft.replace(/[\r\n]+/g, " "));
+    }
+    setTextEditKey(null);
+  }, [onTextEdit, textDraft, textEditKey]);
 
   const moveProps = (key: string): Record<string, unknown> =>
     editing
@@ -751,6 +799,69 @@ export const SymbolPreview = ({
         const fontHeight = symbolFontHeight(shape.height);
         const hitWidth = estimateLabelWidth(shape.text) * (fontHeight / PIN_FONT) * 1.35 + 12;
         const hitHeight = fontHeight * 1.4 + 6;
+        const doubleClick =
+          editing && onTextEdit !== undefined
+            ? (event: ReactMouseEvent<SVGElement>): void => {
+                // 双击 = 就地改字（OrCAD 同款操作）；别让 PanZoom 把它当空白点击
+                event.stopPropagation();
+                setTextDraft(shape.text);
+                setTextEditKey(key);
+              }
+            : undefined;
+        if (textEditKey === key) {
+          return (
+            <g key={key} transform={translate}>
+              <g
+                transform={
+                  shape.rotation === 0
+                    ? undefined
+                    : `rotate(${-shape.rotation} ${shape.at.x} ${shape.at.y})`
+                }
+              >
+                <foreignObject
+                  x={shape.at.x - 4}
+                  y={shape.at.y - fontHeight}
+                  width={Math.max(hitWidth, 40)}
+                  height={hitHeight}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onDoubleClick={(event) => event.stopPropagation()}
+                >
+                  <div style={{ display: "contents" }}>
+                    <input
+                      ref={textInputElement}
+                      value={textDraft}
+                      onChange={(event) => setTextDraft(event.target.value)}
+                      onBlur={commitTextEdit}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          commitTextEdit();
+                        } else if (event.key === "Escape") {
+                          event.preventDefault();
+                          setTextEditKey(null);
+                        }
+                      }}
+                      spellCheck={false}
+                      style={{
+                        width: "100%",
+                        height: "100%",
+                        fontSize: `${fontHeight}px`,
+                        lineHeight: 1,
+                        padding: "0 2px",
+                        color: TEXT,
+                        background: "white",
+                        border: "1px solid #e0862c",
+                        outline: "none",
+                        fontFamily: "inherit",
+                      }}
+                      data-testid="text-editor"
+                    />
+                  </div>
+                </foreignObject>
+              </g>
+            </g>
+          );
+        }
         return (
           <g key={key} transform={translate} {...moveProps(key)}>
             <g
@@ -759,6 +870,7 @@ export const SymbolPreview = ({
                   ? undefined
                   : `rotate(${-shape.rotation} ${shape.at.x} ${shape.at.y})`
               }
+              onDoubleClick={doubleClick}
             >
               {editing ? (
                 <rect

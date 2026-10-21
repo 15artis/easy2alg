@@ -129,6 +129,8 @@ export type SymbolEdit = {
    * 引脚方向必须跟着翻过来）。设置它时 offset 会被清零 —— 两点已是最终坐标。
    */
   readonly points?: SymbolPinPoints;
+  /** 文本内容替换（用户 2026-10-21：双击文本直接改字）。空串 = 清空显示 */
+  readonly text?: string;
 };
 
 export type SymbolEdits = Readonly<Record<string, SymbolEdit>>;
@@ -144,7 +146,8 @@ const isDefaultEdit = (edit: SymbolEdit): boolean =>
   (edit.rotate === undefined || edit.rotate === 0) &&
   (edit.fontSize === undefined || edit.fontSize === 1) &&
   edit.bounds === undefined &&
-  edit.points === undefined;
+  edit.points === undefined &&
+  edit.text === undefined;
 
 /** 写入一个键的编辑；整条变成默认值就把键删掉（避免留下一堆空记录）。 */
 const putEdit = (edits: SymbolEdits, key: string, edit: SymbolEdit): SymbolEdits => {
@@ -186,6 +189,9 @@ export const applySymbolEdits = (
         }
         if (next.kind !== "text") {
           return next;
+        }
+        if (edit?.text !== undefined) {
+          next = { ...next, text: edit.text };
         }
         if (edit?.rotate !== undefined && edit.rotate !== 0) {
           next = { ...next, rotation: next.rotation + edit.rotate * 90 };
@@ -237,6 +243,48 @@ export const applySymbolEdits = (
 
 export const hasSymbolEdits = (edits: SymbolEdits): boolean =>
   Object.keys(edits).length > 0;
+
+/**
+ * 用户新加的文本（用户 2026-10-21：支持添加文本）。追加在所在段 shapes 的**末尾**，
+ * 顺序确定 → 编辑键（s:<section>:<index>）稳定，可拖动/双击改字/进属性面板。
+ */
+export type AddedTextShape = {
+  readonly id: string;
+  /** 放进哪一段 */
+  readonly section: number;
+  readonly text: string;
+  readonly at: { readonly x: number; readonly y: number };
+  readonly height: number;
+};
+
+export const appendAddedTexts = (
+  symbol: NormalizedSymbol,
+  added: readonly AddedTextShape[] | undefined,
+): NormalizedSymbol => {
+  if (added === undefined || added.length === 0) {
+    return symbol;
+  }
+  const sections = symbol.sections.map((section, sectionIndex) => {
+    const forSection = added.filter((item) => item.section === sectionIndex);
+    if (forSection.length === 0) {
+      return section;
+    }
+    return {
+      ...section,
+      shapes: [
+        ...section.shapes,
+        ...forSection.map((item) => ({
+          kind: "text" as const,
+          text: item.text,
+          at: item.at,
+          rotation: 0,
+          height: item.height,
+        })),
+      ],
+    };
+  });
+  return { ...symbol, sections };
+};
 
 /**
  * 里记一条位移（拖动 / 方向键都会走到这里）。
@@ -293,6 +341,10 @@ export const setPinPoints = (
   key: string,
   points: SymbolPinPoints,
 ): SymbolEdits => putEdit(edits, key, { points });
+
+/** 直接设定文本内容（双击编辑）。空串合法 = 清空显示。 */
+export const setTextContent = (edits: SymbolEdits, key: string, text: string): SymbolEdits =>
+  putEdit(edits, key, { ...edits[key], text });
 
 /** 直接设定字号倍数（0.4–4）。 */
 export const setFontSize = (edits: SymbolEdits, key: string, factor: number): SymbolEdits => {

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render } from "@testing-library/react";
 import { SymbolPreview } from "../src/renderer/src/SymbolPreview";
 import type { NormalizedSymbol } from "../src/shared/schemas";
 
@@ -65,6 +65,11 @@ const firePointer = (
   element.dispatchEvent(event);
 };
 
+afterEach(() => {
+  // 无 globals 配置时 RTL 不会自动清理；不清理的话上一个用例的输入框会串场
+  cleanup();
+});
+
 beforeEach(() => {
   // jsdom 没有指针捕捉 API
   Element.prototype.setPointerCapture = () => {};
@@ -88,6 +93,7 @@ const mount = (
       bounds: { readonly min: { x: number; y: number }; readonly max: { x: number; y: number } },
       dragged: unknown,
     ) => void;
+    readonly onTextEdit?: (key: string, text: string) => void;
     readonly onReorientPins?: (
       entries: readonly {
         readonly key: string;
@@ -117,6 +123,7 @@ const mount = (
       }
       snap={options.snap}
       onReorientPins={options.onReorientPins}
+      onTextEdit={options.onTextEdit}
     />,
   );
   const draggable = view.container.querySelectorAll('[data-draggable="true"]');
@@ -337,5 +344,60 @@ describe("symbol element dragging", () => {
     }[];
     expect(entries[0].points.body).toEqual({ x: 40, y: 0 });
     expect(entries[0].points.connection).toEqual({ x: 40, y: -10 });
+  });
+});
+
+describe("text double-click editing (user 2026-10-21)", () => {
+  it("双击文本进入行内编辑，Enter 提交新内容", () => {
+    const onTextEdit = vi.fn();
+    const view = render(
+      <SymbolPreview
+        symbol={symbol}
+        sectionIndex={0}
+        scale={1}
+        edits={{}}
+        editing
+        selectedKeys={new Set<string>()}
+        onSelectKeys={() => {}}
+        onMoveElements={() => {}}
+        onResizeRect={() => {}}
+        onTextEdit={onTextEdit}
+      />,
+    );
+    const text = view.container.querySelector("text")!;
+    expect(text.textContent).toBe("TXT");
+    fireEvent.doubleClick(text);
+
+    const input = document.querySelector('[data-testid="text-editor"]') as HTMLInputElement;
+    expect(input).not.toBeNull();
+    expect(input.value).toBe("TXT");
+
+    fireEvent.change(input, { target: { value: "RENAME" } });
+    fireEvent.keyDown(input, { key: "Enter", bubbles: true });
+    expect(onTextEdit).toHaveBeenCalledWith("0:1", "RENAME");
+    expect(document.querySelector('[data-testid="text-editor"]')).toBeNull();
+  });
+
+  it("Escape 取消编辑，不提交", () => {
+    const onTextEdit = vi.fn();
+    const view = render(
+      <SymbolPreview
+        symbol={symbol}
+        sectionIndex={0}
+        scale={1}
+        edits={{}}
+        editing
+        selectedKeys={new Set<string>()}
+        onSelectKeys={() => {}}
+        onMoveElements={() => {}}
+        onResizeRect={() => {}}
+        onTextEdit={onTextEdit}
+      />,
+    );
+    fireEvent.doubleClick(view.container.querySelector("text")!);
+    const input = document.querySelector('[data-testid="text-editor"]') as HTMLInputElement;
+    fireEvent.keyDown(input, { key: "Escape", bubbles: true });
+    expect(onTextEdit).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-testid="text-editor"]')).toBeNull();
   });
 });

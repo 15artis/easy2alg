@@ -26,6 +26,7 @@ import {
   ShieldCheck,
   Sparkles,
   Trash2,
+  Type,
   TriangleAlert,
   Undo2,
   X,
@@ -74,13 +75,17 @@ import {
   accumulateOffset,
   accumulateRotation,
   applySymbolEdits,
+  symbolShapeKey,
   EMPTY_SYMBOL_EDITS,
+  appendAddedTexts,
   hasSymbolEdits,
   setPinPoints,
   setRectBounds,
+  setTextContent,
   type RectEdges,
   type SymbolEdits,
   type SymbolEdit,
+  type AddedTextShape,
   type SymbolPinPoints,
   type SymbolShapeBounds,
 } from "../../shared/symbol-edit";
@@ -108,13 +113,14 @@ import {
   type UiSettingsPatch,
 } from "../../shared/schemas";
 import {
+  DEFAULT_SYMBOL_TEXT_HEIGHT,
   sectionPreviewBounds,
   selectionBox,
   symbolKeysInBox,
   symbolSelectableKeys,
 } from "../../shared/symbol-labels";
 import { collectBoxes, planLayoutAction } from "../../shared/symbol-align";
-import { arrowStep, gridMil } from "../../shared/symbol-snap";
+import { arrowStep, gridMil, snapValue } from "../../shared/symbol-snap";
 import { reattachPinsToBounds } from "../../shared/symbol-pin";
 import {
   readElementProps,
@@ -207,6 +213,8 @@ type DeviceEdit = {
   readonly pcbName: string | null;
   readonly symbolName: string | null;
   readonly symbolEdits: SymbolEdits;
+  /** 用户新加的文本（0.1.46）：追加在对应段末尾，「重置调整」会一并清掉 */
+  readonly addedTexts?: readonly AddedTextShape[];
 };
 
 const EMPTY_DEVICE_EDIT: DeviceEdit = {
@@ -219,7 +227,8 @@ const EMPTY_DEVICE_EDIT: DeviceEdit = {
 const applyEdits = (symbol: NormalizedSymbol, edit: DeviceEdit): NormalizedSymbol => {
   const name = edit.symbolName === null ? "" : sanitizeLibraryName(edit.symbolName);
   const named = name.length === 0 ? symbol : { ...symbol, name };
-  return applySymbolEdits(named, edit.symbolEdits);
+  // 先追加新文本（在段末尾、下标稳定），再做既有编辑 —— 预览与写库同源
+  return applySymbolEdits(appendAddedTexts(named, edit.addedTexts), edit.symbolEdits);
 };
 
 const basenameOf = (filePath: string): string => filePath.split(/[\\/]/).pop() ?? filePath;
@@ -927,6 +936,8 @@ const ConverterPage = ({
    * 键盘快捷键生效（见 onSymbolEditorKeyDown 的注释）。
    */
   const [editMode, setEditMode] = useState(false);
+  /** 「添加文本」后自动进入行内编辑的请求（nonce 变化即重新触发） */
+  const [textEditRequest, setTextEditRequest] = useState<{ key: string; nonce: number } | null>(null);
   // 原理图元件预览的网格设置（用户 2026-10-20）：100 mil / 50 mil 两档
   const snapEnabled = settings.ui.symbolSnapEnabled;
   const snapGrid = settings.ui.symbolSnapGrid;
@@ -1395,6 +1406,47 @@ const ConverterPage = ({
     },
     [mutateSymbolEdits, selectedKeyId],
   );
+
+  /** 双击文本改内容（用户 2026-10-21）：一次提交 = 一个撤销点。 */
+  const editTextContent = useCallback(
+    (key: string, text: string): void => {
+      if (selectedKeyId === null) {
+        return;
+      }
+      mutateSymbolEdits(selectedKeyId, (edits) => setTextContent(edits, key, text), false);
+    },
+    [mutateSymbolEdits, selectedKeyId],
+  );
+
+  /**
+   * 添加文本（用户 2026-10-21）：放在本体中心、默认字号，追加为该段末尾的文本形状，
+   * 然后自动进入行内编辑。追加的形状下标稳定，可拖动/改字/进属性面板。
+   */
+  const addDeviceText = useCallback((): void => {
+    if (selectedKeyId === null || previewSection === null || previewBounds === null) {
+      return;
+    }
+    const shape: AddedTextShape = {
+      id: `t${Date.now().toString(36)}`,
+      section: sectionIndex,
+      text: "文本",
+      at: {
+        x: snapValue((previewBounds.minX + previewBounds.maxX) / 2, snapGrid),
+        y: snapValue((previewBounds.minY + previewBounds.maxY) / 2, snapGrid),
+      },
+      height: DEFAULT_SYMBOL_TEXT_HEIGHT,
+    };
+    const key = symbolShapeKey(sectionIndex, previewSection.shapes.length);
+    setDeviceEdits((current) => ({
+      ...current,
+      [selectedKeyId]: {
+        ...(current[selectedKeyId] ?? EMPTY_DEVICE_EDIT),
+        addedTexts: [...(current[selectedKeyId]?.addedTexts ?? []), shape],
+      },
+    }));
+    setSelectedKeys([key]);
+    setTextEditRequest({ key, nonce: Date.now() });
+  }, [previewBounds, previewSection, sectionIndex, selectedKeyId, snapGrid]);
 
   /** 编辑模式下点画布空白处 = 取消选中当前元素。 */
   const clearSymbolSelection = useCallback((): void => {
@@ -2488,6 +2540,16 @@ const ConverterPage = ({
               >
                 <Grid3x3 size={15} />
               </button>
+              <button
+                type="button"
+                className="symbol-tool"
+                onClick={addDeviceText}
+                title="添加文本（放在本体中心，可拖动、双击改字）"
+                aria-label="添加文本"
+                data-testid="add-text"
+              >
+                <Type size={15} />
+              </button>
               <select
                 className="symbol-tool-select"
                 value=""
@@ -2581,6 +2643,8 @@ const ConverterPage = ({
                     onMoveElements={moveSelectedElements}
                     onResizeRect={resizeSelectedRect}
                     onReorientPins={reorientPins}
+                    onTextEdit={editTextContent}
+                    textEditRequest={textEditRequest}
                     snap={snapState}
                   />
                 </>
@@ -2633,6 +2697,15 @@ const ConverterPage = ({
                         // 走统一入口：重置也是一步，可以 Ctrl+Z 退回来
                         mutateSymbolEdits(selected.id, () => EMPTY_SYMBOL_EDITS, false);
                         setSelectedKeys([]);
+                        setTextEditRequest(null);
+                        // 追加的文本没有对应的 SymbolEdit，重置时一并移除
+                        setDeviceEdits((current) => ({
+                          ...current,
+                          [selected.id]: {
+                            ...(current[selected.id] ?? EMPTY_DEVICE_EDIT),
+                            addedTexts: undefined,
+                          },
+                        }));
                       }
                     }}
                   >

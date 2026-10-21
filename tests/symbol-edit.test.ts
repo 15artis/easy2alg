@@ -10,7 +10,9 @@ import {
   hasSymbolEdits,
   isSymbolPinKey,
   parseSymbolEditKey,
+  appendAddedTexts,
   setRectBounds,
+  setTextContent,
   symbolPinKey,
   symbolShapeKey,
   translateSymbolShape,
@@ -298,5 +300,52 @@ describe("symbol edit model (v0.1.20)", () => {
       expect(dragDelta(10, 4, 0)).toEqual({ dx: 10, dy: 4 });
       expect(dragDelta(10, 4, -3)).toEqual({ dx: 10, dy: 4 });
     });
+  });
+});
+
+describe("text content edit (user 2026-10-21)", () => {
+  it("setTextContent 替换文本，其它编辑字段保留", () => {
+    const key = symbolShapeKey(0, 0);
+    const edits = setTextContent({ [key]: { offset: { dx: 5, dy: 0 } } }, key, "NEW");
+    expect(edits[key]).toEqual({ offset: { dx: 5, dy: 0 }, text: "NEW" });
+  });
+
+  it("applySymbolEdits 用替换文本渲染", () => {
+    const key = symbolShapeKey(0, 2);
+    const applied = applySymbolEdits(symbol(), { [key]: { text: "REPLACED" } });
+    const shape = applied.sections[0].shapes[2];
+    expect(shape.kind === "text" ? shape.text : "").toBe("REPLACED");
+  });
+
+  it("空串保留为编辑（清空显示是有意义的操作）", () => {
+    const key = symbolShapeKey(0, 0);
+    const edits = setTextContent(EMPTY_SYMBOL_EDITS, key, "");
+    expect(hasSymbolEdits(edits)).toBe(true);
+    expect(hasSymbolEdits(setTextContent(EMPTY_SYMBOL_EDITS, key, undefined as never))).toBe(false);
+  });
+});
+
+describe("append added texts (user 2026-10-21)", () => {
+  it("追加到指定段末尾，编辑键按新下标生效", () => {
+    const withAdded = appendAddedTexts(symbol(), [
+      { id: "t1", section: 0, text: "文本", at: { x: 50, y: 50 }, height: 7 },
+    ]);
+    const shapes = withAdded.sections[0].shapes;
+    expect(shapes).toHaveLength(4);
+    const last = shapes[3];
+    expect(last.kind === "text" ? last.text : "").toBe("文本");
+    // 追加的形状用普通形状键即可编辑（拖动 / 改字）
+    const applied = applySymbolEdits(withAdded, {
+      [symbolShapeKey(0, 3)]: { text: "标注A", offset: { dx: 10, dy: 0 } },
+    });
+    const edited = applied.sections[0].shapes[3];
+    expect(edited.kind === "text" ? edited.text : "").toBe("标注A");
+    expect(edited.kind === "text" ? edited.at.x : 0).toBe(60);
+  });
+
+  it("没有追加时不改引用", () => {
+    const base = symbol();
+    expect(appendAddedTexts(base, undefined)).toBe(base);
+    expect(appendAddedTexts(base, [])).toBe(base);
   });
 });
