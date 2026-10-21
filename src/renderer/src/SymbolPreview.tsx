@@ -20,7 +20,7 @@ import {
   type SymbolShapeBounds,
 } from "../../shared/symbol-edit";
 import { SYMBOL_PIN_GRID } from "../../shared/symbol-layout";
-import { reorientPin } from "../../shared/symbol-pin";
+import { reorientPin, type DragBias } from "../../shared/symbol-pin";
 import {
   snapDragDelta,
   snapRectBounds,
@@ -228,7 +228,7 @@ const useElementDrag = (
   onMoveElements: (keys: readonly string[], dx: number, dy: number) => void,
   onResizeRect: (key: string, bounds: SymbolShapeBounds, dragged: RectEdges) => void,
   snap: SnapState,
-  onMoveEnd?: (keys: readonly string[]) => void,
+  onMoveEnd?: (keys: readonly string[], delta: { readonly dx: number; readonly dy: number }) => void,
 ) => {
   const dragRef = useRef<DragState | null>(null);
   /** 松手回调（引脚换边重定向）走 ref：capture 监听只挂一次，不能因回调换引用重装。 */
@@ -247,7 +247,7 @@ const useElementDrag = (
     const stop = (): void => {
       const drag = dragRef.current;
       if (drag !== null && drag.mode === "move" && drag.moved) {
-        onMoveEndRef.current?.(drag.keys);
+        onMoveEndRef.current?.(drag.keys, { dx: drag.rawX, dy: drag.rawY });
       }
       dragRef.current = null;
     };
@@ -469,7 +469,10 @@ const SymbolPins = memo(
     readonly onMoveElements: (keys: readonly string[], dx: number, dy: number) => void;
     readonly onResizeRect: (key: string, bounds: SymbolShapeBounds, dragged: RectEdges) => void;
     readonly snap: SnapState;
-    readonly onMoveEnd?: (keys: readonly string[]) => void;
+    readonly onMoveEnd?: (
+      keys: readonly string[],
+      delta: { readonly dx: number; readonly dy: number },
+    ) => void;
   }): ReactElement => {
     const drag = useElementDrag(
       editing,
@@ -595,11 +598,14 @@ export const SymbolPreview = ({
 
   /** 松手时结算：被拖过本体边界的引脚按"贴边朝外"重建两点。 */
   const finishMove = useCallback(
-    (keys: readonly string[]): void => {
+    (keys: readonly string[], delta: { readonly dx: number; readonly dy: number }): void => {
       if (onReorientPins === undefined) {
         return;
       }
       const body = bodyBoxOf(section);
+      // 拖得更偏竖直 → 优先判成上下边（否则左引脚上拖会一直留在左侧）
+      const bias: DragBias =
+        Math.abs(delta.dy) > Math.abs(delta.dx) ? "vertical" : "horizontal";
       const entries: { key: string; points: SymbolPinPoints }[] = [];
       for (const key of keys) {
         if (!isSymbolPinKey(key)) {
@@ -610,7 +616,7 @@ export const SymbolPreview = ({
         if (pin === undefined) {
           continue;
         }
-        const points = reorientPin(pin, body, snap);
+        const points = reorientPin(pin, body, snap, bias);
         if (points !== null) {
           entries.push({ key, points });
         }

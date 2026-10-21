@@ -105,6 +105,15 @@ export type RectEdges = {
 export type SymbolPinPoints = {
   readonly connection: { readonly x: number; readonly y: number };
   readonly body: { readonly x: number; readonly y: number };
+  /**
+   * 换边后按新边重新算好的标签锚点。**不能省**：上下引脚的名称/脚号在预览里
+   * 是从锚点竖排的，缺了锚点会退回"从本体底边往上拉"，表现就是文字横跨整个符号
+   * （用户 2026-10-21 反馈"放到上下侧就不正常"）。
+   */
+  readonly labelAnchor?: {
+    readonly name: { readonly x: number; readonly y: number };
+    readonly number: { readonly x: number; readonly y: number };
+  };
 };
 
 export type SymbolEdit = {
@@ -199,7 +208,7 @@ export const applySymbolEdits = (
             ...pin,
             connection: edit.points.connection,
             body: edit.points.body,
-            labelAnchor: undefined,
+            labelAnchor: edit.points.labelAnchor,
           };
         }
         if (edit?.offset === undefined || (edit.offset.dx === 0 && edit.offset.dy === 0)) {

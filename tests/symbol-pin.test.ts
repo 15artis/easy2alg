@@ -94,7 +94,7 @@ describe("pin points edit", () => {
     sourceJson: "{}",
   });
 
-  it("points 覆盖端点，并作废旧标签锚点", () => {
+  it("points 未带锚点时清掉旧锚点（避免沿用旧边位置）", () => {
     const edits = setPinPoints({}, symbolPinKey(0, 0), {
       body: { x: 0, y: 20 },
       connection: { x: -10, y: 20 },
@@ -115,5 +115,73 @@ describe("pin points edit", () => {
     expect(edits[symbolPinKey(0, 0)]?.offset).toBeUndefined();
     const next = applySymbolEdits(symbol(), edits).sections[0].pins[0];
     expect(next.connection).toEqual({ x: -10, y: 20 });
+  });
+});
+
+/**
+ * 0.1.42：上下方向修正（用户 2026-10-21 第二次反馈）。
+ * 左引脚往上拖时 x 仍在本体左侧，只比"超出量"会一直判成左侧；
+ * 上下引脚的标签锚点也必须按新边重算，否则竖排名字横跨整个本体。
+ */
+describe("pin reorientation (vertical sides)", () => {
+  const leftPinDraggedUp = (): NormalizedSymbolPin =>
+    pin({ x: -10, y: -10 }, { x: 0, y: -10 });
+
+  it("左引脚向上拖：按拖动方向判成上边，端点贴顶边", () => {
+    const points = reorientPin(leftPinDraggedUp(), body, snapOn, "vertical");
+    expect(points).not.toBeNull();
+    expect(points!.body).toEqual({ x: 0, y: 0 });
+    expect(points!.connection).toEqual({ x: 0, y: -10 });
+  });
+
+  it("同样的位置但水平拖动：仍判左侧，且 y 夹在本体高度内（不悬空）", () => {
+    const points = reorientPin(leftPinDraggedUp(), body, snapOn, "horizontal");
+    expect(points!.body).toEqual({ x: 0, y: 0 });
+    expect(points!.connection).toEqual({ x: -10, y: 0 });
+  });
+
+  it("上边引脚的标签锚点按新边重算（名称在本体内、脚号在本体外）", () => {
+    const points = reorientPin(leftPinDraggedUp(), body, snapOn, "vertical");
+    expect(points!.labelAnchor).toBeDefined();
+    const anchor = points!.labelAnchor!;
+    expect(anchor.name.y).toBeGreaterThan(body.minY);
+    expect(anchor.name.y).toBeLessThan(body.maxY);
+    expect(anchor.number.y).toBeLessThan(body.minY);
+  });
+
+  it("上引脚拖到下边：方向翻成朝下", () => {
+    const topPin: NormalizedSymbolPin = {
+      ...pin({ x: 40, y: 60 }, { x: 40, y: 70 }),
+    };
+    // 原来的上引脚（conn 在上、body 在下）平移到下边后：conn 60 / body 70
+    const points = reorientPin(topPin, body, snapOn, "vertical");
+    expect(points!.body).toEqual({ x: 40, y: 60 });
+    expect(points!.connection).toEqual({ x: 40, y: 70 });
+  });
+
+  it("applySymbolEdits 保留 points 里的标签锚点", () => {
+    const section = {
+      name: "TESTPART",
+      bounds: body,
+      pins: [pin({ x: 110, y: 20 }, { x: 100, y: 20 })],
+      shapes: [
+        { kind: "rect" as const, min: { x: 0, y: 0 }, max: { x: 100, y: 60 }, cornerRadius: 0, filled: false },
+      ],
+    };
+    const symbol = {
+      name: "TESTPART",
+      refdesPrefix: "U",
+      pcbFootprint: "",
+      sections: [section],
+      sourceJson: "{}",
+    };
+    const anchor = { name: { x: 0, y: 5 }, number: { x: 0, y: -5 } };
+    const edits = setPinPoints({}, symbolPinKey(0, 0), {
+      body: { x: 0, y: 0 },
+      connection: { x: 0, y: -10 },
+      labelAnchor: anchor,
+    });
+    const next = applySymbolEdits(symbol, edits).sections[0].pins[0];
+    expect(next.labelAnchor).toEqual(anchor);
   });
 });

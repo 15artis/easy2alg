@@ -304,4 +304,38 @@ describe("symbol element dragging", () => {
     expect(entries[0].points.body).toEqual({ x: 100, y: 20 });
     expect(entries[0].points.connection).toEqual({ x: 110, y: 20 });
   });
+
+  it("竖直方向拖动时按上/下边重定向", () => {
+    const misoriented: NormalizedSymbol = {
+      ...symbol,
+      sections: [
+        {
+          ...symbol.sections[0],
+          pins: [
+            {
+              name: "P1",
+              number: "1",
+              // 圆点在边缘、body 端伸到本体上方：方向是错的
+              connection: { x: 40, y: 0 },
+              body: { x: 40, y: -10 },
+              length: 10,
+              type: "passive",
+              visible: true,
+            },
+          ],
+        },
+      ],
+    };
+    const onReorient = vi.fn();
+    const { pin } = mount({ symbol: misoriented, onReorientPins: onReorient });
+    drag(pin, { x: 100, y: 100 }, { x: 100, y: 120 });
+    firePointer(pin, "pointerup", { x: 100, y: 120, buttons: 0 });
+
+    const entries = onReorient.mock.calls[0][0] as readonly {
+      key: string;
+      points: { connection: { x: number; y: number }; body: { x: number; y: number } };
+    }[];
+    expect(entries[0].points.body).toEqual({ x: 40, y: 0 });
+    expect(entries[0].points.connection).toEqual({ x: 40, y: -10 });
+  });
 });
