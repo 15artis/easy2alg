@@ -80,6 +80,7 @@ import {
   setRectBounds,
   type RectEdges,
   type SymbolEdits,
+  type SymbolEdit,
   type SymbolPinPoints,
   type SymbolShapeBounds,
 } from "../../shared/symbol-edit";
@@ -114,6 +115,7 @@ import {
 } from "../../shared/symbol-labels";
 import { collectBoxes, planLayoutAction } from "../../shared/symbol-align";
 import { arrowStep, gridMil } from "../../shared/symbol-snap";
+import { reattachPinsToBounds } from "../../shared/symbol-pin";
 import {
   readElementProps,
   writeElementHeight,
@@ -1314,9 +1316,39 @@ const ConverterPage = ({
       if (selectedKeyId === null) {
         return;
       }
-      mutateSymbolEdits(selectedKeyId, (edits) => setRectBounds(edits, key, bounds, dragged), true);
+      mutateSymbolEdits(
+        selectedKeyId,
+        (edits) => {
+          const next = setRectBounds(edits, key, bounds, dragged);
+          // 引脚跟着边走（用户 2026-10-21）：本体改大小后，每条边上的引脚重新贴边；
+          // 缩小时沿边夹紧，出现重叠就把这一排均匀铺开。
+          if (previewSection === null) {
+            return next;
+          }
+          const finalBounds = next[key]?.bounds;
+          if (finalBounds === undefined) {
+            return next;
+          }
+          const entries = reattachPinsToBounds(
+            previewSection,
+            sectionIndex,
+            { minX: finalBounds.min.x, minY: finalBounds.min.y, maxX: finalBounds.max.x, maxY: finalBounds.max.y },
+            snapState,
+          );
+          if (entries.length === 0) {
+            return next;
+          }
+          // 直接赋值而不是逐条 reduce：676 脚的器件每帧 reduce 会 O(n²)
+          const withPins: Record<string, SymbolEdit> = { ...next };
+          for (const entry of entries) {
+            withPins[entry.key] = { points: entry.points };
+          }
+          return withPins;
+        },
+        true,
+      );
     },
-    [mutateSymbolEdits, selectedKeyId],
+    [mutateSymbolEdits, previewSection, sectionIndex, selectedKeyId, snapState],
   );
 
   /**

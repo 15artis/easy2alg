@@ -688,6 +688,10 @@ export const SymbolPreview = ({
                 stroke={stroke}
                 strokeWidth={active ? 3 : 2}
                 vectorEffect="non-scaling-stroke"
+                /* 可见的填充面**不参与命中**（用户 2026-10-21）：框内空白按下左键
+                 * 要交给 PanZoom 去框选里面的引脚/文本，而不是把整个本体拖走。
+                 * 本体的交互只走下面那条 9px 框线命中区（点线选中 + 拖线改大小）。 */
+                pointerEvents="none"
               />
               {editing ? (
                 /* 命中区只覆盖**框线**：框内部空白不参与命中，免得把里面元素的点击全吃掉

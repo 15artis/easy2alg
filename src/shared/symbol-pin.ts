@@ -1,7 +1,7 @@
-import type { NormalizedSymbolPin } from "./schemas";
-import type { SymbolPinPoints } from "./symbol-edit";
+import type { NormalizedSymbolPin, NormalizedSymbolSection } from "./schemas";
+import { symbolPinKey, type SymbolPinPoints } from "./symbol-edit";
 import { snapValue, type SnapState } from "./symbol-snap";
-import { pinLabelAnchors, type SymbolBox } from "./symbol-labels";
+import { pinLabelAnchors, pinSideOf, type SymbolBox } from "./symbol-labels";
 
 /**
  * 引脚换边重定向（用户 2026-10-21，0.1.42 修正上下方向）。
@@ -138,4 +138,142 @@ export const reorientPin = (
     ...points,
     labelAnchor: pinLabelAnchors({ ...pin, ...points }, body),
   };
+};
+
+// ---------- 本体改大小后，让引脚跟着重新贴边 ----------
+
+export type PinAttachEntry = {
+  readonly key: string;
+  readonly points: SymbolPinPoints;
+};
+
+const normalizeBox = (box: SymbolBox): SymbolBox => ({
+  minX: Math.min(box.minX, box.maxX),
+  minY: Math.min(box.minY, box.maxY),
+  maxX: Math.max(box.minX, box.maxX),
+  maxY: Math.max(box.minY, box.maxY),
+});
+
+const sameOptionalPoint = (a: Point | undefined, b: Point | undefined): boolean =>
+  a === undefined || b === undefined ? a === b : samePoint(a, b);
+
+/**
+ * 本体改大小后重建所有引脚的贴边几何（用户 2026-10-21）。
+ *
+ * - 每条边上的引脚跟着边移动（右边缘右移 → 右侧引脚的 body/connection 一起右移）
+ * - 沿边坐标夹到新的边长内；夹完如果有重叠，**按顺序把这一排均匀铺开**
+ *   （间距至少一个网格；边太短铺不开时也只能尽量均匀，至少不会叠在同一个点上）
+ * - 标签锚点按新本体重算（上下引脚的竖排名字才不会跑到别处）
+ *
+ * 只返回真有变化的引脚；`edges` 用不到，保留参数是为了将来做"只重排被拖边"的优化。
+ */
+export const reattachPinsToBounds = (
+  section: NormalizedSymbolSection,
+  sectionIndex: number,
+  bounds: SymbolBox,
+  snap: SnapState,
+): PinAttachEntry[] => {
+  const body = normalizeBox(bounds);
+  const along = (value: number): number => (snap.enabled ? snapValue(value, snap.grid) : value);
+  const sides: readonly PinSide[] = ["left", "right", "top", "bottom"];
+
+  // ① 每个引脚按它当前所属的边重建
+  const rebuilt = section.pins.map((pin) => {
+    const side = pinSideOf(pin);
+    const horizontal = side === "left" || side === "right";
+    const span = Math.max(
+      Math.abs(pin.connection.x - pin.body.x),
+      Math.abs(pin.connection.y - pin.body.y),
+      1,
+    );
+    const perpendicular = clamp(
+      horizontal ? pin.body.y : pin.body.x,
+      horizontal ? body.minY : body.minX,
+      horizontal ? body.maxY : body.maxX,
+    );
+    const points: SymbolPinPoints = horizontal
+      ? {
+          body: { x: side === "left" ? body.minX : body.maxX, y: perpendicular },
+          connection: {
+            x: (side === "left" ? body.minX : body.maxX) + (side === "left" ? -span : span),
+            y: perpendicular,
+          },
+        }
+      : {
+          body: { x: perpendicular, y: side === "top" ? body.minY : body.maxY },
+          connection: {
+            x: perpendicular,
+            y: (side === "top" ? body.minY : body.maxY) + (side === "top" ? -span : span),
+          },
+        };
+    return { side, points };
+  });
+
+  // ② 同一排里出现重叠 → 按顺序均匀铺开
+  const minGap = snap.enabled ? Math.max(snap.grid, 1) : 1;
+  for (const side of sides) {
+    const indices = rebuilt
+      .map((item, index) => ({ item, index }))
+      .filter(({ item }) => item.side === side)
+      .sort(
+        (a, b) =>
+          (side === "left" || side === "right"
+            ? a.item.points.body.y - b.item.points.body.y
+            : a.item.points.body.x - b.item.points.body.x),
+      );
+    if (indices.length < 2) {
+      continue;
+    }
+    const coordinate = (index: number): number =>
+      side === "left" || side === "right"
+        ? rebuilt[index].points.body.y
+        : rebuilt[index].points.body.x;
+    const ordered = indices.map(({ index }) => coordinate(index));
+    const overlapping = ordered.some(
+      (value, position) => position > 0 && value - ordered[position - 1] < minGap - 1e-6,
+    );
+    if (!overlapping) {
+      continue;
+    }
+    const low = side === "left" || side === "right" ? body.minY : body.minX;
+    const high = side === "left" || side === "right" ? body.maxY : body.maxX;
+    const step = (high - low) / (indices.length - 1);
+    indices.forEach(({ index }, position) => {
+      const value = along(low + step * position);
+      const points = rebuilt[index].points;
+      rebuilt[index] = {
+        side,
+        points:
+          side === "left" || side === "right"
+            ? {
+                body: { ...points.body, y: value },
+                connection: { ...points.connection, y: value },
+              }
+            : {
+                body: { ...points.body, x: value },
+                connection: { ...points.connection, x: value },
+              },
+      };
+    });
+  }
+
+  // ③ 生成 entries：锚点按新边重算，只保留真有变化的
+  const entries: PinAttachEntry[] = [];
+  section.pins.forEach((pin, index) => {
+    const next = rebuilt[index].points;
+    const anchor = pinLabelAnchors({ ...pin, ...next }, body);
+    const geometryChanged =
+      !samePoint(next.body, pin.body) || !samePoint(next.connection, pin.connection);
+    const anchorChanged =
+      !sameOptionalPoint(anchor.name, pin.labelAnchor?.name) ||
+      !sameOptionalPoint(anchor.number, pin.labelAnchor?.number);
+    if (!geometryChanged && !anchorChanged) {
+      return;
+    }
+    entries.push({
+      key: symbolPinKey(sectionIndex, index),
+      points: { ...next, labelAnchor: anchor },
+    });
+  });
+  return entries;
 };
