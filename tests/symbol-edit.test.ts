@@ -11,6 +11,7 @@ import {
   isSymbolPinKey,
   parseSymbolEditKey,
   appendAddedTexts,
+  setPinText,
   setRectBounds,
   setTextContent,
   symbolPinKey,
@@ -347,5 +348,29 @@ describe("append added texts (user 2026-10-21)", () => {
     const base = symbol();
     expect(appendAddedTexts(base, undefined)).toBe(base);
     expect(appendAddedTexts(base, [])).toBe(base);
+  });
+});
+
+describe("pin text edit (user 2026-10-22)", () => {
+  it("setPinText 改引脚名并保留其它编辑", () => {
+    const key = symbolPinKey(0, 0);
+    const edits = setPinText({ [key]: { offset: { dx: 3, dy: 0 } } }, key, "name", "VIN");
+    expect(edits[key]).toEqual({ offset: { dx: 3, dy: 0 }, pinText: { name: "VIN" } });
+  });
+
+  it("applySymbolEdits 用新引脚名/脚号渲染", () => {
+    const key = symbolPinKey(0, 0);
+    const applied = applySymbolEdits(symbol(), {
+      [key]: { pinText: { name: "VBUS", number: "A1" } },
+    });
+    const pin = applied.sections[0].pins[0];
+    expect(pin.name).toBe("VBUS");
+    expect(pin.number).toBe("A1");
+  });
+
+  it("只改 name 时 number 保持原值", () => {
+    const key = symbolPinKey(0, 0);
+    const applied = applySymbolEdits(symbol(), { [key]: { pinText: { name: "X" } } });
+    expect(applied.sections[0].pins[0].number).toBe("1");
   });
 });

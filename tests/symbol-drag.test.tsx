@@ -94,6 +94,7 @@ const mount = (
       dragged: unknown,
     ) => void;
     readonly onTextEdit?: (key: string, text: string) => void;
+    readonly onPinTextEdit?: (key: string, kind: "name" | "number", text: string) => void;
     readonly onReorientPins?: (
       entries: readonly {
         readonly key: string;
@@ -124,6 +125,7 @@ const mount = (
       snap={options.snap}
       onReorientPins={options.onReorientPins}
       onTextEdit={options.onTextEdit}
+      onPinTextEdit={options.onPinTextEdit}
     />,
   );
   const draggable = view.container.querySelectorAll('[data-draggable="true"]');
@@ -399,5 +401,39 @@ describe("text double-click editing (user 2026-10-21)", () => {
     fireEvent.keyDown(input, { key: "Escape", bubbles: true });
     expect(onTextEdit).not.toHaveBeenCalled();
     expect(document.querySelector('[data-testid="text-editor"]')).toBeNull();
+  });
+});
+
+describe("pin label double-click editing (user 2026-10-22)", () => {
+  it("双击引脚名（EP25 这类）进入编辑，Enter 提交", () => {
+    const onPinTextEdit = vi.fn();
+    const { container } = render(
+      <SymbolPreview
+        symbol={symbol}
+        sectionIndex={0}
+        scale={1}
+        edits={{}}
+        editing
+        selectedKeys={new Set<string>()}
+        onSelectKeys={() => {}}
+        onMoveElements={() => {}}
+        onResizeRect={() => {}}
+        onPinTextEdit={onPinTextEdit}
+      />,
+    );
+    const nameLabel = [...container.querySelectorAll("text")].find(
+      (node) => node.textContent === "P1",
+    );
+    expect(nameLabel).toBeTruthy();
+    fireEvent.doubleClick(nameLabel!);
+
+    const input = document.querySelector('[data-testid="pin-label-editor"]') as HTMLInputElement;
+    expect(input).not.toBeNull();
+    expect(input.value).toBe("P1");
+
+    fireEvent.change(input, { target: { value: "EP25" } });
+    fireEvent.keyDown(input, { key: "Enter", bubbles: true });
+    expect(onPinTextEdit).toHaveBeenCalledWith("p0:0", "name", "EP25");
+    expect(document.querySelector('[data-testid="pin-label-editor"]')).toBeNull();
   });
 });

@@ -80,6 +80,7 @@ import {
   appendAddedTexts,
   hasSymbolEdits,
   setPinPoints,
+  setPinText,
   setRectBounds,
   setTextContent,
   type RectEdges,
@@ -1448,6 +1449,17 @@ const ConverterPage = ({
     setTextEditRequest({ key, nonce: Date.now() });
   }, [previewBounds, previewSection, sectionIndex, selectedKeyId, snapGrid]);
 
+  /** 双击引脚名/脚号改字（用户 2026-10-22）：一次提交 = 一个撤销点。 */
+  const editPinText = useCallback(
+    (key: string, kind: "name" | "number", text: string): void => {
+      if (selectedKeyId === null) {
+        return;
+      }
+      mutateSymbolEdits(selectedKeyId, (edits) => setPinText(edits, key, kind, text), false);
+    },
+    [mutateSymbolEdits, selectedKeyId],
+  );
+
   /** 编辑模式下点画布空白处 = 取消选中当前元素。 */
   const clearSymbolSelection = useCallback((): void => {
     setSelectedKeys([]);
@@ -2644,6 +2656,7 @@ const ConverterPage = ({
                     onResizeRect={resizeSelectedRect}
                     onReorientPins={reorientPins}
                     onTextEdit={editTextContent}
+                    onPinTextEdit={editPinText}
                     textEditRequest={textEditRequest}
                     snap={snapState}
                   />
@@ -2686,7 +2699,7 @@ const ConverterPage = ({
               <span><i className="legend-pad" />引脚</span>
               <span>
                 {editMode
-                  ? `编辑中：拖元素移动 · 框选/Shift 追加/Ctrl 切换 · Ctrl+A 全选 · 拖框线改大小 · ←↑→↓ 一格（Shift 精调/Alt 粗调） · 空格 旋转文本 · [ ] 字号 · Ctrl+Z 退回 · Esc 取消 · 网格 ${gridMil(snapGrid)} mil${snapEnabled ? " 吸附开" : " 吸附关（写库按实际坐标）"}`
+                  ? `编辑中：拖元素移动 · 双击文本/引脚标签改字 · T 加文本 · 框选/Shift 追加/Ctrl 切换 · Ctrl+A 全选 · 拖框线改大小 · ←↑→↓ 一格（Shift 精调/Alt 粗调） · 空格 旋转文本 · [ ] 字号 · Ctrl+Z 退回 · Esc 取消 · 网格 ${gridMil(snapGrid)} mil${snapEnabled ? " 吸附开" : " 吸附关（写库按实际坐标）"}`
                   : "点「编辑」后按住鼠标左键拖动文字、图形与引脚（滚轮缩放照常可用）"}
                 {hasSymbolEdits(selectedEdit.symbolEdits) ? (
                   <button

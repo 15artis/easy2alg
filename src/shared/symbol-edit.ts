@@ -131,6 +131,11 @@ export type SymbolEdit = {
   readonly points?: SymbolPinPoints;
   /** 文本内容替换（用户 2026-10-21：双击文本直接改字）。空串 = 清空显示 */
   readonly text?: string;
+  /** 引脚名/脚号替换（用户 2026-10-22：双击引脚标签直接改字）。空串 = 清空显示 */
+  readonly pinText?: {
+    readonly name?: string;
+    readonly number?: string;
+  };
 };
 
 export type SymbolEdits = Readonly<Record<string, SymbolEdit>>;
@@ -147,7 +152,8 @@ const isDefaultEdit = (edit: SymbolEdit): boolean =>
   (edit.fontSize === undefined || edit.fontSize === 1) &&
   edit.bounds === undefined &&
   edit.points === undefined &&
-  edit.text === undefined;
+  edit.text === undefined &&
+  edit.pinText === undefined;
 
 /** 写入一个键的编辑；整条变成默认值就把键删掉（避免留下一堆空记录）。 */
 const putEdit = (edits: SymbolEdits, key: string, edit: SymbolEdit): SymbolEdits => {
@@ -206,9 +212,16 @@ export const applySymbolEdits = (
       }),
       pins: section.pins.map((pin, pinIndex) => {
         const edit = pinEdits.get(symbolPinKey(sectionIndex, pinIndex));
-        // ① 重定向：两点是绝对坐标，直接覆盖；标签锚点作废（换边后旧锚点全错），
-        //    让预览回退到"按新边重新推导"。
+        // ① 引脚名/脚号替换（双击标签改字）
         let next = pin;
+        if (edit?.pinText?.name !== undefined) {
+          next = { ...next, name: edit.pinText.name };
+        }
+        if (edit?.pinText?.number !== undefined) {
+          next = { ...next, number: edit.pinText.number };
+        }
+        // ② 重定向：两点是绝对坐标，直接覆盖；标签锚点作废（换边后旧锚点全错），
+        //    让预览回退到"按新边重新推导"。
         if (edit?.points !== undefined) {
           next = {
             ...pin,
@@ -220,7 +233,7 @@ export const applySymbolEdits = (
         if (edit?.offset === undefined || (edit.offset.dx === 0 && edit.offset.dy === 0)) {
           return next;
         }
-        // ② 平移。引脚文字锚点必须跟引脚一起平移，否则"拖引脚时标签不动、拖本体时标签乱跑"
+        // ③ 平移。引脚文字锚点必须跟引脚一起平移，否则"拖引脚时标签不动、拖本体时标签乱跑"
         // （用户 2026-10-19 反馈的"标签与引脚分离/间距越拖越宽"）。
         const anchor = next.labelAnchor;
         return {
@@ -345,6 +358,18 @@ export const setPinPoints = (
 /** 直接设定文本内容（双击编辑）。空串合法 = 清空显示。 */
 export const setTextContent = (edits: SymbolEdits, key: string, text: string): SymbolEdits =>
   putEdit(edits, key, { ...edits[key], text });
+
+/** 直接设定引脚名 / 脚号（双击引脚标签）。空串合法 = 清空显示。 */
+export const setPinText = (
+  edits: SymbolEdits,
+  key: string,
+  kind: "name" | "number",
+  text: string,
+): SymbolEdits =>
+  putEdit(edits, key, {
+    ...edits[key],
+    pinText: { ...edits[key]?.pinText, [kind]: text },
+  });
 
 /** 直接设定字号倍数（0.4–4）。 */
 export const setFontSize = (edits: SymbolEdits, key: string, factor: number): SymbolEdits => {

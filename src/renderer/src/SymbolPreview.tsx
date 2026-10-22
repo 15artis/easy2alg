@@ -95,10 +95,12 @@ const Label = ({
   text,
   placement,
   color,
+  onDoubleClick,
 }: {
   readonly text: string;
   readonly placement: LabelPlacement;
   readonly color: string;
+  readonly onDoubleClick?: () => void;
 }): ReactElement => (
   /* 不设 dominant-baseline：默认基线正好落在引脚线上，与 Capture 的画法一致。 */
   <text
@@ -112,6 +114,7 @@ const Label = ({
         ? undefined
         : `rotate(${placement.rotate} ${placement.x} ${placement.y})`
     }
+    onDoubleClick={onDoubleClick}
   >
     {text}
   </text>
@@ -459,6 +462,7 @@ const SymbolPins = memo(
     onResizeRect,
     snap,
     onMoveEnd,
+    onEditPinLabel,
   }: {
     readonly sectionIndex: number;
     readonly pins: readonly NormalizedSymbolPin[];
@@ -474,6 +478,12 @@ const SymbolPins = memo(
     readonly onMoveEnd?: (
       keys: readonly string[],
       delta: { readonly dx: number; readonly dy: number },
+    ) => void;
+    /** 双击引脚名/脚号 → 就地改字（用户 2026-10-22） */
+    readonly onEditPinLabel?: (
+      pinIndex: number,
+      kind: "name" | "number",
+      text: string,
     ) => void;
   }): ReactElement => {
     const drag = useElementDrag(
@@ -528,11 +538,21 @@ const SymbolPins = memo(
                     text={pin.number}
                     placement={placeLabel(pin, pinNumberBox(pin, body), pin.labelAnchor?.number)}
                     color={active ? ACTIVE : PIN_NUMBER}
+                    onDoubleClick={
+                      onEditPinLabel === undefined
+                        ? undefined
+                        : () => onEditPinLabel(pinIndex, "number", pin.number)
+                    }
                   />
                   <Label
                     text={pin.name}
                     placement={placeLabel(pin, pinNameBox(pin, body), pin.labelAnchor?.name)}
                     color={active ? ACTIVE : PIN_NAME}
+                    onDoubleClick={
+                      onEditPinLabel === undefined
+                        ? undefined
+                        : () => onEditPinLabel(pinIndex, "name", pin.name)
+                    }
                   />
                 </>
               ) : null}
@@ -569,6 +589,7 @@ export const SymbolPreview = ({
   onReorientPins,
   onTextEdit,
   textEditRequest,
+  onPinTextEdit,
   snap = { enabled: true, grid: SYMBOL_PIN_GRID },
 }: {
   readonly symbol: NormalizedSymbol;
@@ -597,6 +618,12 @@ export const SymbolPreview = ({
   readonly onTextEdit?: (key: string, text: string) => void;
   /** 「添加文本」后请求打开行内编辑（nonce 变化即触发） */
   readonly textEditRequest?: { readonly key: string; readonly nonce: number } | null;
+  /** 双击引脚标签提交新名/脚号（用户 2026-10-22） */
+  readonly onPinTextEdit?: (
+    key: string,
+    kind: "name" | "number",
+    text: string,
+  ) => void;
 }): ReactElement => {
   const section = symbol.sections[Math.min(sectionIndex, symbol.sections.length - 1)];
 
@@ -651,6 +678,26 @@ export const SymbolPreview = ({
   const [textEditKey, setTextEditKey] = useState<string | null>(null);
   const [textDraft, setTextDraft] = useState("");
   const textInputElement = useRef<HTMLInputElement | null>(null);
+  /** 双击引脚名/脚号的行内编辑（用户 2026-10-22） */
+  const [pinEdit, setPinEdit] = useState<{
+    readonly pinIndex: number;
+    readonly kind: "name" | "number";
+    readonly text: string;
+  } | null>(null);
+  const pinInputElement = useRef<HTMLInputElement | null>(null);
+  const openPinEdit = useCallback((pinIndex: number, kind: "name" | "number", text: string): void => {
+    setPinEdit({ pinIndex, kind, text });
+  }, []);
+  useEffect(() => {
+    if (pinEdit !== null) {
+      pinInputElement.current?.focus();
+    }
+  }, [pinEdit]);
+  useEffect(() => {
+    if (!editing) {
+      setPinEdit(null);
+    }
+  }, [editing]);
   useEffect(() => {
     if (textEditKey === null) {
       return;
@@ -668,17 +715,25 @@ export const SymbolPreview = ({
   // 「添加文本」请求：打开对应形状的行内编辑器，草稿预填形状当前文本
   const requestNonce = textEditRequest === undefined || textEditRequest === null ? -1 : textEditRequest.nonce;
   const requestKey = textEditRequest === undefined || textEditRequest === null ? null : textEditRequest.key;
+  /**
+   * 只认 nonce 变化，**不能把 section 放进依赖**：提交后 symbol 变了 → section 换了引用
+   * → effect 重跑 → 编辑器立刻又打开，看起来就像"Enter 提交不了、只有 Esc 能退出"
+   * （用户 2026-10-22 报的）。nonce 用 ref 去重，shape 从当次 render 的 section 读。
+   */
+  const handledRequestRef = useRef(-1);
   useEffect(() => {
-    if (requestKey === null || requestNonce < 0) {
+    if (requestKey === null || requestNonce < 0 || handledRequestRef.current === requestNonce) {
       return;
     }
+    handledRequestRef.current = requestNonce;
     const shape = section.shapes[Number(requestKey.split(":")[1] ?? -1)];
     if (shape === undefined || shape.kind !== "text") {
       return;
     }
     setTextDraft(shape.text);
     setTextEditKey(requestKey);
-  }, [requestKey, requestNonce, section]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestKey, requestNonce]);
 
   const commitTextEdit = useCallback((): void => {
     if (textEditKey !== null && onTextEdit !== undefined) {
@@ -907,7 +962,78 @@ export const SymbolPreview = ({
         onResizeRect={onResizeRect}
         snap={snap}
         onMoveEnd={finishMove}
+        onEditPinLabel={onPinTextEdit === undefined ? undefined : openPinEdit}
       />
+
+      {/* 引脚名/脚号的行内编辑：位置跟着标签锚点，旋转跟着边（上下引脚竖排） */}
+      {editing && pinEdit !== null
+        ? (() => {
+            const pin = section.pins[pinEdit.pinIndex];
+            if (pin === undefined) {
+              return null;
+            }
+            const placement = placeLabel(
+              pin,
+              pinEdit.kind === "name" ? pinNameBox(pin, body) : pinNumberBox(pin, body),
+              pin.labelAnchor?.[pinEdit.kind],
+            );
+            const width = Math.max(40, estimateLabelWidth(pinEdit.text) * 1.4 + 16);
+            const commitPinEdit = (): void => {
+              if (onPinTextEdit !== undefined) {
+                onPinTextEdit(
+                  symbolPinKey(sectionIndex, pinEdit.pinIndex),
+                  pinEdit.kind,
+                  pinEdit.text.replace(/[\r\n]+/g, " "),
+                );
+              }
+              setPinEdit(null);
+            };
+            return (
+              <foreignObject
+                x={placement.anchor === "end" ? placement.x - width : placement.x - 3}
+                y={placement.y - PIN_FONT * 1.15}
+                width={width}
+                height={PIN_FONT * 1.7}
+                transform={
+                  placement.rotate === 0
+                    ? undefined
+                    : `rotate(${placement.rotate} ${placement.x} ${placement.y})`
+                }
+                onPointerDown={(event) => event.stopPropagation()}
+              >
+                <input
+                  ref={pinInputElement}
+                  value={pinEdit.text}
+                  onChange={(event) => setPinEdit({ ...pinEdit, text: event.target.value })}
+                  onBlur={commitPinEdit}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      commitPinEdit();
+                    } else if (event.key === "Escape") {
+                      event.preventDefault();
+                      setPinEdit(null);
+                    }
+                  }}
+                  spellCheck={false}
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    fontSize: `${PIN_FONT}px`,
+                    lineHeight: 1,
+                    padding: "0 3px",
+                    color: pinEdit.kind === "name" ? PIN_NAME : PIN_NUMBER,
+                    background: "white",
+                    border: "1px solid #e0862c",
+                    outline: "none",
+                    fontFamily: "inherit",
+                  }}
+                  data-testid="pin-label-editor"
+                />
+              </foreignObject>
+            );
+          })()
+        : null}
     </g>
   );
 };
