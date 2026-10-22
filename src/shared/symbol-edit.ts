@@ -136,6 +136,11 @@ export type SymbolEdit = {
     readonly name?: string;
     readonly number?: string;
   };
+  /**
+   * 删除这条注释文本（用户 2026-10-22）。**用隐藏而不是从数组里删**：
+   * 形状下标是编辑键的一部分，一旦删除后续所有编辑都会错位。
+   */
+  readonly hidden?: boolean;
 };
 
 export type SymbolEdits = Readonly<Record<string, SymbolEdit>>;
@@ -153,7 +158,8 @@ const isDefaultEdit = (edit: SymbolEdit): boolean =>
   edit.bounds === undefined &&
   edit.points === undefined &&
   edit.text === undefined &&
-  edit.pinText === undefined;
+  edit.pinText === undefined &&
+  edit.hidden !== true;
 
 /** 写入一个键的编辑；整条变成默认值就把键删掉（避免留下一堆空记录）。 */
 const putEdit = (edits: SymbolEdits, key: string, edit: SymbolEdit): SymbolEdits => {
@@ -198,6 +204,9 @@ export const applySymbolEdits = (
         }
         if (edit?.text !== undefined) {
           next = { ...next, text: edit.text };
+        }
+        if (edit?.hidden === true) {
+          next = { ...next, hidden: true };
         }
         if (edit?.rotate !== undefined && edit.rotate !== 0) {
           next = { ...next, rotation: next.rotation + edit.rotate * 90 };
@@ -358,6 +367,10 @@ export const setPinPoints = (
 /** 直接设定文本内容（双击编辑）。空串合法 = 清空显示。 */
 export const setTextContent = (edits: SymbolEdits, key: string, text: string): SymbolEdits =>
   putEdit(edits, key, { ...edits[key], text });
+
+/** 删除 / 恢复一条注释文本（隐藏，不移动下标）。 */
+export const setTextHidden = (edits: SymbolEdits, key: string, hidden: boolean): SymbolEdits =>
+  putEdit(edits, key, { ...edits[key], hidden });
 
 /** 直接设定引脚名 / 脚号（双击引脚标签）。空串合法 = 清空显示。 */
 export const setPinText = (

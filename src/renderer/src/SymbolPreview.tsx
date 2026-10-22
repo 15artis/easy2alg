@@ -161,6 +161,15 @@ type DragState =
 /** 按下后移动不到这么多像素就当"点击选中"，不移动元素。 */
 const DRAG_SLOP_PX = 3;
 
+/**
+ * 双击识别（用户 2026-10-22）。**不能依赖浏览器的 dblclick**：
+ * 按下元素时我们调了 `setPointerCapture`，Chromium 会把随后的 click/dblclick
+ * 重定向到捕捉元素，子节点（`<text>` 标签）上的 onDoubleClick 永远收不到。
+ * 所以自己在 pointerdown 层按"同元素 + 400ms + 8px"判双击。
+ */
+const DOUBLE_TAP_MS = 400;
+const DOUBLE_TAP_SLOP_PX = 8;
+
 const resizeCursor = (edges: RectEdges): string => {
   const horizontal = edges.left || edges.right;
   const vertical = edges.top || edges.bottom;
@@ -234,11 +243,21 @@ const useElementDrag = (
   onResizeRect: (key: string, bounds: SymbolShapeBounds, dragged: RectEdges) => void,
   snap: SnapState,
   onMoveEnd?: (keys: readonly string[], delta: { readonly dx: number; readonly dy: number }) => void,
+  onDoubleTap?: (key: string, point: { readonly x: number; readonly y: number } | null) => void,
 ) => {
   const dragRef = useRef<DragState | null>(null);
   /** 松手回调（引脚换边重定向）走 ref：capture 监听只挂一次，不能因回调换引用重装。 */
   const onMoveEndRef = useRef(onMoveEnd);
   onMoveEndRef.current = onMoveEnd;
+  const onDoubleTapRef = useRef(onDoubleTap);
+  onDoubleTapRef.current = onDoubleTap;
+  /** 上一次按下的元素与位置（判双击用） */
+  const lastTapRef = useRef<{
+    readonly key: string;
+    readonly time: number;
+    readonly x: number;
+    readonly y: number;
+  } | null>(null);
 
   /**
    * 兜底：**任何** pointerup / pointercancel / 窗口失焦都要把拖动状态清掉。
@@ -282,6 +301,21 @@ const useElementDrag = (
         event.ctrlKey || event.metaKey ? "toggle" : event.shiftKey ? "add" : "replace";
       if (mode !== "replace") {
         onSelectKeys([key], mode);
+        return;
+      }
+      // 双击 = 就地改字（不动拖动状态）
+      const now = Date.now();
+      const previous = lastTapRef.current;
+      const isDoubleTap =
+        previous !== null &&
+        previous.key === key &&
+        now - previous.time <= DOUBLE_TAP_MS &&
+        Math.hypot(event.clientX - previous.x, event.clientY - previous.y) <= DOUBLE_TAP_SLOP_PX;
+      lastTapRef.current = isDoubleTap
+        ? null
+        : { key, time: now, x: event.clientX, y: event.clientY };
+      if (isDoubleTap) {
+        onDoubleTapRef.current?.(key, worldPoint(event));
         return;
       }
       // 已选中的元素 → 整组一起移动；没选中 → 只选它自己（替换选中态）
@@ -462,6 +496,7 @@ const SymbolPins = memo(
     onResizeRect,
     snap,
     onMoveEnd,
+    onDoubleTap,
     onEditPinLabel,
   }: {
     readonly sectionIndex: number;
@@ -479,6 +514,11 @@ const SymbolPins = memo(
       keys: readonly string[],
       delta: { readonly dx: number; readonly dy: number },
     ) => void;
+    /** 双击（pointerdown 层识别）→ 就地改字 */
+    readonly onDoubleTap?: (
+      key: string,
+      point: { readonly x: number; readonly y: number } | null,
+    ) => void;
     /** 双击引脚名/脚号 → 就地改字（用户 2026-10-22） */
     readonly onEditPinLabel?: (
       pinIndex: number,
@@ -495,6 +535,7 @@ const SymbolPins = memo(
       onResizeRect,
       snap,
       onMoveEnd,
+      onDoubleTap,
     );
 
     return (
@@ -663,6 +704,51 @@ export const SymbolPreview = ({
     [section, snap, onReorientPins],
   );
 
+  /**
+   * 双击结算：注释文本 → 改内容；引脚 → 按落点离名字/脚号哪个近，改那一个。
+   * 走 ref 包装保证引用稳定（SymbolPins 是 memo 的，每帧换回调会把引脚层打穿）。
+   */
+  const handleDoubleTapRef = useRef<
+    (key: string, point: { readonly x: number; readonly y: number } | null) => void
+  >(() => undefined);
+  handleDoubleTapRef.current = (key, point) => {
+    const { index } = parseSymbolEditKey(key);
+    if (isSymbolPinKey(key)) {
+      if (onPinTextEdit === undefined) {
+        return;
+      }
+      const pin = section.pins[index];
+      if (pin === undefined) {
+        return;
+      }
+      const body = bodyBoxOf(section);
+      const centerOfBox = (box: { minX: number; minY: number; maxX: number; maxY: number }) => ({
+        x: (box.minX + box.maxX) / 2,
+        y: (box.minY + box.maxY) / 2,
+      });
+      const nameCenter = centerOfBox(pinNameBox(pin, body));
+      const numberCenter = centerOfBox(pinNumberBox(pin, body));
+      let kind: "name" | "number" = "name";
+      if (point !== null) {
+        const toNumber = Math.hypot(point.x - numberCenter.x, point.y - numberCenter.y);
+        const toName = Math.hypot(point.x - nameCenter.x, point.y - nameCenter.y);
+        kind = toNumber < toName ? "number" : "name";
+      }
+      setPinEdit({ pinIndex: index, kind, text: kind === "name" ? pin.name : pin.number });
+      return;
+    }
+    const shape = section.shapes[index];
+    if (shape !== undefined && shape.kind === "text" && onTextEdit !== undefined && shape.hidden !== true) {
+      setTextDraft(shape.text);
+      setTextEditKey(key);
+    }
+  };
+  const onDoubleTap = useCallback(
+    (key: string, point: { readonly x: number; readonly y: number } | null): void =>
+      handleDoubleTapRef.current(key, point),
+    [],
+  );
+
   const drag = useElementDrag(
     editing,
     scaleRef,
@@ -672,6 +758,7 @@ export const SymbolPreview = ({
     onResizeRect,
     snap,
     finishMove,
+    onDoubleTap,
   );
 
   /** 双击文本的行内编辑（用户 2026-10-21）。foreignObject 里放 input，随世界坐标缩放。 */
@@ -763,6 +850,9 @@ export const SymbolPreview = ({
     <g className="symbol-preview">
       {section.shapes.map((shape, shapeIndex) => {
         const key = symbolShapeKey(sectionIndex, shapeIndex);
+        if (shape.kind === "text" && shape.hidden === true) {
+          return null; // 用户删除的注释文本：保留下标、不画
+        }
         const active = selectedKeys.has(key);
         const edit = edits[key];
         const offset = edit?.offset;
@@ -962,6 +1052,7 @@ export const SymbolPreview = ({
         onResizeRect={onResizeRect}
         snap={snap}
         onMoveEnd={finishMove}
+        onDoubleTap={onDoubleTap}
         onEditPinLabel={onPinTextEdit === undefined ? undefined : openPinEdit}
       />
 

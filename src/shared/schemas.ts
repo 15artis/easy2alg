@@ -273,10 +273,13 @@ export const NormalizedSymbolShapeSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("text"),
-    text: z.string().min(1),
+    // 允许空串：用户可以把文本清空（显示为空），写库时该条 CommentText 也就没有内容
+    text: z.string(),
     at: PointSchema,
     rotation: z.number().finite(),
     height: z.number().positive(),
+    /** 用户在预览里删除了这条注释文本（用户 2026-10-22）。隐藏但保留下标，避免编辑键错位 */
+    hidden: z.boolean().optional(),
   }),
 ]);
 export type NormalizedSymbolShape = z.infer<typeof NormalizedSymbolShapeSchema>;

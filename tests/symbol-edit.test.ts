@@ -13,6 +13,7 @@ import {
   appendAddedTexts,
   setPinText,
   setRectBounds,
+  setTextHidden,
   setTextContent,
   symbolPinKey,
   symbolShapeKey,
@@ -372,5 +373,23 @@ describe("pin text edit (user 2026-10-22)", () => {
     const key = symbolPinKey(0, 0);
     const applied = applySymbolEdits(symbol(), { [key]: { pinText: { name: "X" } } });
     expect(applied.sections[0].pins[0].number).toBe("1");
+  });
+});
+
+describe("hide comment text (user 2026-10-22)", () => {
+  it("setTextHidden 标记隐藏；恢复时移除该字段", () => {
+    const key = symbolShapeKey(0, 2);
+    const hidden = setTextHidden({}, key, true);
+    expect(hidden[key]?.hidden).toBe(true);
+    expect(hasSymbolEdits(hidden)).toBe(true);
+    expect(setTextHidden(hidden, key, false)).toEqual({});
+  });
+
+  it("applySymbolEdits 给文本打上 hidden（保留下标）", () => {
+    const key = symbolShapeKey(0, 2);
+    const applied = applySymbolEdits(symbol(), setTextHidden({}, key, true));
+    const shapes = applied.sections[0].shapes;
+    expect(shapes).toHaveLength(3);
+    expect(shapes[2].kind === "text" ? shapes[2].hidden : undefined).toBe(true);
   });
 });

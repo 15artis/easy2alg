@@ -2607,3 +2607,18 @@ select:focus,
 .engineering-canvas.symbol-canvas {
   background: #f8fafc;
 }
+
+.symbol-props-delete {
+  width: 100%;
+  height: 26px;
+  margin-top: 8px;
+  color: #b42318;
+  background: #fff5f4;
+  border: 1px solid #f0b7b1;
+  border-radius: 6px;
+  font-size: 11px;
+}
+
+.symbol-props-delete:hover {
+  background: #ffe9e7;
+}

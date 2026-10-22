@@ -67,10 +67,13 @@ export const SymbolProperties = ({
   element,
   snap,
   onField,
+  onDelete,
 }: {
   readonly element: ElementProps;
   readonly snap: SnapState;
   readonly onField: (field: ElementField, value: number) => void;
+  /** 删除这条文本（用户 2026-10-22）；只有文本元素会传 */
+  readonly onDelete?: () => void;
 }): ReactElement => {
   const commit = (field: ElementField) => (value: number) => {
     // 位置与尺寸落在网格上；字号/旋转是离散值，不参与吸附
@@ -130,6 +133,17 @@ export const SymbolProperties = ({
           </>
         ) : null}
       </div>
+      {onDelete === undefined ? null : (
+        <button
+          type="button"
+          className="symbol-props-delete"
+          onClick={onDelete}
+          title="删除这条文本（Ctrl+Z 可撤回）"
+          data-testid="prop-delete"
+        >
+          删除文本
+        </button>
+      )}
     </div>
   );
 };

@@ -357,6 +357,10 @@ const normalViewCommands = (
     "        </Reference>",
   );
   for (const shape of section.shapes) {
+    // 用户在预览里删掉的注释文本：留位（下标稳定）但不写进库
+    if (shape.kind === "text" && shape.hidden === true) {
+      continue;
+    }
     commands.push(...shapeCommands(shape));
   }
   section.pins.forEach((pin, index) => {

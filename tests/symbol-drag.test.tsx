@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render } from "@testing-library/react";
+import { act } from "react";
 import { SymbolPreview } from "../src/renderer/src/SymbolPreview";
 import type { NormalizedSymbol } from "../src/shared/schemas";
 
@@ -435,5 +436,67 @@ describe("pin label double-click editing (user 2026-10-22)", () => {
     fireEvent.keyDown(input, { key: "Enter", bubbles: true });
     expect(onPinTextEdit).toHaveBeenCalledWith("p0:0", "name", "EP25");
     expect(document.querySelector('[data-testid="pin-label-editor"]')).toBeNull();
+  });
+});
+
+/**
+ * 用户 2026-10-22：dblclick 在真机上收不到 —— 按下元素时 setPointerCapture 会把
+ * click/dblclick 重定向到捕捉元素。改成 pointerdown 层判"同元素 + 400ms + 8px"。
+ */
+describe("double tap on pointerdown (user 2026-10-22)", () => {
+  const tapTwice = (element: Element, x: number, y: number): void => {
+    // 原生 dispatchEvent 不经过 act：状态更新不会同步 flush，查 DOM 会拿到旧树
+    act(() => {
+      firePointer(element, "pointerdown", { x, y, buttons: 1 });
+      firePointer(element, "pointerup", { x, y, buttons: 0 });
+      firePointer(element, "pointerdown", { x, y, buttons: 1 });
+      firePointer(element, "pointerup", { x, y, buttons: 0 });
+    });
+  };
+
+  it("双击引脚（任意位置）打开引脚名编辑器", () => {
+    const { container } = render(
+      <SymbolPreview
+        symbol={symbol}
+        sectionIndex={0}
+        scale={1}
+        edits={{}}
+        editing
+        selectedKeys={new Set<string>()}
+        onSelectKeys={() => {}}
+        onMoveElements={() => {}}
+        onResizeRect={() => {}}
+        onPinTextEdit={() => {}}
+      />,
+    );
+    const pin = container.querySelector('[data-pin="true"]') as Element;
+    tapTwice(pin, 100, 100);
+    const input = document.querySelector('[data-testid="pin-label-editor"]') as HTMLInputElement;
+    expect(input).not.toBeNull();
+    expect(input.value).toBe("P1");
+  });
+
+  it("双击注释文本打开文本编辑器", () => {
+    const { container } = render(
+      <SymbolPreview
+        symbol={symbol}
+        sectionIndex={0}
+        scale={1}
+        edits={{}}
+        editing
+        selectedKeys={new Set<string>()}
+        onSelectKeys={() => {}}
+        onMoveElements={() => {}}
+        onResizeRect={() => {}}
+        onTextEdit={() => {}}
+      />,
+    );
+    const textLabel = [...container.querySelectorAll("text")].find(
+      (node) => node.textContent === "TXT",
+    )!;
+    tapTwice(textLabel, 120, 120);
+    const input = document.querySelector('[data-testid="text-editor"]') as HTMLInputElement;
+    expect(input).not.toBeNull();
+    expect(input.value).toBe("TXT");
   });
 });

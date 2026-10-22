@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { Elibz2Connector } from "../src/main/connectors/elibz2-connector";
 import { autoLibraryPath, inspectLibraryPart } from "../src/main/connectors/capture-writer";
 import { buildCaptureLibraryXml } from "../src/main/conversion/capture-olb";
-import { applySymbolEdits, symbolShapeKey } from "../src/shared/symbol-edit";
+import { applySymbolEdits, setTextHidden, symbolShapeKey } from "../src/shared/symbol-edit";
 import { bodyBoxOf, estimateLabelWidth, pinIsVertical, pinSideOf } from "../src/shared/symbol-labels";
 import type { NormalizedSymbol } from "../src/shared/schemas";
 
@@ -431,5 +431,19 @@ describe("输出可配置项", () => {
   it("单文件夹模式下 .olb 直接落在库目录，不再建 schlib", () => {
     expect(autoLibraryPath("D:/lib", "MyLib")).toBe("D:\\lib\\schlib\\MyLib.olb");
     expect(autoLibraryPath("D:/lib", "MyLib", true)).toBe("D:\\lib\\MyLib.olb");
+  });
+});
+
+describe("deleted comment text", () => {
+  it("隐藏的文本不写进 .olb（其它内容照常）", () => {
+    const symbol = singleSection();
+    const before = buildCaptureLibraryXml(symbol, "C:/libs/test.OLB");
+    expect(before).toContain("TEST");
+
+    const hidden = applySymbolEdits(symbol, setTextHidden({}, symbolShapeKey(0, 1), true));
+    const after = buildCaptureLibraryXml(hidden, "C:/libs/test.OLB");
+    expect(after).not.toContain(">TEST<");
+    // 引脚与本体还在
+    expect(after).toContain("hotptX");
   });
 });

@@ -428,6 +428,10 @@ export const symbolElementBox = (
     case "polyline":
       return boxOfPoints(shape.points);
     default:
+      // 已删除（隐藏）的文本不参与框选/命中
+      if (shape.hidden === true) {
+        return null;
+      }
       // 文字用**预览画出来的占位**（基线在 at.y，字形向上长），而不是写库模型的
       // commentTextBox（基线向下）—— 框选要跟着眼睛看到的走，两者差整整一个字高。
       return normalize({

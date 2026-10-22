@@ -82,6 +82,7 @@ import {
   setPinPoints,
   setPinText,
   setRectBounds,
+  setTextHidden,
   setTextContent,
   type RectEdges,
   type SymbolEdits,
@@ -1460,6 +1461,14 @@ const ConverterPage = ({
     [mutateSymbolEdits, selectedKeyId],
   );
 
+  /** 删除一条注释文本（隐藏，不移动下标，可 Ctrl+Z 撤回 / 重置恢复）。 */
+  const hideSymbolText = useCallback(
+    (id: string, key: string): void => {
+      mutateSymbolEdits(id, (edits) => setTextHidden(edits, key, true), false);
+    },
+    [mutateSymbolEdits],
+  );
+
   /** 编辑模式下点画布空白处 = 取消选中当前元素。 */
   const clearSymbolSelection = useCallback((): void => {
     setSelectedKeys([]);
@@ -1570,6 +1579,19 @@ const ConverterPage = ({
         scaleSymbolText(selected.id, selectedShapeKey, 1.15);
         return;
       }
+      // Delete / Backspace：删除选中的注释文本（引脚/本体不参与，避免误删）
+      if (event.key === "Delete" || event.key === "Backspace") {
+        const index = Number(selectedShapeKey.split(":")[1] ?? -1);
+        const shape = selectedShapeKey.startsWith("p")
+          ? undefined
+          : previewSection?.shapes[index];
+        if (shape !== undefined && shape.kind === "text" && shape.hidden !== true) {
+          event.preventDefault();
+          hideSymbolText(selected.id, selectedShapeKey);
+          setSelectedKeys([]);
+          return;
+        }
+      }
       if (event.key === "Escape") {
         setSelectedKeys([]);
       }
@@ -1587,6 +1609,8 @@ const ConverterPage = ({
     rotateSymbolText,
     scaleSymbolText,
     snapState,
+    previewSection,
+    hideSymbolText,
   ]);
 
   /**
@@ -2608,7 +2632,19 @@ const ConverterPage = ({
             </div>
           ) : null}
           {previewTab === "sch" && editMode && elementProps !== null ? (
-            <SymbolProperties element={elementProps} snap={snapState} onField={commitElementField} />
+            <SymbolProperties
+              element={elementProps}
+              snap={snapState}
+              onField={commitElementField}
+              onDelete={
+                elementProps.kind === "text" && selected !== null
+                  ? () => {
+                      hideSymbolText(selected.id, elementProps.key);
+                      setSelectedKeys([]);
+                    }
+                  : undefined
+              }
+            />
           ) : null}
           {previewTab === "sch" && editedSymbol !== null && previewSection !== null ? (
             <PanZoom
@@ -2699,7 +2735,7 @@ const ConverterPage = ({
               <span><i className="legend-pad" />引脚</span>
               <span>
                 {editMode
-                  ? `编辑中：拖元素移动 · 双击文本/引脚标签改字 · T 加文本 · 框选/Shift 追加/Ctrl 切换 · Ctrl+A 全选 · 拖框线改大小 · ←↑→↓ 一格（Shift 精调/Alt 粗调） · 空格 旋转文本 · [ ] 字号 · Ctrl+Z 退回 · Esc 取消 · 网格 ${gridMil(snapGrid)} mil${snapEnabled ? " 吸附开" : " 吸附关（写库按实际坐标）"}`
+                  ? `编辑中：拖元素移动 · 双击文本/引脚标签改字 · T 加文本 · Delete 删文本 · 框选/Shift 追加/Ctrl 切换 · Ctrl+A 全选 · 拖框线改大小 · ←↑→↓ 一格（Shift 精调/Alt 粗调） · 空格 旋转文本 · [ ] 字号 · Ctrl+Z 退回 · Esc 取消 · 网格 ${gridMil(snapGrid)} mil${snapEnabled ? " 吸附开" : " 吸附关（写库按实际坐标）"}`
                   : "点「编辑」后按住鼠标左键拖动文字、图形与引脚（滚轮缩放照常可用）"}
                 {hasSymbolEdits(selectedEdit.symbolEdits) ? (
                   <button
