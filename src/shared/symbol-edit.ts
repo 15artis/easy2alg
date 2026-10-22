@@ -141,6 +141,11 @@ export type SymbolEdit = {
    * 形状下标是编辑键的一部分，一旦删除后续所有编辑都会错位。
    */
   readonly hidden?: boolean;
+  /**
+   * 只挪引脚标签（名/脚号），**引脚本体留在边框上**（用户 2026-10-22）。
+   * 对齐/分布用在引脚上时走这里 —— 直接挪引脚会让它离开边框。
+   */
+  readonly labelShift?: { readonly dx: number; readonly dy: number };
 };
 
 export type SymbolEdits = Readonly<Record<string, SymbolEdit>>;
@@ -159,7 +164,8 @@ const isDefaultEdit = (edit: SymbolEdit): boolean =>
   edit.points === undefined &&
   edit.text === undefined &&
   edit.pinText === undefined &&
-  edit.hidden !== true;
+  edit.hidden !== true &&
+  (edit.labelShift === undefined || (edit.labelShift.dx === 0 && edit.labelShift.dy === 0));
 
 /** 写入一个键的编辑；整条变成默认值就把键删掉（避免留下一堆空记录）。 */
 const putEdit = (edits: SymbolEdits, key: string, edit: SymbolEdit): SymbolEdits => {
@@ -233,31 +239,46 @@ export const applySymbolEdits = (
         //    让预览回退到"按新边重新推导"。
         if (edit?.points !== undefined) {
           next = {
-            ...pin,
+            ...next,
             connection: edit.points.connection,
             body: edit.points.body,
             labelAnchor: edit.points.labelAnchor,
           };
         }
-        if (edit?.offset === undefined || (edit.offset.dx === 0 && edit.offset.dy === 0)) {
-          return next;
-        }
-        // ③ 平移。引脚文字锚点必须跟引脚一起平移，否则"拖引脚时标签不动、拖本体时标签乱跑"
+        // ③ 整体平移。引脚文字锚点必须跟引脚一起平移，否则"拖引脚时标签不动、拖本体时标签乱跑"
         // （用户 2026-10-19 反馈的"标签与引脚分离/间距越拖越宽"）。
-        const anchor = next.labelAnchor;
-        return {
-          ...next,
-          connection: translateSymbolPoint(next.connection, edit.offset.dx, edit.offset.dy),
-          body: translateSymbolPoint(next.body, edit.offset.dx, edit.offset.dy),
-          ...(anchor === undefined
-            ? {}
-            : {
-                labelAnchor: {
-                  name: translateSymbolPoint(anchor.name, edit.offset.dx, edit.offset.dy),
-                  number: translateSymbolPoint(anchor.number, edit.offset.dx, edit.offset.dy),
-                },
-              }),
-        };
+        if (edit?.offset !== undefined && (edit.offset.dx !== 0 || edit.offset.dy !== 0)) {
+          const anchor = next.labelAnchor;
+          next = {
+            ...next,
+            connection: translateSymbolPoint(next.connection, edit.offset.dx, edit.offset.dy),
+            body: translateSymbolPoint(next.body, edit.offset.dx, edit.offset.dy),
+            ...(anchor === undefined
+              ? {}
+              : {
+                  labelAnchor: {
+                    name: translateSymbolPoint(anchor.name, edit.offset.dx, edit.offset.dy),
+                    number: translateSymbolPoint(anchor.number, edit.offset.dx, edit.offset.dy),
+                  },
+                }),
+          };
+        }
+        // ④ 只挪标签：对齐/分布用在引脚上时走这里，引脚本体留在边框上
+        if (
+          edit?.labelShift !== undefined &&
+          (edit.labelShift.dx !== 0 || edit.labelShift.dy !== 0) &&
+          next.labelAnchor !== undefined
+        ) {
+          const anchor = next.labelAnchor;
+          next = {
+            ...next,
+            labelAnchor: {
+              name: translateSymbolPoint(anchor.name, edit.labelShift.dx, edit.labelShift.dy),
+              number: translateSymbolPoint(anchor.number, edit.labelShift.dx, edit.labelShift.dy),
+            },
+          };
+        }
+        return next;
       }),
     })),
   };
@@ -367,6 +388,20 @@ export const setPinPoints = (
 /** 直接设定文本内容（双击编辑）。空串合法 = 清空显示。 */
 export const setTextContent = (edits: SymbolEdits, key: string, text: string): SymbolEdits =>
   putEdit(edits, key, { ...edits[key], text });
+
+/** 只挪引脚标签（对齐用）：引脚本体不动，保持贴边。 */
+export const accumulateLabelShift = (
+  edits: SymbolEdits,
+  key: string,
+  dx: number,
+  dy: number,
+): SymbolEdits => {
+  const previous = edits[key]?.labelShift;
+  return putEdit(edits, key, {
+    ...edits[key],
+    labelShift: { dx: (previous?.dx ?? 0) + dx, dy: (previous?.dy ?? 0) + dy },
+  });
+};
 
 /** 删除 / 恢复一条注释文本（隐藏，不移动下标）。 */
 export const setTextHidden = (edits: SymbolEdits, key: string, hidden: boolean): SymbolEdits =>

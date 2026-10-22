@@ -72,6 +72,7 @@ import { SymbolPreview } from "./SymbolPreview";
 import { applySelection, selectRunnableItems, shouldOfferRegeneration } from "./selection";
 import {
   accumulateFontSize,
+  accumulateLabelShift,
   accumulateOffset,
   accumulateRotation,
   applySymbolEdits,
@@ -79,6 +80,7 @@ import {
   EMPTY_SYMBOL_EDITS,
   appendAddedTexts,
   hasSymbolEdits,
+  isSymbolPinKey,
   setPinPoints,
   setPinText,
   setRectBounds,
@@ -1390,7 +1392,11 @@ const ConverterPage = ({
         selectedKeyId,
         (edits) =>
           [...offsets].reduce(
-            (acc, [key, offset]) => accumulateOffset(acc, key, offset.dx, offset.dy),
+            (acc, [key, offset]) =>
+              // 引脚本体必须留在边框上：对齐只挪它的标签（名/脚号）
+              isSymbolPinKey(key)
+                ? accumulateLabelShift(acc, key, offset.dx, offset.dy)
+                : accumulateOffset(acc, key, offset.dx, offset.dy),
             edits,
           ),
         false,
@@ -2568,6 +2574,16 @@ const ConverterPage = ({
               >
                 <Magnet size={15} />
               </button>
+              <button
+                type="button"
+                className={`symbol-tool ${gridVisible ? "on" : ""}`}
+                onClick={() => onUiChange({ symbolGridVisible: !gridVisible })}
+                title={gridVisible ? "隐藏背景网格" : "显示背景网格"}
+                aria-pressed={gridVisible}
+                data-testid="grid-toggle"
+              >
+                <Grid3x3 size={15} />
+              </button>
               <select
                 className="symbol-tool-select"
                 value={snapGrid}
@@ -2581,16 +2597,6 @@ const ConverterPage = ({
                 <option value={10}>100 mil</option>
                 <option value={5}>50 mil</option>
               </select>
-              <button
-                type="button"
-                className={`symbol-tool ${gridVisible ? "on" : ""}`}
-                onClick={() => onUiChange({ symbolGridVisible: !gridVisible })}
-                title={gridVisible ? "隐藏背景网格" : "显示背景网格"}
-                aria-pressed={gridVisible}
-                data-testid="grid-toggle"
-              >
-                <Grid3x3 size={15} />
-              </button>
               <button
                 type="button"
                 className="symbol-tool"

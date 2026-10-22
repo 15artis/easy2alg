@@ -1,5 +1,11 @@
 import type { NormalizedSymbolSection } from "./schemas";
-import { symbolElementBox, type SymbolBox } from "./symbol-labels";
+import { isSymbolPinKey, parseSymbolEditKey } from "./symbol-edit";
+import {
+  anchorLabelBox,
+  pinSideOf,
+  symbolElementBox,
+  type SymbolBox,
+} from "./symbol-labels";
 
 /**
  * 对齐 / 分布（用户 2026-10-20，参考 OrCAD/Visio 的对齐工具）。
@@ -16,13 +22,49 @@ export type DistributeMode = "horizontal" | "vertical";
 export type Offset = { readonly dx: number; readonly dy: number };
 export type OffsetMap = ReadonlyMap<string, Offset>;
 
+const unionBox = (a: SymbolBox, b: SymbolBox): SymbolBox => ({
+  minX: Math.min(a.minX, b.minX),
+  minY: Math.min(a.minY, b.minY),
+  maxX: Math.max(a.maxX, b.maxX),
+  maxY: Math.max(a.maxY, b.maxY),
+});
+
+/**
+ * 引脚参与对齐时用**标签盒**（名字 + 脚号），而不是整根引脚（用户 2026-10-22）。
+ * 引脚本体不能离开边框，所以对齐只挪标签；基准也要按标签算，否则对出来的位置
+ * 跟眼睛看到的文字对不上。
+ */
+export const pinAlignBox = (
+  section: NormalizedSymbolSection,
+  key: string,
+): SymbolBox | null => {
+  if (!isSymbolPinKey(key)) {
+    return null;
+  }
+  const { index } = parseSymbolEditKey(key);
+  const pin = section.pins[index];
+  if (pin === undefined) {
+    return null;
+  }
+  if (pin.labelAnchor === undefined) {
+    return symbolElementBox(section, key);
+  }
+  const side = pinSideOf(pin);
+  const rotated = side === "top" || side === "bottom";
+  return unionBox(
+    anchorLabelBox(pin.labelAnchor.name, pin.name, rotated, side === "right"),
+    anchorLabelBox(pin.labelAnchor.number, pin.number, rotated, side === "left"),
+  );
+};
+
 export const collectBoxes = (
   section: NormalizedSymbolSection,
   keys: readonly string[],
 ): ReadonlyMap<string, SymbolBox> => {
   const boxes = new Map<string, SymbolBox>();
   for (const key of keys) {
-    const box = symbolElementBox(section, key);
+    // 引脚按标签盒参与对齐（本体不动）
+    const box = isSymbolPinKey(key) ? pinAlignBox(section, key) : symbolElementBox(section, key);
     if (box !== null) {
       boxes.set(key, box);
     }

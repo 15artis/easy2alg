@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { NormalizedSymbol } from "../src/shared/schemas";
 import {
   accumulateFontSize,
+  accumulateLabelShift,
   accumulateOffset,
   accumulateRotation,
   applySymbolEdits,
@@ -391,5 +392,46 @@ describe("hide comment text (user 2026-10-22)", () => {
     const shapes = applied.sections[0].shapes;
     expect(shapes).toHaveLength(3);
     expect(shapes[2].kind === "text" ? shapes[2].hidden : undefined).toBe(true);
+  });
+});
+
+/**
+ * 用户 2026-10-22：对齐左侧引脚时，引脚本体被挪下边框。
+ * 正确行为：只挪标签，引脚端点原地不动。
+ */
+describe("label-only shift", () => {
+  const withAnchor = (): NormalizedSymbol => {
+    const base = symbol();
+    const pin = base.sections[0].pins[0];
+    return {
+      ...base,
+      sections: [
+        {
+          ...base.sections[0],
+          pins: [
+            {
+              ...pin,
+              labelAnchor: { name: { x: 5, y: 20 }, number: { x: -5, y: 20 } },
+            },
+          ],
+        },
+      ],
+    };
+  };
+
+  it("只平移 labelAnchor，连接端与本体端不变", () => {
+    const key = symbolPinKey(0, 0);
+    const applied = applySymbolEdits(withAnchor(), accumulateLabelShift({}, key, 6, -2));
+    const pin = applied.sections[0].pins[0];
+    expect(pin.connection).toEqual({ x: -10, y: 20 });
+    expect(pin.body).toEqual({ x: 0, y: 20 });
+    expect(pin.labelAnchor).toEqual({ name: { x: 11, y: 18 }, number: { x: 1, y: 18 } });
+  });
+
+  it("相对位移会累加", () => {
+    const key = symbolPinKey(0, 0);
+    const once = accumulateLabelShift({}, key, 3, 0);
+    const twice = accumulateLabelShift(once, key, 2, 1);
+    expect(twice[key]?.labelShift).toEqual({ dx: 5, dy: 1 });
   });
 });

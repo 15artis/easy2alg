@@ -1,11 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
+  collectBoxes,
   planAlign,
   planDistribute,
   planLayoutAction,
   type OffsetMap,
 } from "../src/shared/symbol-align";
-import type { SymbolBox } from "../src/shared/symbol-labels";
+import { pinLabelAnchors, type SymbolBox } from "../src/shared/symbol-labels";
+import {
+  accumulateLabelShift,
+  applySymbolEdits,
+  type SymbolEdits,
+} from "../src/shared/symbol-edit";
+import type { NormalizedSymbol } from "../src/shared/schemas";
 
 /**
  * 用户 2026-10-20：多选后要能像 OrCAD/Visio 一样对齐与等间距分布。
@@ -145,5 +152,72 @@ describe("symbol align / distribute", () => {
       ["b", box(0, 20, 10, 30)],
     ]);
     expect(planAlign(aligned, "left").size).toBe(0);
+  });
+});
+
+/**
+ * 用户 2026-10-22：对齐左侧引脚时，引脚本体被挪下边框（圆点跑到框内）。
+ * 正确行为：只挪标签让文字对齐，引脚端点保持贴边。
+ */
+describe("aligning pins moves labels only", () => {
+  const body = { minX: 0, minY: 0, maxX: 100, maxY: 60 };
+  const build = () => {
+    const base = {
+      name: "TESTPART",
+      bounds: body,
+      pins: [
+        {
+          name: "A",
+          number: "1",
+          connection: { x: -10, y: 20 },
+          body: { x: 0, y: 20 },
+          length: 10,
+          type: "passive" as const,
+          visible: true,
+        },
+        {
+          name: "LONGER_NAME",
+          number: "2",
+          connection: { x: -10, y: 40 },
+          body: { x: 0, y: 40 },
+          length: 10,
+          type: "passive" as const,
+          visible: true,
+        },
+      ],
+      shapes: [
+        { kind: "rect" as const, min: { x: 0, y: 0 }, max: { x: 100, y: 60 }, cornerRadius: 0, filled: false },
+      ],
+    };
+    return {
+      ...base,
+      pins: base.pins.map((pin) => ({ ...pin, labelAnchor: pinLabelAnchors(pin, body) })),
+    };
+  };
+
+  it("右对齐后标签右边缘一致，引脚端点不动", () => {
+    const section = build();
+    const keys = ["p0:0", "p0:1"];
+    const offsets = planAlign(collectBoxes(section, keys), "right");
+    let edits: SymbolEdits = {};
+    for (const [key, offset] of offsets) {
+      edits = accumulateLabelShift(edits, key, offset.dx, offset.dy);
+    }
+    const symbol: NormalizedSymbol = {
+      name: "TESTPART",
+      refdesPrefix: "U",
+      pcbFootprint: "",
+      sections: [section],
+      sourceJson: "{}",
+    };
+    const applied = applySymbolEdits(symbol, edits);
+    const pins = applied.sections[0].pins;
+    // 引脚端点原地不动（仍然贴边）
+    expect(pins[0].connection).toEqual({ x: -10, y: 20 });
+    expect(pins[1].connection).toEqual({ x: -10, y: 40 });
+    expect(pins[0].body).toEqual({ x: 0, y: 20 });
+    // 标签右边缘对齐
+    const after = collectBoxes(applied.sections[0], keys);
+    expect(after.get("p0:0")!.maxX).toBeCloseTo(after.get("p0:1")!.maxX, 6);
   });
 });
