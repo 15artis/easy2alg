@@ -973,12 +973,20 @@ const ConverterPage = ({
   const previewBounds = previewSection === null ? null : sectionPreviewBounds(previewSection);
 
   /** 属性面板要读**未套编辑**的原始段（读的是"原始值 + 当前编辑"，套过的会双重叠加）。 */
-  const rawSection =
-    selectedSymbolEntry === undefined || selectedSymbolEntry === null
-      ? null
-      : (selectedSymbolEntry.symbol.sections[
-          Math.min(sectionIndex, selectedSymbolEntry.symbol.sections.length - 1)
-        ] ?? null);
+  /**
+   * 属性面板要读**未套编辑**的原始段。新增的文本（addedTexts）也是"原始形状"的一部分：
+   * 它由 applyEdits 追加在段末尾，这里是同一个下标顺序 —— 漏了它，选中新加的文本时
+   * 属性面板整块不出现（用户 2026-10-22："删除文本按钮没看到"）。
+   */
+  const rawSection = useMemo(() => {
+    if (selectedSymbolEntry === undefined || selectedSymbolEntry === null) {
+      return null;
+    }
+    const withAdded = appendAddedTexts(selectedSymbolEntry.symbol, selectedEdit.addedTexts);
+    return (
+      withAdded.sections[Math.min(sectionIndex, withAdded.sections.length - 1)] ?? null
+    );
+  }, [sectionIndex, selectedEdit.addedTexts, selectedSymbolEntry]);
   const elementProps = useMemo(() => {
     if (!editMode || rawSection === null || selectedKeys.length !== 1) {
       return null;

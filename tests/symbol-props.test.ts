@@ -8,8 +8,13 @@ import {
   writeTextHeight,
   writeTextRotation,
 } from "../src/shared/symbol-property";
-import { symbolPinKey, symbolShapeKey, type SymbolEdits } from "../src/shared/symbol-edit";
-import type { NormalizedSymbolSection } from "../src/shared/schemas";
+import {
+  appendAddedTexts,
+  symbolPinKey,
+  symbolShapeKey,
+  type SymbolEdits,
+} from "../src/shared/symbol-edit";
+import type { NormalizedSymbol, NormalizedSymbolSection } from "../src/shared/schemas";
 
 /**
  * 用户 2026-10-20：属性面板输入精确坐标。
@@ -132,5 +137,31 @@ describe("element properties", () => {
 
   it("未知键返回 null", () => {
     expect(readElementProps(section(), {}, "0:99")).toBeNull();
+  });
+});
+
+/**
+ * 用户 2026-10-22：选中"添加文本"新建的文本时属性面板整块不出现
+ * （面板读的是未套编辑的原始段，而新文本是在 applyEdits 里追加的）。
+ */
+describe("added text in property panel", () => {
+  it("追加的文本也能读出属性（删除按钮依赖它）", () => {
+    const base: NormalizedSymbol = {
+      name: "TESTPART",
+      refdesPrefix: "U",
+      pcbFootprint: "",
+      sections: [section()],
+      sourceJson: "{}",
+    };
+    const withAdded = appendAddedTexts(base, [
+      { id: "t1", section: 0, text: "文本", at: { x: 50, y: 30 }, height: 7 },
+    ]);
+    const raw = withAdded.sections[0];
+    const key = symbolShapeKey(0, raw.shapes.length - 1);
+    const props = readElementProps(raw, {}, key);
+    expect(props).not.toBeNull();
+    expect(props!.kind).toBe("text");
+    expect(props!.x).toBe(50);
+    expect(props!.y).toBe(30);
   });
 });
