@@ -2644,6 +2644,8 @@ const ConverterPage = ({
               element={elementProps}
               snap={snapState}
               onField={commitElementField}
+              position={settings.ui.symbolPropsPosition}
+              onMove={(next) => onUiChange({ symbolPropsPosition: next })}
               onDelete={
                 elementProps.kind === "text" && selected !== null
                   ? () => {

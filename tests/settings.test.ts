@@ -115,3 +115,16 @@ describe("ui settings persistence", () => {
     expect(AppSettingsSchema.safeParse({ ...minimal, ui: { leftRailWidth: 300 } }).success).toBe(true);
   });
 });
+
+describe("symbol property panel position", () => {
+  it("defaults to null and round-trips a dragged position", () => {
+    expect(AppSettingsSchema.parse(minimal).ui.symbolPropsPosition).toBeNull();
+    const settings = AppSettingsSchema.parse({
+      ...minimal,
+      ui: { symbolPropsPosition: { x: 120, y: 40 } },
+    });
+    expect(settings.ui.symbolPropsPosition).toEqual({ x: 120, y: 40 });
+    const again = AppSettingsSchema.parse(JSON.parse(JSON.stringify(settings)));
+    expect(again.ui.symbolPropsPosition).toEqual({ x: 120, y: 40 });
+  });
+});

@@ -36,6 +36,14 @@ export const UiSettingsSchema = z
     symbolSnapEnabled: z.boolean().optional(),
     symbolSnapGrid: z.union([z.literal(5), z.literal(10)]).optional(),
     symbolGridVisible: z.boolean().optional(),
+    /**
+     * 属性面板的位置（相对画布左上角的像素，用户 2026-10-22 要求可拖动并持久化）。
+     * null = 默认位置（右上角、缩放控件下方）。
+     */
+    symbolPropsPosition: z
+      .object({ x: z.number().finite(), y: z.number().finite() })
+      .nullable()
+      .optional(),
   })
   .optional();
 
@@ -58,6 +66,7 @@ export const defaultUiSettings = (): UiSettings & {
   symbolSnapEnabled: boolean;
   symbolSnapGrid: 5 | 10;
   symbolGridVisible: boolean;
+  symbolPropsPosition: { x: number; y: number } | null;
 } => ({
   leftRailWidth: LEFT_RAIL_DEFAULT_WIDTH,
   rightRailWidth: RIGHT_RAIL_DEFAULT_WIDTH,
@@ -67,6 +76,7 @@ export const defaultUiSettings = (): UiSettings & {
   symbolSnapEnabled: true,
   symbolSnapGrid: 10,
   symbolGridVisible: true,
+  symbolPropsPosition: null,
 });
 
 export const AppSettingsSchema = z
@@ -106,6 +116,7 @@ export const AppSettingsSchema = z
       symbolSnapEnabled: settings.ui?.symbolSnapEnabled ?? true,
       symbolSnapGrid: settings.ui?.symbolSnapGrid ?? 10,
       symbolGridVisible: settings.ui?.symbolGridVisible ?? true,
+      symbolPropsPosition: settings.ui?.symbolPropsPosition ?? null,
     },
   }));
 export type AppSettings = z.infer<typeof AppSettingsSchema>;

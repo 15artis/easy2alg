@@ -2622,3 +2622,16 @@ select:focus,
 .symbol-props-delete:hover {
   background: #ffe9e7;
 }
+
+/* 属性面板标题即拖动把手（用户 2026-10-22：面板可移动并持久化）。
+ * 双击标题回到默认位置。 */
+.symbol-props-title {
+  cursor: move;
+  user-select: none;
+  padding: 2px 0 6px;
+  touch-action: none;
+}
+
+.symbol-props.dragging {
+  box-shadow: 0 10px 26px rgb(23 32 51 / 18%);
+}
