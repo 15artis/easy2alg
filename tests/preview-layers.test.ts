@@ -3,6 +3,7 @@ import type { NormalizedFootprint, NormalizedPad } from "../src/shared/schemas";
 import {
   defaultVisibleLayers,
   footprintLayers,
+  footprintViewBounds,
   normalizeVisibleLayers,
 } from "../src/shared/preview-layers";
 
@@ -96,5 +97,32 @@ describe("PCB preview layers", () => {
     expect([...normalizeVisibleLayers(layers, new Set())].sort()).toEqual(
       [...defaults].sort(),
     );
+  });
+});
+
+/**
+ * 用户 2026-10-22：PCB 预览缩在画布中间 —— 源 bounds 把远大于本体的 courtyard
+ * 也算进去了。适应窗口只按焊盘取景。
+ */
+describe("pcb preview view bounds", () => {
+  it("忽略远处的 courtyard / 丝印，只按焊盘取景（外扩 6%）", () => {
+    const part = footprint({
+      pads: [pad({ center: { x: -3.5, y: 0 } }), pad({ center: { x: 3.5, y: 0 } })],
+      lines: [
+        // 离谱的大外框：bounds 会到 ±20
+        { start: { x: -20, y: -20 }, end: { x: 20, y: -20 }, width: 0.1, layer: "courtyard" },
+        { start: { x: -20, y: 20 }, end: { x: 20, y: 20 }, width: 0.1, layer: "courtyard" },
+      ],
+      bounds: { minX: -20, minY: -20, maxX: 20, maxY: 20 },
+    });
+    const box = footprintViewBounds(part);
+    // 焊盘含宽度后跨度 8（-4..4），外扩 6%（0.48）→ ±4.48
+    expect(box.minX).toBeCloseTo(-4.48, 6);
+    expect(box.maxX).toBeCloseTo(4.48, 6);
+  });
+
+  it("没有焊盘时退回原 bounds", () => {
+    const part = footprint({ pads: [], bounds: { minX: -1, minY: -2, maxX: 3, maxY: 4 } });
+    expect(footprintViewBounds(part)).toEqual({ minX: -1, minY: -2, maxX: 3, maxY: 4 });
   });
 });

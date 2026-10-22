@@ -18,3 +18,31 @@ export const sanitizeLibraryName = (value: string): string =>
 /** 输入框里正在编辑的中间态（还没净化），用来判断"是否等于原值"。 */
 export const isNameEdited = (value: string, original: string): boolean =>
   value.trim().length > 0 && sanitizeLibraryName(value) !== original;
+
+export const friendlyPackageNameFromSource = (sourceName: string): string | null => {
+  // 只处理立创那种"本体尺寸"格式（同时带 L… 与 W… 段）：
+  // `LQFN-56_L7.0-W7.0-P0.4-EP`。像 `SOIC-8_3.9x4.9mm_P1.27mm` 这种描述式名字
+  // 交给几何推导（SOIC127P600X175-8N 更规范），别把 `4.9mm` 弄成 `4_9mm`。
+  const hasBodyDims =
+    /(?:^|[-_\s])L\d+(?:[.-]\d+)?/i.test(sourceName) &&
+    /(?:^|[-_\s])W\d+(?:[.-]\d+)?/i.test(sourceName);
+  if (!hasBodyDims) {
+    return null;
+  }
+  // 尺寸段形如 L7.0 / L7-0 / P0.50 / EP5.1：字母(1-2) + 数字 + 分隔符 + 数字
+  // 统一把分隔符换成下划线（`.` 在 Allegro 名字里不合法，`-` 会与封装类型的连字符混淆）
+  let transformed = 0;
+  const normalized = sourceName
+    .trim()
+    .replace(/([A-Za-z]{1,2}\d+)[.\-_](\d+)(?![\d.])/g, (_match, head: string, tail: string) => {
+      transformed += 1;
+      return `${head}_${tail}`;
+    });
+  if (transformed === 0) {
+    return null;
+  }
+  const name = normalized
+    .replace(/[^A-Za-z0-9_.-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return name.length > 0 ? name : null;
+};

@@ -145,3 +145,35 @@ export const normalizeVisibleLayers = (
   }
   return kept;
 };
+
+/**
+ * PCB 预览"适应窗口"用的包围盒（用户 2026-10-22）。
+ *
+ * 源数据里的 `bounds` 把丝印/courtyard 全算进去了：立创不少封装带一圈远大于本体的
+ * courtyard（实测 C2040 的 bounds 约为焊盘跨度的两倍），直接按它 fit 会让封装缩在
+ * 画布中间很小一块。这里只按**焊盘**取包围盒（外扩 6%），让预览像原理图那样铺满。
+ */
+export const footprintViewBounds = (
+  footprint: NormalizedFootprint,
+): { readonly minX: number; readonly minY: number; readonly maxX: number; readonly maxY: number } => {
+  if (footprint.pads.length === 0) {
+    return footprint.bounds;
+  }
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  for (const pad of footprint.pads) {
+    minX = Math.min(minX, pad.center.x - pad.width / 2);
+    minY = Math.min(minY, pad.center.y - pad.height / 2);
+    maxX = Math.max(maxX, pad.center.x + pad.width / 2);
+    maxY = Math.max(maxY, pad.center.y + pad.height / 2);
+  }
+  const margin = Math.max(maxX - minX, maxY - minY) * 0.06;
+  return {
+    minX: minX - margin,
+    minY: minY - margin,
+    maxX: maxX + margin,
+    maxY: maxY + margin,
+  };
+};

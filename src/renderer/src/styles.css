@@ -1431,13 +1431,10 @@ select:focus,
   min-height: 0;
   margin: 14px;
   overflow: hidden;
-  background:
-    linear-gradient(rgb(215 222 231 / 34%) 1px, transparent 1px),
-    linear-gradient(90deg, rgb(215 222 231 / 34%) 1px, transparent 1px),
-    linear-gradient(rgb(194 204 216 / 28%) 1px, transparent 1px),
-    linear-gradient(90deg, rgb(194 204 216 / 28%) 1px, transparent 1px),
-    #f8fafc;
-  background-size: 10px 10px, 10px 10px, 50px 50px, 50px 50px;
+  /* 画布底色只留纯色：10px/50px 的屏幕像素网格是**屏幕坐标**，与符号/封装坐标无关，
+   * 会和真正的世界网格叠成"多重网格"（用户 2026-10-22 报的 PCB 背景重影）。
+   * 原理图用 SymbolGrid、PCB 用 #footprint-grid，各自按自己的坐标画。 */
+  background: #f8fafc;
   border: 1px solid #cbd4e0;
   border-radius: 8px;
 }

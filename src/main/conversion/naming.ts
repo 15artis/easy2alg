@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { friendlyPackageNameFromSource } from "../../shared/naming";
 import type { NormalizedPad } from "../../shared/schemas";
 import { uniquePositiveDeltas } from "./geometry";
 
@@ -96,37 +97,16 @@ const nominalLeadSpan = (family: "SOIC" | "SSOP" | "TSSOP", bodyWidth: number): 
 };
 
 /**
- * 用户 2026-10-21：目标封装名直接沿用立创源名的"类型 + 尺寸 + EP"结构，尺寸换成
- * 0.1mm 精度、点号去掉 —— `VQFN-24_L5.0-W4.0-P0.50-BL-EP` → `VQFN-24_L50-W40-P5-BL-EP`。
- * 比 QFN50P500X400X100-25N 直观：一眼能看到封装类型、本体尺寸和有没有 EP。
- * 尺寸换算成 0.1mm 整数；比 0.1mm 更细的值（如 1.27mm）保留一位小数（P12.7）不丢精度。
+ * 目标封装名直接沿用立创源名的"类型 + 尺寸 + EP"结构，**小数点换成下划线**：
+ * `LQFN-56_L7.0-W7.0-P0.4-EP` → `LQFN-56_L7_0-W7_0-P0_4-EP`。
+ *
+ * 用户 2026-10-22 定案（取代 10-21 的"×10 取整"）：`L70` 与 `L7` 分不清，
+ * 而 `L7_0` 一眼就是 7.0mm。Allegro 名字里 `.` 不合法，下划线是合法字符，
+ * 所以只替换分隔符、数字原样保留。
+ * 源名里的点可能已被别处换成 `-`（`L7-0`），这里一并规范成 `_`。
  * 源名里没有带小数的尺寸段（如 PEX8748_BACA）时返回 null，走原来的几何推导。
  */
-export const friendlyPackageNameFromSource = (sourceName: string): string | null => {
-  const parts = sourceName.trim().split(/([-_])/);
-  let transformed = 0;
-  const rebuilt = parts.map((part) => {
-    if (part === "-" || part === "_") {
-      return part;
-    }
-    const match = /^([A-Za-z]{1,2})(\d+)\.(\d+)$/.exec(part);
-    if (match === null) {
-      return part;
-    }
-    const tenths = Number(`${match[2]}.${match[3]}`) * 10;
-    const rounded = Math.round(tenths);
-    transformed += 1;
-    return `${match[1]}${Math.abs(tenths - rounded) < 1e-9 ? rounded : Math.round(tenths * 10) / 10}`;
-  });
-  if (transformed === 0) {
-    return null;
-  }
-  const name = rebuilt
-    .join("")
-    .replace(/[^A-Za-z0-9_.-]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-  return name.length > 0 ? name : null;
-};
+export { friendlyPackageNameFromSource };
 
 export const deriveTargetPackageName = (
   sourceName: string,

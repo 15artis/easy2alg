@@ -100,10 +100,11 @@ import {
   undoOnce,
   type EditHistory,
 } from "../../shared/edit-history";
-import { sanitizeLibraryName } from "../../shared/naming";
+import { friendlyPackageNameFromSource, sanitizeLibraryName } from "../../shared/naming";
 import {
   defaultVisibleLayers,
   footprintLayers,
+  footprintViewBounds,
   normalizeVisibleLayers,
   type FootprintLayerId,
 } from "../../shared/preview-layers";
@@ -2398,7 +2399,13 @@ const ConverterPage = ({
                   {item.state === "error" || item.state === "generationFailed" ? (
                     <em className="rail-error-text" title={item.message}>{item.message}</em>
                   ) : (
-                    <em>{item.footprint?.info.sourcePackageName ?? item.message}</em>
+                    <em>
+                      {/* 列表里显示规范后的封装名（小数点→下划线），与生成用的名字一致 */}
+                      {item.footprint === null || item.footprint === undefined
+                        ? item.message
+                        : (friendlyPackageNameFromSource(item.footprint.info.sourcePackageName) ??
+                          item.footprint.info.sourcePackageName)}
+                    </em>
                   )}
                 </div>
                 <div className={`rail-state ${item.state}`}>
@@ -2711,7 +2718,9 @@ const ConverterPage = ({
             </PanZoom>
           ) : selected?.footprint !== null && selected?.footprint !== undefined ? (
             <PanZoom
-              bounds={selected.footprint.bounds}
+              /* 只按焊盘取景：立创封装的 bounds 常带一圈远大于本体的 courtyard，
+               * 直接用它 fit 会让封装缩在画布中间（用户 2026-10-22） */
+              bounds={footprintViewBounds(selected.footprint)}
               resetKey={`pcb:${selected.id}`}
               ariaLabel="PCB 封装预览"
             >

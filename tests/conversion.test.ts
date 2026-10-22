@@ -268,18 +268,21 @@ describe("application shutdown", () => {
 });
 
 describe("friendly package name from LCSC source", () => {
-  it("keeps type/suffix and rewrites dimensions to 0.1mm integers (user 2026-10-21)", () => {
+  it("把尺寸段的小数点换成下划线（用户 2026-10-22）", () => {
     expect(friendlyPackageNameFromSource("VQFN-24_L5.0-W4.0-P0.50-BL-EP")).toBe(
-      "VQFN-24_L50-W40-P5-BL-EP",
+      "VQFN-24_L5_0-W4_0-P0_50-BL-EP",
+    );
+    expect(friendlyPackageNameFromSource("LQFN-56_L7.0-W7.0-P0.4-EP")).toBe(
+      "LQFN-56_L7_0-W7_0-P0_4-EP",
     );
     expect(friendlyPackageNameFromSource("QFN-32_L5.0-W5.0-P0.50-BL-EP")).toBe(
-      "QFN-32_L50-W50-P5-BL-EP",
+      "QFN-32_L5_0-W5_0-P0_50-BL-EP",
     );
   });
 
-  it("keeps sub-0.1mm precision as one decimal (P1.27 stays readable)", () => {
-    expect(friendlyPackageNameFromSource("SOIC-8_L4.9-W3.9-P1.27-BL")).toBe(
-      "SOIC-8_L49-W39-P12.7-BL",
+  it("源名里的点已经被换成 - 时也规范成下划线", () => {
+    expect(friendlyPackageNameFromSource("LQFN-56_L7-0-W7-0-P0-4-EP")).toBe(
+      "LQFN-56_L7_0-W7_0-P0_4-EP",
     );
   });
 
@@ -290,7 +293,7 @@ describe("friendly package name from LCSC source", () => {
 
   it("deriveTargetPackageName prefers the friendly source name", () => {
     expect(deriveTargetPackageName("VQFN-24_L5.0-W4.0-P0.50-BL-EP", [])).toBe(
-      "VQFN-24_L50-W40-P5-BL-EP",
+      "VQFN-24_L5_0-W4_0-P0_50-BL-EP",
     );
   });
 });
