@@ -1,8 +1,17 @@
+# 依赖
 node_modules/
+
+# 构建产物（electron-builder 输出目录为 release）
 out/
 release/
+release-out*/
+
+# 测试与缓存
 coverage/
+.vite/
+
+# 工具与系统
+.workbuddy/
 *.log
 .DS_Store
-.vite/
 qa-latest.png

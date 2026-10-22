@@ -13,6 +13,7 @@ import { NormalizedFootprintSchema } from "../../shared/schemas";
 import {
   approximateSvgArc,
   computeBounds,
+  enlargePin1Markers,
   normalizePoint,
   parseCoordinatePairs,
   roundMm,
@@ -284,15 +285,26 @@ export const normalizeEasyEdaResponse = (
   const arcGeometry = data.shape
     .filter((shape) => shape.startsWith("ARC~"))
     .flatMap((shape) => arcLines(shape, originX, originY));
-  const circles = data.shape
-    .filter((shape) => shape.startsWith("CIRCLE~"))
-    .map((shape) => circleFromRaw(shape, originX, originY));
   const lines = [...trackGeometry, ...rectangleGeometry, ...arcGeometry];
+  // 圆点型 pin-1 角标过小不可见（用户反馈 2026-10-15）—— 只放大相对本体过小的实心盘，
+  // 小器件与正常的丝印圆环不受影响，详见 geometry.enlargePin1Markers 注释。
+  const circles = enlargePin1Markers(
+    data.shape
+      .filter((shape) => shape.startsWith("CIRCLE~"))
+      .map((shape) => circleFromRaw(shape, originX, originY)),
+    pads,
+  );
   const extraPoints: Point[] = [
     ...lines.flatMap((line) => [line.start, line.end]),
     ...circles.flatMap((circle) => [
-      { x: circle.center.x - circle.radius, y: circle.center.y - circle.radius },
-      { x: circle.center.x + circle.radius, y: circle.center.y + circle.radius },
+      {
+        x: circle.center.x - circle.radius - circle.width / 2,
+        y: circle.center.y - circle.radius - circle.width / 2,
+      },
+      {
+        x: circle.center.x + circle.radius + circle.width / 2,
+        y: circle.center.y + circle.radius + circle.width / 2,
+      },
     ]),
     ...holes.map((hole) => hole.center),
   ];

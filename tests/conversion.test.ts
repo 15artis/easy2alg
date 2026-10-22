@@ -8,10 +8,19 @@ import {
   verifyPinReport,
 } from "../src/main/connectors/allegro-runner";
 import { createAllegroSourceBundle } from "../src/main/conversion/allegro-skill";
-import { derivePadstackName, deriveTargetPackageName } from "../src/main/conversion/naming";
+import {
+  derivePadstackName,
+  deriveTargetPackageName,
+  friendlyPackageNameFromSource,
+} from "../src/main/conversion/naming";
 import { createConversionPlan } from "../src/main/conversion/validate";
 import { getDemoFootprint } from "../src/shared/demo-fixtures";
-import { AppSettingsSchema, type GenerationProgress } from "../src/shared/schemas";
+import { normalizePackageName } from "../src/shared/naming";
+import {
+  AppSettingsSchema,
+  defaultUiSettings,
+  type GenerationProgress,
+} from "../src/shared/schemas";
 import { lastWindowCloseAction } from "../src/main/lifecycle";
 
 const requiredFixture = (lcscId: string) => {
@@ -56,10 +65,14 @@ describe("Allegro source generation", () => {
     expect(skill!.content).toContain("e2a_verify");
     expect(skill!.content).toContain("?layer \"TOP\" ?type 'REGULAR");
     expect(skill!.content).toContain("axlPadstackToDisk");
+    // axlPadstackToDisk 按设计内 padstack 名写盘（P8 实测），.pad 落在作业目录根且小写
     expect(skill!.content).toContain(
-      'axlPadstackToDisk("C:/Temp/e2a-job/padstacks/',
+      `axlPadstackToDisk("${derivePadstackName(requiredFixture("C163691").pads[0]!)}")`,
     );
-    expect(skill!.content).not.toMatch(/axlPadstackToDisk\("[^"]+" "[^"]+"\)/);
+    expect(skill!.content).not.toMatch(/axlPadstackToDisk\("[^"]*\/[^"]*"\)/);
+    expect(bundle.expectedOutputs).toContain(
+      `${derivePadstackName(requiredFixture("C163691").pads[0]!).toLowerCase()}.pad`,
+    );
     expect(skill!.content).toContain(
       "axlDBCreatePin(padName location pinText rotation)",
     );
@@ -67,8 +80,25 @@ describe("Allegro source generation", () => {
     expect(skill!.content).not.toContain("?mirror nil");
     expect(skill!.content).toContain('"REF DES/SILKSCREEN_TOP"');
     expect(skill!.content).toContain('"REF DES/ASSEMBLY_TOP"');
+    // 标签合成（对照用户手工件 r0603.dra 真机 dump）：位号 + 器件名，各出丝印/装配两份。
+    expect(skill!.content).toContain('"COMPONENT VALUE/SILKSCREEN_TOP"');
+    expect(skill!.content).toContain('"COMPONENT VALUE/ASSEMBLY_TOP"');
+    // REF DES 类文本取值校验（P17 实测）："REF**" 触发 SPMHUT-1 并使
+    // create symbol 报 "Symbol is missing a refdes"；必须使用纯文本占位。
+    expect(skill!.content).toContain('axlDBCreateText("REF" ');
+    expect(skill!.content).not.toContain('axlDBCreateText("REF**"');
+    // axlDBRefresh 在 17.4 未定义（E2E5 实测会中断 e2a_build），必须带守卫
+    expect(skill!.content).toContain(
+      "when(isCallable('axlDBRefresh) axlDBRefresh())",
+    );
     expect(skill!.content).toContain('fprintf(statusPort "status=ok\\n")');
     expect(skill!.content).toContain("axlDBChangeDesignUnits(\"millimeters\" 4)");
+    // 空 drawing 的 extents 为 nil 时 axlDBCreatePin 必失败（P9-P12 实测），
+    // 必须先设置绘制范围
+    expect(skill!.content).toContain("axlDBChangeDesignExtents(list(");
+    expect(skill!.content.indexOf("axlDBChangeDesignExtents")).toBeLessThan(
+      skill!.content.indexOf("e2a_create_pin(\""),
+    );
     expect(skill!.content).toContain("axlExtractMap(");
     expect(skill!.content).not.toContain("axlDBGetDesign()->pins");
     expect(bundle.expectedOutputs).toContain(`${plan.footprint.info.targetPackageName}.psm`);
@@ -104,6 +134,59 @@ describe("Allegro source generation", () => {
     expect(skill!.content).toContain('fprintf(port "pins=%d\\n" length(pins))');
   });
 
+  it("derives the assembly outline from silkscreen only when the source has none", () => {
+    const base = requiredFixture("C7593");
+    const withoutAssembly = {
+      ...base,
+      lines: base.lines.filter((line) => line.layer !== "assembly"),
+    };
+    const geometry = (content: string, layer: string) =>
+      (content.match(new RegExp(`axlDBCreate(?:Line|Circle)\\([^\\n]*"${layer}"`, "g")) ?? [])
+        .length;
+
+    // 源数据带 assembly 几何 → 原样输出，不复制丝印（demo fixture 全部属于这种）
+    const withSource = createAllegroSourceBundle(
+      createConversionPlan(requiredFixture("C7593")),
+      "C:\\Temp\\e2a-asm-a",
+    ).sources.find((source) => source.relativePath === "build.il")!;
+    expect(geometry(withSource.content, "PACKAGE GEOMETRY/ASSEMBLY_TOP")).toBe(4);
+
+    // 源数据只有丝印（elibz2 / 立创 C 编号接口都是这种）→ 把丝印几何复制到 ASSEMBLY_TOP
+    const derived = createAllegroSourceBundle(
+      createConversionPlan(withoutAssembly),
+      "C:\\Temp\\e2a-asm-b",
+    ).sources.find((source) => source.relativePath === "build.il")!;
+    expect(geometry(derived.content, "PACKAGE GEOMETRY/SILKSCREEN_TOP")).toBe(
+      geometry(derived.content, "PACKAGE GEOMETRY/ASSEMBLY_TOP"),
+    );
+    expect(geometry(derived.content, "PACKAGE GEOMETRY/ASSEMBLY_TOP")).toBeGreaterThan(0);
+  });
+
+  it("keeps label text inside the design extents", () => {
+    const plan = createConversionPlan(requiredFixture("C163691"));
+    const bundle = createAllegroSourceBundle(plan, "C:\\Temp\\e2a-extents");
+    const skill = bundle.sources.find((source) => source.relativePath === "build.il")!;
+    const match = skill!.content.match(
+      /axlDBChangeDesignExtents\(list\((-?[\d.]+):(-?[\d.]+) (-?[\d.]+):(-?[\d.]+)\)\)/,
+    );
+    expect(match).not.toBeNull();
+    const [minX, minY, maxX, maxY] = match!.slice(1).map(Number) as [
+      number,
+      number,
+      number,
+      number,
+    ];
+    // E2E9 真机实测回归：extents 不覆盖标签包围盒时，axlDBCreateText 报
+    // ERROR(SPMHA1-73): Text line is outside of the extents 并静默丢弃文本，
+    // 而 build-status 仍写 status=ok。21 字符封装名居中后半宽 6.3mm，必须落在范围内。
+    const nameHalfWidth = (plan.footprint.info.targetPackageName.length * 0.6) / 2;
+    expect(nameHalfWidth).toBeGreaterThan(Math.max(Math.abs(minX), maxX) * 0.5);
+    expect(maxX).toBeGreaterThan(nameHalfWidth);
+    expect(minX).toBeLessThan(-nameHalfWidth);
+    expect(maxY).toBeGreaterThan(plan.footprint.bounds.maxY + 1 + 0.7);
+    expect(minY).toBeLessThan(plan.footprint.bounds.minY - 1 - 0.3);
+  });
+
   it("fails instead of reporting completion when Allegro is unavailable", async () => {
     const libraryDirectory = await mkdtemp(join(tmpdir(), "e2a-library-"));
     const plan = createConversionPlan(requiredFixture("C2040"));
@@ -117,6 +200,10 @@ describe("Allegro source generation", () => {
           libraryDirectory,
           setupCompleted: true,
           allegroExecutablePath: null,
+          olbLibraryPath: null,
+          unifiedLibraryFolder: false,
+          fillPcbFootprint: true,
+          ui: defaultUiSettings(),
         },
         null,
         (item) => progress.push(item),
@@ -178,5 +265,48 @@ describe("application shutdown", () => {
     expect(lastWindowCloseAction("win32")).toBe("exit");
     expect(lastWindowCloseAction("linux")).toBe("quit");
     expect(lastWindowCloseAction("darwin")).toBe("stay");
+  });
+});
+
+describe("friendly package name from LCSC source", () => {
+  it("把尺寸段的小数点换成下划线（用户 2026-10-22）", () => {
+    expect(friendlyPackageNameFromSource("VQFN-24_L5.0-W4.0-P0.50-BL-EP")).toBe(
+      "VQFN-24_L5_0-W4_0-P0_50-BL-EP",
+    );
+    expect(friendlyPackageNameFromSource("LQFN-56_L7.0-W7.0-P0.4-EP")).toBe(
+      "LQFN-56_L7_0-W7_0-P0_4-EP",
+    );
+    expect(friendlyPackageNameFromSource("QFN-32_L5.0-W5.0-P0.50-BL-EP")).toBe(
+      "QFN-32_L5_0-W5_0-P0_50-BL-EP",
+    );
+  });
+
+  it("源名里的点已经被换成 - 时也规范成下划线", () => {
+    expect(friendlyPackageNameFromSource("LQFN-56_L7-0-W7-0-P0-4-EP")).toBe(
+      "LQFN-56_L7_0-W7_0-P0_4-EP",
+    );
+  });
+
+  it("returns null when the source has no dotted dimension tokens", () => {
+    expect(friendlyPackageNameFromSource("PEX8748_BACA")).toBeNull();
+    expect(friendlyPackageNameFromSource("SOT-23")).toBeNull();
+  });
+
+  it("deriveTargetPackageName prefers the friendly source name", () => {
+    expect(deriveTargetPackageName("VQFN-24_L5.0-W4.0-P0.50-BL-EP", [])).toBe(
+      "VQFN-24_L5_0-W4_0-P0_50-BL-EP",
+    );
+  });
+});
+
+describe("normalizePackageName (display + generation)", () => {
+  it("老名字里的 - 也规范成 _，几何推导名原样返回", () => {
+    expect(normalizePackageName("LQFN-56_L7-0-W7-0-P0-4-EP")).toBe(
+      "LQFN-56_L7_0-W7_0-P0_4-EP",
+    );
+    expect(normalizePackageName("LQFN-56_L7.0-W7.0-P0.4-EP")).toBe(
+      "LQFN-56_L7_0-W7_0-P0_4-EP",
+    );
+    expect(normalizePackageName("SOIC127P600X175-8N")).toBe("SOIC127P600X175-8N");
   });
 });

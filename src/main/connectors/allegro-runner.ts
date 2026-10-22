@@ -10,7 +10,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { promisify } from "node:util";
 import { AllegroExecutionError } from "../../shared/errors";
 import type {
@@ -74,6 +74,12 @@ const executeAllegro = async (
         ...process.env,
         CDSROOT: installationRoot,
         PATH: [...cadencePaths, process.env.PATH ?? ""].join(";"),
+        // 2026-10-15 实测（S2-S14 实验链）：用户 pcbenv/allegro.ilinit 会按
+        // $EDA365_SKILL 拼接加载 EDA365_Skill_Load.il，该 SKILL 包使 Allegro 17.4
+        // 在 -nograph 批处理回放 newdrawfillin 时直接段错误（交互模式不受影响）。
+        // 把 EDA365_SKILL 指向一个确定不存在的子目录，ilinit 里 errset(loadi(...))
+        // 静默跳过即可；不动任何用户文件，GUI 侧 EDA365 工具完全不受影响。
+        EDA365_SKILL: `${join(workingDirectory, "__e2a_no_eda365__")}${sep}`,
       },
       maxBuffer: 10 * 1024 * 1024,
       windowsHide: true,
@@ -200,9 +206,20 @@ const writeSources = async (
   );
 };
 
+/**
+ * 输出目录布局（用户 2026-10-19 要求"可以选择使用一个文件夹"）：
+ *  - 默认：库目录下分 padstacks/ 与 symbols/ 两个子目录；
+ *  - unified：两个都直接放库目录，Allegro 的库路径指到库目录即可。
+ */
+const padstackDirectoryFor = (unified: boolean, libraryDirectory: string): string =>
+  unified ? libraryDirectory : join(libraryDirectory, "padstacks");
+const symbolDirectoryFor = (unified: boolean, libraryDirectory: string): string =>
+  unified ? libraryDirectory : join(libraryDirectory, "symbols");
+
 const copyVerifiedOutputs = async (
   jobDirectory: string,
   libraryDirectory: string,
+  unifiedLibraryFolder: boolean,
   expectedOutputs: readonly string[],
 ): Promise<readonly GeneratedFile[]> => {
   const files: GeneratedFile[] = [];
@@ -236,8 +253,8 @@ const copyVerifiedOutputs = async (
       );
     }
     const outputDirectory = relativeOutput.endsWith(".pad")
-      ? join(libraryDirectory, "padstacks")
-      : join(libraryDirectory, "symbols");
+      ? padstackDirectoryFor(unifiedLibraryFolder, libraryDirectory)
+      : symbolDirectoryFor(unifiedLibraryFolder, libraryDirectory);
     const destinationPath = join(outputDirectory, basename(relativeOutput));
     await mkdir(outputDirectory, { recursive: true });
     await copyFile(sourcePath, destinationPath);
@@ -337,8 +354,12 @@ export class AllegroRunner {
     }
 
     await Promise.all([
-      mkdir(join(settings.libraryDirectory, "padstacks"), { recursive: true }),
-      mkdir(join(settings.libraryDirectory, "symbols"), { recursive: true }),
+      mkdir(padstackDirectoryFor(settings.unifiedLibraryFolder, settings.libraryDirectory), {
+        recursive: true,
+      }),
+      mkdir(symbolDirectoryFor(settings.unifiedLibraryFolder, settings.libraryDirectory), {
+        recursive: true,
+      }),
     ]);
     progress("launching", 30, `正在启动 Allegro ${settings.allegroVersion}`);
     progress("generating", 42, "Allegro 正在生成焊盘和封装");
@@ -387,6 +408,7 @@ export class AllegroRunner {
     const files = await copyVerifiedOutputs(
       jobDirectory,
       settings.libraryDirectory,
+      settings.unifiedLibraryFolder,
       bundle.expectedOutputs,
     );
     if (files.length !== bundle.expectedOutputs.length) {

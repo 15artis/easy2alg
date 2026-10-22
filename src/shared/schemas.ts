@@ -3,16 +3,127 @@ import { z } from "zod";
 export const AllegroVersionSchema = z.enum(["23.1", "22.1", "17.4", "17.2", "16.6"]);
 export type AllegroVersion = z.infer<typeof AllegroVersionSchema>;
 
-export const AppSettingsSchema = z.object({
-  allegroVersion: AllegroVersionSchema,
-  libraryDirectory: z.string().min(1),
-  setupCompleted: z.boolean(),
-  allegroExecutablePath: z.string().min(1).nullable().optional(),
-}).transform((settings) => ({
-  ...settings,
-  allegroExecutablePath: settings.allegroExecutablePath ?? null,
-}));
+/**
+ * 界面偏好 —— 与转换逻辑无关，改了只重写 settings.json、不重跑 Allegro 探测。
+ * 见 ipc.saveUiSettings。
+ */
+export const LEFT_RAIL_DEFAULT_WIDTH = 294;
+export const RIGHT_RAIL_DEFAULT_WIDTH = 322;
+export const LEFT_RAIL_RANGE = { min: 220, max: 560 } as const;
+export const RIGHT_RAIL_RANGE = { min: 260, max: 640 } as const;
+
+export const UiSettingsSchema = z
+  .object({
+    leftRailWidth: z.number().finite().min(LEFT_RAIL_RANGE.min).max(LEFT_RAIL_RANGE.max).optional(),
+    rightRailWidth: z.number().finite().min(RIGHT_RAIL_RANGE.min).max(RIGHT_RAIL_RANGE.max).optional(),
+    /** 已折叠的右侧分组标题（section id） */
+    collapsedSections: z.array(z.string()).optional(),
+    /** 图层 id → 用户自选颜色（#rrggbb） */
+    layerColors: z.record(z.string(), z.string()).optional(),
+    /**
+     * 上次「导入本地库」选文件所在的**目录**（记住目录而不是文件：换库文件时
+     * 通常就在同一个目录里挑，不用每次从头找 —— 用户 2026-10-16 要求）。
+     */
+    localLibraryDir: z.string().min(1).nullable().optional(),
+    /** 旧字段（0.1.20 及以前记的是文件本身），读设置时迁移成它所在的目录 */
+    localLibraryPath: z.string().min(1).nullable().optional(),
+    /**
+     * 原理图元件预览的网格吸附（用户 2026-10-20）：
+     *  - enabled：磁吸开关。关掉后拖动自由，写 .olb 也按实际坐标（仍取整成整数）
+     *  - grid：档位，10 单位 = 100 mil / 5 单位 = 50 mil（默认 100 mil）
+     *  - visible：背景网格显示开关（独立于吸附，可以只看不吸）
+     */
+    symbolSnapEnabled: z.boolean().optional(),
+    symbolSnapGrid: z.union([z.literal(5), z.literal(10)]).optional(),
+    symbolGridVisible: z.boolean().optional(),
+    /**
+     * 属性面板的位置（相对画布左上角的像素，用户 2026-10-22 要求可拖动并持久化）。
+     * null = 默认位置（右上角、缩放控件下方）。
+     */
+    symbolPropsPosition: z
+      .object({ x: z.number().finite(), y: z.number().finite() })
+      .nullable()
+      .optional(),
+  })
+  .optional();
+
+/** 取路径里的目录部分（兼容 / 与 \），拿不到返回 null。 */
+export const directoryOfPath = (filePath: string | null | undefined): string | null => {
+  if (filePath === null || filePath === undefined) {
+    return null;
+  }
+  const match = /^(.*)[\\/][^\\/]+$/.exec(filePath);
+  return match === null || match[1].length === 0 ? null : match[1];
+};
+
+/** 界面偏好的一套全新默认值（每次调用都返回新对象，避免共享可变引用）。 */
+export const defaultUiSettings = (): UiSettings & {
+  leftRailWidth: number;
+  rightRailWidth: number;
+  collapsedSections: string[];
+  layerColors: Record<string, string>;
+  localLibraryDir: string | null;
+  symbolSnapEnabled: boolean;
+  symbolSnapGrid: 5 | 10;
+  symbolGridVisible: boolean;
+  symbolPropsPosition: { x: number; y: number } | null;
+} => ({
+  leftRailWidth: LEFT_RAIL_DEFAULT_WIDTH,
+  rightRailWidth: RIGHT_RAIL_DEFAULT_WIDTH,
+  collapsedSections: [],
+  layerColors: {},
+  localLibraryDir: null,
+  symbolSnapEnabled: true,
+  symbolSnapGrid: 10,
+  symbolGridVisible: true,
+  symbolPropsPosition: null,
+});
+
+export const AppSettingsSchema = z
+  .object({
+    allegroVersion: AllegroVersionSchema,
+    libraryDirectory: z.string().min(1),
+    setupCompleted: z.boolean(),
+    allegroExecutablePath: z.string().min(1).nullable().optional(),
+    // 原理图符号库（OrCAD Capture .olb）目标路径。null = 未指定，转换时在
+    // libraryDirectory/schlib 下按源库名自动新建（见 capture-writer.autoLibraryPath）。
+    olbLibraryPath: z.string().min(1).nullable().optional(),
+    /**
+     * 输出目录结构（用户 2026-10-19 要求"可以选择使用一个文件夹"）：
+     *  false = 分 padstacks/ 与 symbols/ 两个子目录（老行为）
+     *  true  = 焊盘、封装（以及未指定 olbLibraryPath 时的 .olb）全部落在 libraryDirectory 下
+     */
+    unifiedLibraryFolder: z.boolean().optional(),
+    /** 是否把 PCB 封装名写进 .olb 的 PCB Footprint 字段（用户 2026-10-19 要求可选） */
+    fillPcbFootprint: z.boolean().optional(),
+    ui: UiSettingsSchema,
+  })
+  .transform((settings) => ({
+    ...settings,
+    allegroExecutablePath: settings.allegroExecutablePath ?? null,
+    olbLibraryPath: settings.olbLibraryPath ?? null,
+    unifiedLibraryFolder: settings.unifiedLibraryFolder ?? false,
+    fillPcbFootprint: settings.fillPcbFootprint ?? true,
+    ui: {
+      leftRailWidth: settings.ui?.leftRailWidth ?? LEFT_RAIL_DEFAULT_WIDTH,
+      rightRailWidth: settings.ui?.rightRailWidth ?? RIGHT_RAIL_DEFAULT_WIDTH,
+      collapsedSections: settings.ui?.collapsedSections ?? [],
+      layerColors: settings.ui?.layerColors ?? {},
+      // 旧配置里存的是文件路径 → 迁移成它所在的目录
+      localLibraryDir:
+        settings.ui?.localLibraryDir ?? directoryOfPath(settings.ui?.localLibraryPath),
+      // 必须在这里补默认值：transform 没列出的字段读一次设置就消失
+      symbolSnapEnabled: settings.ui?.symbolSnapEnabled ?? true,
+      symbolSnapGrid: settings.ui?.symbolSnapGrid ?? 10,
+      symbolGridVisible: settings.ui?.symbolGridVisible ?? true,
+      symbolPropsPosition: settings.ui?.symbolPropsPosition ?? null,
+    },
+  }));
 export type AppSettings = z.infer<typeof AppSettingsSchema>;
+export type UiSettings = AppSettings["ui"];
+/** 只改其中几项（拖动侧栏 / 折叠分组 / 改某个图层颜色）时用 */
+export type UiSettingsPatch = Partial<UiSettings>;
+
 
 export const PointSchema = z.object({
   x: z.number().finite(),
@@ -111,6 +222,146 @@ export const NormalizedFootprintSchema = z.object({
 });
 export type NormalizedFootprint = z.infer<typeof NormalizedFootprintSchema>;
 
+/**
+ * 原理图符号（OrCAD Capture .olb）模型。
+ *
+ * 坐标单位与 Capture 一致：1 单位 = 10 mil（0.1 英寸网格的一步）。
+ * 已实测确认源库（立创EDA专业版 SYMBOL 文档）引脚间距即为 10 单位，
+ * 两边同源，映射时 **不做任何缩放**。
+ */
+export const SymbolPinTypeSchema = z.enum([
+  "input",
+  "output",
+  "bidirectional",
+  "passive",
+  "power",
+  "openCollector",
+  "openEmitter",
+  "tristate",
+  "unspecified",
+]);
+export type SymbolPinType = z.infer<typeof SymbolPinTypeSchema>;
+
+export const NormalizedSymbolPinSchema = z.object({
+  /** 引脚名（源 "Pin Name" 属性，可为空串） */
+  name: z.string(),
+  /** 引脚号（源 "Pin Number" 属性） */
+  number: z.string().min(1),
+  /** 电气连接端（引脚外端，Capture 的 hotpt） */
+  connection: PointSchema,
+  /** 本体端（Capture 的 start） */
+  body: PointSchema,
+  length: z.number().nonnegative(),
+  type: SymbolPinTypeSchema,
+  visible: z.boolean(),
+  /**
+   * 引脚文字的**定位锚点**（名字 / 编号各一个点），解析时从本体盒推导后**冻结在引脚上**。
+   *
+   * 为什么必须冻结：Capture 的画法里，引脚名从本体边缘起算，但我们的手工编辑允许单独
+   * 移动引脚。若每次渲染都拿"当前本体盒"推锚点，横着拖引脚时文字不会跟（左侧引脚名字的
+   * x 恒等于本体左边 +5），而拖本体时所有文字又跟着本体跑 —— 用户会看到"标签与引脚分离、
+   * 间距越拖越宽"。冻结到引脚后，`applySymbolEdits` 平移引脚时把它一起平移，
+   * 标签与引脚的相对位置就永远不变。
+   */
+  labelAnchor: z
+    .object({ name: PointSchema, number: PointSchema })
+    .optional(),
+});
+export type NormalizedSymbolPin = z.infer<typeof NormalizedSymbolPinSchema>;
+
+export const NormalizedSymbolShapeSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("rect"),
+    min: PointSchema,
+    max: PointSchema,
+    cornerRadius: z.number().nonnegative(),
+    filled: z.boolean(),
+  }),
+  z.object({
+    kind: z.literal("polyline"),
+    points: z.array(PointSchema).min(2),
+    closed: z.boolean(),
+  }),
+  z.object({
+    kind: z.literal("text"),
+    // 允许空串：用户可以把文本清空（显示为空），写库时该条 CommentText 也就没有内容
+    text: z.string(),
+    at: PointSchema,
+    rotation: z.number().finite(),
+    height: z.number().positive(),
+    /** 用户在预览里删除了这条注释文本（用户 2026-10-22）。隐藏但保留下标，避免编辑键错位 */
+    hidden: z.boolean().optional(),
+  }),
+]);
+export type NormalizedSymbolShape = z.infer<typeof NormalizedSymbolShapeSchema>;
+
+export const NormalizedSymbolSectionSchema = z.object({
+  /** 段名（源 PART id，如 PEX8748_Station0） */
+  name: z.string().min(1),
+  bounds: z.object({
+    minX: z.number().finite(),
+    minY: z.number().finite(),
+    maxX: z.number().finite(),
+    maxY: z.number().finite(),
+  }),
+  pins: z.array(NormalizedSymbolPinSchema),
+  shapes: z.array(NormalizedSymbolShapeSchema),
+});
+export type NormalizedSymbolSection = z.infer<typeof NormalizedSymbolSectionSchema>;
+
+export const NormalizedSymbolSchema = z.object({
+  /** OLB 内 Package 名 */
+  name: z.string().min(1),
+  /** 位号前缀（源 "Designator"，如 "U?" → "U"） */
+  refdesPrefix: z.string().min(1),
+  /** 关联的 Allegro 封装名（Capture 的 PCB Footprint 字段） */
+  pcbFootprint: z.string(),
+  sections: z.array(NormalizedSymbolSectionSchema).min(1),
+  sourceJson: z.string(),
+});
+export type NormalizedSymbol = z.infer<typeof NormalizedSymbolSchema>;
+
+export const OlbWriteResultSchema = z.object({
+  libraryPath: z.string().min(1),
+  /** true = 本次新建了库文件（此前不存在） */
+  created: z.boolean(),
+  packageName: z.string().min(1),
+  sectionCount: z.number().int().positive(),
+  pinCount: z.number().int().nonnegative(),
+  backupPath: z.string().min(1).nullable(),
+  bytes: z.number().int().nonnegative(),
+  message: z.string().min(1),
+});
+export type OlbWriteResult = z.infer<typeof OlbWriteResultSchema>;
+
+/** 库里某个器件的概览（写入前探测同名器件用）。 */
+export const OlbPartSummarySchema = z.object({
+  sectionCount: z.number().int().positive(),
+  pinCount: z.number().int().nonnegative(),
+  /** 本体包围盒横向范围，用来区分"内容真的换了"和"只是名字相同" */
+  bodyWidth: z.number().finite().nullable(),
+});
+export type OlbPartSummary = z.infer<typeof OlbPartSummarySchema>;
+
+/**
+ * 写入 .olb 的结果。目标库里**已有同名器件**时先返回 needsConfirm，
+ * 由界面做二次确认（用户 2026-10-16 反馈"同名不覆盖也没提醒，还是旧数据"）。
+ */
+export const OlbWriteOutcomeSchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("needsConfirm"),
+    libraryPath: z.string().min(1),
+    packageName: z.string().min(1),
+    existing: OlbPartSummarySchema,
+    incoming: OlbPartSummarySchema,
+  }),
+  z.object({
+    status: z.literal("written"),
+    result: OlbWriteResultSchema,
+  }),
+]);
+export type OlbWriteOutcome = z.infer<typeof OlbWriteOutcomeSchema>;
+
 export const CheckSeveritySchema = z.enum(["pass", "warning", "error"]);
 export type CheckSeverity = z.infer<typeof CheckSeveritySchema>;
 
@@ -177,8 +428,26 @@ export const HistoryEntrySchema = ConversionResultSchema.extend({
 });
 export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
 
-export const QueueItemSchema = z.object({
-  id: z.string().regex(/^C\d+$/),
+/**
+ * 元件搜索的一条结果（用户 2026-10-19 要求"支持输入元件名模糊搜索"）。
+ * 字段取自立创商城搜索接口：number = C 编号，mpn = 厂商型号。
+ */
+export const ProductSearchHitSchema = z.object({
+  lcscId: z.string().regex(/^C\d+$/),
+  mpn: z.string(),
+  package: z.string(),
+  manufacturer: z.string(),
+  stock: z.number().int().nonnegative(),
+});
+export type ProductSearchHit = z.infer<typeof ProductSearchHitSchema>;
+
+export const ProductSearchResultSchema = z.object({
+  keyword: z.string(),
+  hits: z.array(ProductSearchHitSchema),
+});
+export type ProductSearchResult = z.infer<typeof ProductSearchResultSchema>;
+
+export const QueueItemSchema = z.object({  id: z.string().regex(/^C\d+$/),
   state: z.enum([
     "ready",
     "loading",
@@ -190,6 +459,13 @@ export const QueueItemSchema = z.object({
   footprint: NormalizedFootprintSchema.nullable(),
   message: z.string(),
   selected: z.boolean(),
+  /**
+   * 本地库器件的溯源信息。符号条目（symbols 表）丢了之后要靠它补拉 ——
+   * C 编号器件没有这个字段，走在线 fetchSymbol。
+   */
+  local: z
+    .object({ sourcePath: z.string().min(1), deviceUuid: z.string().min(1) })
+    .optional(),
 });
 export type QueueItem = z.infer<typeof QueueItemSchema>;
 
@@ -199,6 +475,18 @@ export const AllegroInstallSchema = z.object({
   detected: z.boolean(),
 });
 export type AllegroInstall = z.infer<typeof AllegroInstallSchema>;
+
+export const LocalLibraryDeviceSummarySchema = z.object({
+  deviceUuid: z.string().min(1),
+  lcscId: z.string().regex(/^C\d+$/),
+  name: z.string().min(1),
+  manufacturer: z.string(),
+  manufacturerPartNumber: z.string(),
+  footprintTitle: z.string(),
+  padCount: z.number().int().nonnegative(),
+  sourcePath: z.string().min(1),
+});
+export type LocalLibraryDeviceSummary = z.infer<typeof LocalLibraryDeviceSummarySchema>;
 
 export const AppApiSchema = z.object({
   platform: z.string().min(1),

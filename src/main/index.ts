@@ -4,8 +4,14 @@ import { electronApp, is } from "@electron-toolkit/utils";
 import { z } from "zod";
 import { AllegroDetector } from "./connectors/allegro-detector";
 import { EasyEdaConnector } from "./connectors/easyeda-connector";
+import { Elibz2Connector } from "./connectors/elibz2-connector";
 import { JsonStore } from "./connectors/json-store";
 import { AllegroRunner } from "./connectors/allegro-runner";
+import {
+  autoLibraryPath,
+  resolveCaptureToolchain,
+  writeCaptureLibrary,
+} from "./connectors/capture-writer";
 import { createConversionPlan } from "./conversion/validate";
 import { configureLogging, writeLog } from "./logging";
 import { lastWindowCloseAction } from "./lifecycle";
@@ -16,17 +22,48 @@ import {
   ConversionPlanSchema,
   HistoryEntrySchema,
   NormalizedFootprintSchema,
+  NormalizedSymbolSchema,
+  type AllegroInstall,
   type AppSettings,
   type GenerationProgress,
   type HistoryEntry,
+  UiSettingsSchema,
+  defaultUiSettings,
 } from "../shared/schemas";
 
 const HistorySchema = z.array(HistoryEntrySchema);
+const OlbWriteRequestSchema = z.object({
+  symbol: NormalizedSymbolSchema,
+  libraryPath: z.string().min(1).nullable(),
+  libraryName: z.string().min(1),
+  confirmOverwrite: z.boolean().optional(),
+  snapPins: z.boolean().optional(),
+});
+
+const resolveInstall = async (
+  settings: AppSettings,
+  installs: readonly AllegroInstall[],
+  detectManual: (path: string) => Promise<AllegroInstall | null>,
+): Promise<AllegroInstall | null> => {
+  const manualInstall =
+    settings.allegroExecutablePath === null
+      ? null
+      : await detectManual(settings.allegroExecutablePath);
+  return (
+    (manualInstall?.version === settings.allegroVersion ? manualInstall : null) ??
+    installs.find((candidate) => candidate.version === settings.allegroVersion) ??
+    null
+  );
+};
 const defaultSettings = (): AppSettings => ({
   allegroVersion: "23.1",
   libraryDirectory: join(app.getPath("documents"), "AllegroLibrary"),
   setupCompleted: false,
   allegroExecutablePath: null,
+  olbLibraryPath: null,
+  unifiedLibraryFolder: false,
+  fillPcbFootprint: true,
+  ui: defaultUiSettings(),
 });
 
 const createWindow = (): BrowserWindow => {
@@ -67,6 +104,7 @@ const registerHandlers = (): void => {
     [],
   );
   const easyEda = new EasyEdaConnector(join(dataDirectory, "cache", "footprints"));
+  const elibz2 = new Elibz2Connector();
   const detector = new AllegroDetector();
   const runner = new AllegroRunner();
 
@@ -120,9 +158,102 @@ const registerHandlers = (): void => {
     }
     return detector.inspectExecutable(result.filePaths[0], null);
   });
+  ipcMain.handle(IpcChannels.searchProducts, (_event, keyword: unknown) =>
+    easyEda.searchProducts(z.string().parse(keyword)),
+  );
   ipcMain.handle(IpcChannels.fetchComponent, (_event, lcscId: unknown) =>
     easyEda.fetchFootprint(z.string().parse(lcscId)),
   );
+  ipcMain.handle(IpcChannels.fetchSymbol, (_event, lcscId: unknown) =>
+    easyEda.fetchSymbol(z.string().parse(lcscId)),
+  );
+  // 界面偏好单独一条通道：拖动侧栏时不能顺手重跑 Allegro 探测（那个要扫注册表）。
+  // 用 store.patch 做「读—改—写」：取色器拖动会连着打好几次，并发写会互相覆盖。
+  ipcMain.handle(IpcChannels.saveUiSettings, (_event, patch: unknown) => {
+    const parsedPatch = UiSettingsSchema.unwrap().partial().parse(patch ?? {});
+    return settingsStore.patch((current) => ({
+      ...current,
+      ui: { ...current.ui, ...parsedPatch },
+    }));
+  });
+  ipcMain.handle(IpcChannels.chooseLocalLibraryFile, async (_event, rawDirectory: unknown) => {
+    // 记住的是**目录**（用户 2026-10-16 要求）：选择框直接落在上次用过的目录里
+    const defaultDirectory = z.string().min(1).nullable().parse(rawDirectory ?? null);
+    const result = await dialog.showOpenDialog({
+      title: "选择立创EDA专业版库文件",
+      ...(defaultDirectory === null ? {} : { defaultPath: defaultDirectory }),
+      properties: ["openFile"],
+      filters: [{ name: "立创EDA 库文件", extensions: ["elibz2", "epro", "epro2"] }],
+    });
+    return result.canceled ? null : (result.filePaths[0] ?? null);
+  });
+  ipcMain.handle(IpcChannels.readLocalLibrary, (_event, filePath: unknown) =>
+    elibz2.readLibrary(z.string().min(1).parse(filePath)),
+  );
+  ipcMain.handle(
+    IpcChannels.fetchLocalComponent,
+    (_event, filePath: unknown, deviceUuid: unknown) =>
+      elibz2.loadFootprint(
+        z.string().min(1).parse(filePath),
+        z.string().min(1).parse(deviceUuid),
+      ),
+  );
+  ipcMain.handle(
+    IpcChannels.fetchLocalSymbol,
+    (_event, filePath: unknown, deviceUuid: unknown) =>
+      elibz2.loadSymbol(
+        z.string().min(1).parse(filePath),
+        z.string().min(1).parse(deviceUuid),
+      ),
+  );
+  ipcMain.handle(IpcChannels.chooseOlbLibrary, async () => {
+    const result = await dialog.showOpenDialog({
+      title: "选择 OrCAD Capture 符号库（.olb）",
+      properties: ["openFile"],
+      filters: [{ name: "Capture 符号库", extensions: ["olb"] }],
+    });
+    return result.canceled ? null : (result.filePaths[0] ?? null);
+  });
+  ipcMain.handle(IpcChannels.createOlbLibrary, async (_event, rawName: unknown) => {
+    const settings = await settingsStore.read();
+    const name = z.string().min(1).parse(rawName);
+    const result = await dialog.showSaveDialog({
+      title: "新建 OrCAD Capture 符号库",
+      defaultPath: autoLibraryPath(settings.libraryDirectory, name),
+      filters: [{ name: "Capture 符号库", extensions: ["olb"] }],
+    });
+    return result.canceled || result.filePath === undefined ? null : result.filePath;
+  });
+  ipcMain.handle(IpcChannels.writeOlb, async (_event, rawRequest: unknown) => {
+    const request = OlbWriteRequestSchema.parse(rawRequest);
+    const settings = await settingsStore.read();
+    const installs = await detector.detect();
+    const install = await resolveInstall(settings, installs, (path) =>
+      detector.inspectExecutable(path, null),
+    );
+    const toolchain = await resolveCaptureToolchain(install?.executablePath ?? null);
+    if (toolchain === null) {
+      throw new Error(
+        "未找到 Cadence 的 tclsh.exe / orDb_Dll_Tcl64.dll，请在设置中确认 Allegro 程序路径。",
+      );
+    }
+    const libraryPath =
+      request.libraryPath ??
+      autoLibraryPath(
+        settings.libraryDirectory,
+        request.libraryName,
+        settings.unifiedLibraryFolder,
+      );
+    return writeCaptureLibrary({
+      symbol: request.symbol,
+      toolchain,
+      libraryPath,
+      // 必须转发：漏掉它 => 用户点了「覆盖写入」也依然返回 needsConfirm，弹窗无限重来
+      confirmOverwrite: request.confirmOverwrite,
+      fillPcbFootprint: settings.fillPcbFootprint,
+      snapPins: request.snapPins ?? true,
+    });
+  });
   ipcMain.handle(IpcChannels.createPlan, (_event, rawFootprint: unknown) =>
     createConversionPlan(NormalizedFootprintSchema.parse(rawFootprint)),
   );
@@ -130,17 +261,9 @@ const registerHandlers = (): void => {
     const plan = ConversionPlanSchema.parse(rawPlan);
     const settings = await settingsStore.read();
     const installs = await detector.detect();
-    const manualInstall =
-      settings.allegroExecutablePath === null
-        ? null
-        : await detector.inspectExecutable(
-            settings.allegroExecutablePath,
-            null,
-          );
-    const install =
-      (manualInstall?.version === settings.allegroVersion ? manualInstall : null) ??
-      installs.find((candidate) => candidate.version === settings.allegroVersion) ??
-      null;
+    const install = await resolveInstall(settings, installs, (path) =>
+      detector.inspectExecutable(path, null),
+    );
     const progressState: { last: GenerationProgress | null } = { last: null };
     try {
       const result = await runner.generate(
