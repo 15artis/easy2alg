@@ -15,6 +15,7 @@ import {
 } from "../src/main/conversion/naming";
 import { createConversionPlan } from "../src/main/conversion/validate";
 import { getDemoFootprint } from "../src/shared/demo-fixtures";
+import { normalizePackageName } from "../src/shared/naming";
 import {
   AppSettingsSchema,
   defaultUiSettings,
@@ -295,5 +296,17 @@ describe("friendly package name from LCSC source", () => {
     expect(deriveTargetPackageName("VQFN-24_L5.0-W4.0-P0.50-BL-EP", [])).toBe(
       "VQFN-24_L5_0-W4_0-P0_50-BL-EP",
     );
+  });
+});
+
+describe("normalizePackageName (display + generation)", () => {
+  it("老名字里的 - 也规范成 _，几何推导名原样返回", () => {
+    expect(normalizePackageName("LQFN-56_L7-0-W7-0-P0-4-EP")).toBe(
+      "LQFN-56_L7_0-W7_0-P0_4-EP",
+    );
+    expect(normalizePackageName("LQFN-56_L7.0-W7.0-P0.4-EP")).toBe(
+      "LQFN-56_L7_0-W7_0-P0_4-EP",
+    );
+    expect(normalizePackageName("SOIC127P600X175-8N")).toBe("SOIC127P600X175-8N");
   });
 });

@@ -102,7 +102,7 @@ import {
   undoOnce,
   type EditHistory,
 } from "../../shared/edit-history";
-import { friendlyPackageNameFromSource, sanitizeLibraryName } from "../../shared/naming";
+import { normalizePackageName, sanitizeLibraryName } from "../../shared/naming";
 import {
   defaultVisibleLayers,
   footprintLayers,
@@ -300,12 +300,15 @@ const FootprintPreview = ({
   visible,
   maskExpansionMm,
   layerColors,
+  scale = 1,
 }: {
   readonly footprint: NormalizedFootprint;
   readonly visible: ReadonlySet<FootprintLayerId>;
   readonly maskExpansionMm: number;
   /** 用户在「图层显示」里改过的颜色：图层 id → #rrggbb */
   readonly layerColors: Readonly<Record<string, string>>;
+  /** 当前缩放（px/mm）：网格线宽按它补偿，屏幕上恒定 1px（与原理图一致） */
+  readonly scale?: number;
 }): ReactElement => {
   const width = Math.max(footprint.bounds.maxX - footprint.bounds.minX, 1);
   const height = Math.max(footprint.bounds.maxY - footprint.bounds.minY, 1);
@@ -345,8 +348,13 @@ const FootprintPreview = ({
   return (
     <>
       <defs>
-        <pattern id="footprint-grid" width="1" height="1" patternUnits="userSpaceOnUse">
-          <path d="M 1 0 L 0 0 0 1" fill="none" stroke="#dfe4ea" strokeWidth="0.025" />
+        {/* 与原理图预览同一套观感：1mm 细格 + 10mm 粗格（用户 2026-10-22） */}
+        <pattern id="footprint-grid-minor" width="1" height="1" patternUnits="userSpaceOnUse">
+          <path d="M 1 0 L 0 0 0 1" fill="none" stroke="#d3ddeb" strokeWidth={1 / scale} />
+        </pattern>
+        <pattern id="footprint-grid" width="10" height="10" patternUnits="userSpaceOnUse">
+          <rect width="10" height="10" fill="url(#footprint-grid-minor)" />
+          <path d="M 10 0 L 0 0 0 10" fill="none" stroke="#b3c2d4" strokeWidth={1 / scale} />
         </pattern>
       </defs>
       <rect
@@ -1703,7 +1711,17 @@ const ConverterPage = ({
     const raw = deviceEdits[id]?.pcbName ?? null;
     const name = raw === null ? "" : sanitizeLibraryName(raw);
     if (name.length === 0) {
-      return plan;
+      // 没改名：仍把计划里的名字规范化一次（小数点→下划线）
+      const normalized = normalizePackageName(plan.footprint.info.targetPackageName);
+      return normalized === plan.footprint.info.targetPackageName
+        ? plan
+        : {
+            ...plan,
+            footprint: {
+              ...plan.footprint,
+              info: { ...plan.footprint.info, targetPackageName: normalized },
+            },
+          };
     }
     return {
       ...plan,
@@ -2409,8 +2427,7 @@ const ConverterPage = ({
                       {/* 列表里显示规范后的封装名（小数点→下划线），与生成用的名字一致 */}
                       {item.footprint === null || item.footprint === undefined
                         ? item.message
-                        : (friendlyPackageNameFromSource(item.footprint.info.sourcePackageName) ??
-                          item.footprint.info.sourcePackageName)}
+                        : normalizePackageName(item.footprint.info.sourcePackageName)}
                     </em>
                   )}
                 </div>
@@ -2466,7 +2483,12 @@ const ConverterPage = ({
 
       <section className="main-stage">
         <header className="stage-heading">
-          <div><h2>封装预览</h2><span>{selected?.id ?? ""} · {selected?.footprint?.info.sourcePackageName ?? "请选择器件"}</span></div>
+          <div><h2>封装预览</h2><span>
+                  {selected?.id ?? ""} ·{" "}
+                  {selected?.footprint === null || selected?.footprint === undefined
+                    ? "请选择器件"
+                    : normalizePackageName(selected.footprint.info.sourcePackageName)}
+                </span></div>
           <div className="stage-tabs" role="tablist">
             <button
               type="button"
@@ -2730,9 +2752,10 @@ const ConverterPage = ({
               resetKey={`pcb:${selected.id}`}
               ariaLabel="PCB 封装预览"
             >
-              {() => (
+              {({ scale }) => (
                 <FootprintPreview
                   footprint={selected.footprint!}
+                  scale={scale}
                   visible={visibleLayers}
                   maskExpansionMm={selectedPlan?.solderMaskExpansionMm ?? 0.05}
                   layerColors={settings.ui.layerColors}
@@ -2839,7 +2862,7 @@ const ConverterPage = ({
                 <div><dt>立创编号</dt><dd>{selected.footprint.info.lcscId}</dd></div>
                 <div><dt>制造商型号</dt><dd>{selected.footprint.info.manufacturerPartNumber || selected.footprint.info.name}</dd></div>
                 <div><dt>原始封装</dt><dd>{selected.footprint.info.sourcePackageName}</dd></div>
-                <div><dt>目标名称</dt><dd>{selectedEdit.pcbName === null ? selected.footprint.info.targetPackageName : (sanitizeLibraryName(selectedEdit.pcbName) || selected.footprint.info.targetPackageName)}</dd></div>
+                <div><dt>目标名称</dt><dd>{selectedEdit.pcbName === null ? normalizePackageName(selected.footprint.info.targetPackageName) : (sanitizeLibraryName(selectedEdit.pcbName) || normalizePackageName(selected.footprint.info.targetPackageName))}</dd></div>
               </dl>
             </InspectorSection>
             <InspectorSection id="naming" title="输出命名" collapsed={collapsedSections.includes("naming")} onToggle={toggleSection}>
@@ -2847,7 +2870,7 @@ const ConverterPage = ({
                 <label>
                   <span>PCB 封装名 <em>.dra / .psm / .pad</em></span>
                   <input
-                    value={selectedEdit.pcbName ?? selected.footprint.info.targetPackageName}
+                    value={selectedEdit.pcbName ?? normalizePackageName(selected.footprint.info.targetPackageName)}
                     onChange={(event) => updateDeviceEdit(selected.id, { pcbName: event.target.value })}
                     spellCheck={false}
                     data-testid="pcb-name"

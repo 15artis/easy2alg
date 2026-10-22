@@ -46,3 +46,10 @@ export const friendlyPackageNameFromSource = (sourceName: string): string | null
     .replace(/^_+|_+$/g, "");
   return name.length > 0 ? name : null;
 };
+
+/**
+ * 显示 / 落盘用的最终封装名：能规范就规范（小数点→下划线），否则原样返回。
+ * 老版本算出来的名字（`L7-0`）或几何推导名（`SOIC127P600X175-8N`）都安全通过。
+ */
+export const normalizePackageName = (name: string): string =>
+  friendlyPackageNameFromSource(name) ?? name;
