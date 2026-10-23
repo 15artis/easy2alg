@@ -16,10 +16,12 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "dist": "npm run build && electron-builder --publish never",
-    "dist:win": "npm run build && electron-builder --win nsis portable --x64 --publish never",
+    "dist:win": "node scripts/publish-github.mjs --build-first",
+    "dist:win:local": "npm run build && electron-builder --win nsis portable --x64 --publish never",
     "dist:mac": "npm run build && electron-builder --mac dmg zip --publish never",
     "publish:github": "node scripts/publish-github.mjs",
-    "publish:github:dry": "node scripts/publish-github.mjs --dry-run"
+    "publish:github:dry": "node scripts/publish-github.mjs --dry-run",
+    "publish:github:only": "node scripts/publish-github.mjs --skip-build"
   },
   "dependencies": {
     "@jlcpcb/core": "0.4.0",

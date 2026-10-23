@@ -26,6 +26,15 @@ npm run build
 npm run dist:win
 ```
 
+这条命令先打包（一定产出 exe 到 `release/`），再按下面的规则决定要不要发布到 GitHub Releases：
+
+- 两次发布间隔至少 **24 小时**；
+- 同一个版本号**不重复发布**。
+
+两条都不满足时只会打包、不发版，退出码 `2`（正常跳过，不是错误）。所以发版前记得先抬 `package.json` 的版本号。
+
+只打包、不碰 GitHub：`npm run dist:win:local`。只发布 `release/` 里现成的包：`npm run publish:github:only`。预览发布计划：`npm run publish:github:dry`。
+
 ## 许可
 
 MIT

@@ -11,16 +11,21 @@
  *   node scripts/publish-github.mjs                 # 构建 + 发布（带上面两道拦截）
  *   node scripts/publish-github.mjs --dry-run       # 只检查并打印计划，不动任何东西
  *   node scripts/publish-github.mjs --skip-build    # 用 release/ 里已有的安装包，不重新构建
+ *   node scripts/publish-github.mjs --build-first   # 先打包（一定产出 exe），再判断要不要发布
  *   node scripts/publish-github.mjs --force         # 忽略间隔与重复版本拦截
  *   node scripts/publish-github.mjs --min-hours 48  # 改最小间隔（0 = 不限制）
  *   node scripts/publish-github.mjs --notes FILE    # 用指定 markdown 作为 Release 说明
+ *
+ * `npm run dist:win` 走的就是 `--build-first`：打包一定完成，
+ * 只有版本号是新的、且距上次发布满 24 小时，才会顺带发到 GitHub Releases。
  *
  * 退出码：0 成功 / 1 出错 / 2 被拦截（间隔不足或版本已发布，属于正常跳过）
  *
  * 凭据来源（按顺序）：环境变量 GITHUB_TOKEN 或 GH_TOKEN → git credential（本机已存的账号）。
  *
- * 构建说明：本机 `npm run dist:win` 会因为 IDE 占用 release/win-unpacked 而失败，
- * 所以这里固定把产物输出到系统临时目录，再把安装包拷回 release/。
+ * 构建说明：本机直接调 electron-builder（`npm run dist:win:local`）会因为 IDE 占用
+ * release/win-unpacked 而失败；`npm run dist:win` 走本脚本，固定把产物输出到系统临时
+ * 目录，再把安装包拷回 release/，因此不会撞上那个问题。
  */
 import { spawnSync, execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -46,6 +51,7 @@ const valueOf = (name, fallback) => {
 const options = {
   dryRun: flag("--dry-run"),
   skipBuild: flag("--skip-build"),
+  buildFirst: flag("--build-first"),
   force: flag("--force"),
   pushTag: !flag("--no-push-tag"),
   minHours: Number(valueOf("--min-hours", "24")),
@@ -171,6 +177,73 @@ log(`间隔    ${options.minHours === 0 ? "不限制" : `至少 ${options.minHou
 if (options.dryRun) log("模式    预览（不会构建，也不会发布）");
 log("");
 
+// ---------------------------------------------------------------- 安装包
+
+const setupName = `Easy2ALG-Setup-${version}-x64.exe`;
+const portableName = `Easy2ALG-Portable-${version}-x64.exe`;
+const blockmapName = `${setupName}.blockmap`;
+const wanted = [setupName, portableName, blockmapName];
+const releaseDir = path.join(ROOT, "release");
+// 实际取包的目录：构建过就用构建输出，没构建就用 release/ 里的现成包。
+let assetsDir = releaseDir;
+
+// 构建产物在临时目录时，顺手拷回 release/ 存档。
+// 目标文件可能被 IDE 预览 / 杀毒软件占用（EBUSY），此时只警告，不影响本次打包与发布 ——
+// 上传直接用构建目录里的文件，不依赖 release/ 的副本。
+const copyToRelease = (fromDir) => {
+  if (path.resolve(fromDir) === path.resolve(releaseDir)) return;
+  fs.mkdirSync(releaseDir, { recursive: true });
+  let copied = 0;
+  for (const name of wanted) {
+    const source = path.join(fromDir, name);
+    if (!fs.existsSync(source)) continue;
+    try {
+      fs.copyFileSync(source, path.join(releaseDir, name));
+      copied += 1;
+    } catch (error) {
+      warn(`      ⚠ ${name} 没能拷回 release/（${error.code ?? "被占用"}），本次直接用构建目录里的文件`);
+    }
+  }
+  if (copied === wanted.length) log("      已拷回 release/");
+};
+
+let assetsPrepared = false;
+const prepareAssets = () => {
+  if (assetsPrepared) return;
+  assetsPrepared = true;
+  if (options.skipBuild) {
+    log("\n[1/3] 跳过构建，使用 release/ 里已有的安装包");
+    return;
+  }
+  if (options.dryRun) {
+    log("\n[1/3] 预览模式，跳过构建");
+    return;
+  }
+  log("\n[1/3] 构建（typecheck + 测试 + 打包）…");
+  runShell("npm run build");
+  const outDir = path.join(os.tmpdir(), `easy2alg-${version}-${Date.now()}`);
+  log(`      输出目录 ${outDir}`);
+  const result = spawnSync(
+    process.execPath,
+    [
+      path.join(ROOT, "node_modules", "electron-builder", "cli.js"),
+      "--win", "nsis", "portable",
+      "--x64",
+      "--publish", "never",
+      `--config.directories.output=${outDir}`,
+    ],
+    { cwd: ROOT, stdio: "inherit", env: { ...process.env, ...MIRRORS } },
+  );
+  if (result.status !== 0) {
+    die(`electron-builder 失败（退出码 ${result.status}）`);
+  }
+  assetsDir = outDir;
+  copyToRelease(outDir);
+};
+
+// --build-first：先打包。被打包命令调用时用，保证 exe 一定产出。
+if (options.buildFirst) prepareAssets();
+
 // ① 查已有 Release，做两道拦截
 const releases = await api(`/repos/${repo}/releases?per_page=50`);
 const published = releases.filter((item) => item.draft !== true);
@@ -182,6 +255,7 @@ if (latest !== null) {
   if (options.minHours > 0 && ageMs < options.minHours * 3_600_000 && !options.force) {
     die(
       `距上次发布只有 ${formatAge(ageMs)}，不足 ${options.minHours} 小时，本次跳过。\n` +
+        (options.buildFirst ? "  安装包已构建完成，可直接使用。\n" : "") +
         `  确认要发就加 --force，或临时放宽 --min-hours。`,
       2,
     );
@@ -192,49 +266,26 @@ if (latest !== null) {
 
 const alreadyReleased = published.find((item) => item.tag_name === tag);
 if (alreadyReleased !== undefined && !options.force) {
-  die(`版本 ${tag} 已经发布过了：${alreadyReleased.html_url}\n  要重新发布请先改 package.json 的版本号，或加 --force。`, 2);
+  die(
+    `版本 ${tag} 已经发布过了：${alreadyReleased.html_url}\n` +
+      (options.buildFirst ? "  安装包已构建完成，可直接使用。\n" : "") +
+      `  要重新发布请先改 package.json 的版本号，或加 --force。`,
+    2,
+  );
 }
 
-// ② 准备安装包
-const setupName = `Easy2ALG-Setup-${version}-x64.exe`;
-const portableName = `Easy2ALG-Portable-${version}-x64.exe`;
-const blockmapName = `${setupName}.blockmap`;
-const wanted = [setupName, portableName, blockmapName];
+// ② 准备安装包（--build-first 时已在拦截前完成）
+prepareAssets();
 
-let assetsDir = path.join(ROOT, "release");
-if (!options.skipBuild) {
-  log("\n[1/3] 构建（typecheck + 测试 + 打包）…");
-  if (options.dryRun) {
-    log("      预览模式，跳过");
-  } else {
-    runShell("npm run build");
-    const outDir = path.join(os.tmpdir(), `easy2alg-${version}-${Date.now()}`);
-    log(`      输出目录 ${outDir}`);
-    const result = spawnSync(
-      process.execPath,
-      [
-        path.join(ROOT, "node_modules", "electron-builder", "cli.js"),
-        "--win", "nsis", "portable",
-        "--x64",
-        "--publish", "never",
-        `--config.directories.output=${outDir}`,
-      ],
-      { cwd: ROOT, stdio: "inherit", env: { ...process.env, ...MIRRORS } },
-    );
-    if (result.status !== 0) {
-      die(`electron-builder 失败（退出码 ${result.status}）`);
-    }
-    assetsDir = outDir;
-  }
-} else {
-  log("\n[1/3] 跳过构建，使用 release/ 里已有的安装包");
-}
+const resolveAsset = (name) => {
+  const built = path.join(assetsDir, name);
+  if (fs.existsSync(built)) return built;
+  const released = path.join(releaseDir, name);
+  return fs.existsSync(released) ? released : null;
+};
 
-const assets = wanted
-  .map((name) => path.join(assetsDir, name))
-  .filter((file) => fs.existsSync(file));
-
-const missing = wanted.filter((name) => !fs.existsSync(path.join(assetsDir, name)));
+const assets = wanted.map(resolveAsset).filter((file) => file !== null);
+const missing = wanted.filter((name) => resolveAsset(name) === null);
 if (missing.length > 0 && !options.dryRun) {
   die(`缺少安装包：${missing.join(", ")}\n  目录：${assetsDir}`);
 }
@@ -247,15 +298,6 @@ for (const file of assets) {
 if (options.dryRun) {
   log("\n[3/3] 预览模式结束，未创建 tag / Release。");
   process.exit(0);
-}
-
-// ③ 拷回 release/（构建输出在临时目录时）
-if (path.resolve(assetsDir) !== path.resolve(ROOT, "release")) {
-  fs.mkdirSync(path.join(ROOT, "release"), { recursive: true });
-  for (const file of assets) {
-    fs.copyFileSync(file, path.join(ROOT, "release", path.basename(file)));
-  }
-  log(`      已拷回 release/`);
 }
 
 // ④ tag
