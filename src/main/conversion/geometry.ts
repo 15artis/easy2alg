@@ -1,4 +1,4 @@
-import type { NormalizedPad, Point } from "../../shared/schemas";
+import type { NormalizedCircle, NormalizedPad, Point } from "../../shared/schemas";
 
 export const EASYEDA_UNIT_MM = 0.254;
 
@@ -74,6 +74,60 @@ export const computeBounds = (
     maxX: Math.max(...points.map((point) => point.x)),
     maxY: Math.max(...points.map((point) => point.y)),
   };
+};
+
+// pin-1 角标（实心圆盘）可见性 —— 用户反馈 2026-10-15："生成的丝印方向的圆非常小
+// 不利于观看"。源数据的 FILL 圆点外径只有 0.6mm（11.811mil），在 27mm 的 FCBGA 上
+// 按整版缩放显示几乎看不见。
+// 判据不依赖数据来源：模型把圆统一为"描边圆"(center/radius/width)，当线宽 ≥ 2×半径
+// 时圆环内径为 0，即实心圆盘 —— elibz2 的 FILL 圆点（radius=外径/2、width=外径）与
+// 立创 C 编号接口的 EasyEDA CIRCLE（width=2×radius）都满足该不变式；而真正的丝印圆环
+// 外径本就不小，会被下面的"不小于目标值则跳过"自然排除。
+// 尺寸规则（用户要求："源数据的 方向圆点标识符 需要限制最小"，2026-10-15）：
+//   目标外径 = min( max(本体短边 × 5%, 下限), 1.5mm )，且仅在「源外径 < 目标」时放大
+//   下限     = min(0.8mm, 本体短边 × 50%)
+//   · 只放大不缩小：源尺寸已足够大时原样保留；
+//   · 5% 项让大器件（BGA）的角标随本体一起放大；
+//   · 下限项给所有器件兜底一个可见尺寸，同时用"本体短边的一半"限制下限本身，
+//     避免 0402/0603 这类小本体被角标占满；
+//   · 1.5mm 上限防止超大本体上角标失控。
+export const PIN1_MARKER_MIN_DIAMETER_MM = 0.8;
+export const PIN1_MARKER_BODY_RATIO = 0.05;
+export const PIN1_MARKER_MAX_DIAMETER_MM = 1.5;
+
+export const isFilledDisc = (circle: NormalizedCircle): boolean =>
+  circle.width >= circle.radius * 2 - 1e-9;
+
+const discOuterDiameter = (circle: NormalizedCircle): number =>
+  circle.radius * 2 + circle.width;
+
+export const enlargePin1Markers = (
+  circles: readonly NormalizedCircle[],
+  pads: readonly NormalizedPad[],
+): NormalizedCircle[] => {
+  if (pads.length === 0 || circles.length === 0) {
+    return [...circles];
+  }
+  const body = computeBounds(pads, []);
+  const bodyShortSide = Math.min(body.maxX - body.minX, body.maxY - body.minY);
+  const floor = Math.min(PIN1_MARKER_MIN_DIAMETER_MM, bodyShortSide * 0.5);
+  const targetOuterDiameter = Math.min(
+    Math.max(bodyShortSide * PIN1_MARKER_BODY_RATIO, floor),
+    PIN1_MARKER_MAX_DIAMETER_MM,
+  );
+  return circles.map((circle) => {
+    if (!isFilledDisc(circle) || discOuterDiameter(circle) >= targetOuterDiameter) {
+      return circle;
+    }
+    // 维持实心圆盘编码：描边外沿 = radius + width/2 = 目标外半径，因此
+    // radius = 目标外径/4、width = 目标外径/2，使 SVG 预览与 axlDBCreateCircle
+    // 的居中描边得到同一个外径。（源编码 radius=外径/2、width=外径 同理。）
+    return {
+      ...circle,
+      radius: roundMm(targetOuterDiameter / 4),
+      width: roundMm(targetOuterDiameter / 2),
+    };
+  });
 };
 
 export const uniquePositiveDeltas = (values: readonly number[]): readonly number[] => {

@@ -1,6 +1,12 @@
 import { getDemoFootprint } from "../../shared/demo-fixtures";
 import type { Easy2AlgApi } from "../../shared/ipc";
-import type { AppSettings, GenerationProgress, HistoryEntry } from "../../shared/schemas";
+import type { ProductSearchHit } from "../../shared/schemas";
+import {
+  defaultUiSettings,
+  type AppSettings,
+  type GenerationProgress,
+  type HistoryEntry,
+} from "../../shared/schemas";
 
 const SettingsKey = "easy2alg.settings";
 const HistoryKey = "easy2alg.history";
@@ -13,12 +19,19 @@ const readSettings = (): AppSettings => {
       libraryDirectory: "D:\\AllegroLibrary",
       setupCompleted: true,
       allegroExecutablePath: null,
+      olbLibraryPath: null,
+      unifiedLibraryFolder: false,
+      fillPcbFootprint: true,
+      ui: defaultUiSettings(),
     };
   }
   const parsed = JSON.parse(saved) as AppSettings;
   return {
     ...parsed,
     allegroExecutablePath: parsed.allegroExecutablePath ?? null,
+    unifiedLibraryFolder: parsed.unifiedLibraryFolder ?? false,
+    fillPcbFootprint: parsed.fillPcbFootprint ?? true,
+    ui: { ...defaultUiSettings(), ...parsed.ui },
   };
 };
 
@@ -63,13 +76,52 @@ export const createMockApi = (): Easy2AlgApi => {
         detected: true,
       },
     ],
+    saveUiSettings: async (patch) => {
+      const merged: AppSettings = { ...readSettings(), ui: { ...readSettings().ui, ...patch } };
+      window.localStorage.setItem(SettingsKey, JSON.stringify(merged));
+      return merged;
+    },
+    fetchSymbol: async () => null,
+    // 浏览器预览用的搜索桩：模拟真实接口"型号 → C 编号"的命中
+    searchProducts: async (keyword) => {
+      const normalized = keyword.trim().toUpperCase();
+      const table: readonly ProductSearchHit[] = [
+        { lcscId: "C2866150", mpn: "LMK00301ARHST", package: "WQFN-48-EP(7x7)", manufacturer: "TI", stock: 0 },
+        { lcscId: "C2040", mpn: "RP2040", package: "LQFN-56", manufacturer: "Raspberry Pi", stock: 1200 },
+        { lcscId: "C7955", mpn: "LM393DR", package: "SOIC-8", manufacturer: "TI", stock: 800 },
+      ];
+      return {
+        keyword,
+        hits:
+          normalized.length === 0
+            ? []
+            : table.filter(
+                (hit) =>
+                  hit.mpn.toUpperCase().includes(normalized) ||
+                  hit.lcscId.toUpperCase().includes(normalized),
+              ),
+      };
+    },
     fetchComponent: async (lcscId) => {
       await wait(300);
-      const footprint = getDemoFootprint(lcscId);
+      // 搜索结果里只有 C2040 有演示封装；C2866150 借用同一份数据，方便预览里点通整条链路
+      const alias = lcscId.toUpperCase() === "C2866150" ? "C2040" : lcscId;
+      const footprint = getDemoFootprint(alias);
       if (footprint === null) {
         throw new Error(`演示数据中没有 ${lcscId}，可使用 C2040、C20197 或 C163691。`);
       }
-      return footprint;
+      return { ...footprint, lcscId };
+    },
+    chooseLocalLibraryFile: async () => null,
+    readLocalLibrary: async () => [],
+    fetchLocalComponent: async () => {
+      throw new Error("浏览器预览不支持本地库导入，请使用桌面版。");
+    },
+    fetchLocalSymbol: async () => null,
+    chooseOlbLibrary: async () => null,
+    createOlbLibrary: async () => null,
+    writeOlb: async () => {
+      throw new Error("浏览器预览不支持写入 OLB，请使用桌面版。");
     },
     createPlan: async (footprint) => {
       const largePad = footprint.pads.some((pad) => pad.width * pad.height > 16);

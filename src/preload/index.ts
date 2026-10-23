@@ -53,10 +53,23 @@ const api: Easy2AlgApi = {
   getAppInfo: () => ipcRenderer.invoke(IpcChannels.getAppInfo),
   getSettings: () => ipcRenderer.invoke(IpcChannels.getSettings),
   saveSettings: (settings) => ipcRenderer.invoke(IpcChannels.saveSettings, settings),
+  saveUiSettings: (patch) => ipcRenderer.invoke(IpcChannels.saveUiSettings, patch),
   chooseLibraryDirectory: () => ipcRenderer.invoke(IpcChannels.chooseLibraryDirectory),
   chooseAllegroExecutable: () => ipcRenderer.invoke(IpcChannels.chooseAllegroExecutable),
   detectAllegro: () => ipcRenderer.invoke(IpcChannels.detectAllegro),
+  searchProducts: (keyword) => ipcRenderer.invoke(IpcChannels.searchProducts, keyword),
   fetchComponent: (lcscId) => ipcRenderer.invoke(IpcChannels.fetchComponent, lcscId),
+  fetchSymbol: (lcscId) => ipcRenderer.invoke(IpcChannels.fetchSymbol, lcscId),
+  chooseLocalLibraryFile: (defaultDirectory) => ipcRenderer.invoke(IpcChannels.chooseLocalLibraryFile, defaultDirectory),
+  readLocalLibrary: (filePath) => ipcRenderer.invoke(IpcChannels.readLocalLibrary, filePath),
+  fetchLocalComponent: (filePath, deviceUuid) =>
+    ipcRenderer.invoke(IpcChannels.fetchLocalComponent, filePath, deviceUuid),
+  fetchLocalSymbol: (filePath, deviceUuid) =>
+    ipcRenderer.invoke(IpcChannels.fetchLocalSymbol, filePath, deviceUuid),
+  chooseOlbLibrary: () => ipcRenderer.invoke(IpcChannels.chooseOlbLibrary),
+  createOlbLibrary: (suggestedName) =>
+    ipcRenderer.invoke(IpcChannels.createOlbLibrary, suggestedName),
+  writeOlb: (request) => ipcRenderer.invoke(IpcChannels.writeOlb, request),
   createPlan: (footprint) => ipcRenderer.invoke(IpcChannels.createPlan, footprint),
   generate: (plan) => ipcRenderer.invoke(IpcChannels.generate, plan),
   onGenerationProgress: (listener) => {

@@ -781,9 +781,21 @@ select:focus,
   gap: 8px;
 }
 
+.directory-row input {
+  min-width: 0;
+}
+
 .directory-row .icon-button {
   flex: 0 0 42px;
   height: 42px;
+}
+
+/* OLB 行多了「选择已有 / 新建」两个按钮，输入框让位并保证按钮文字不换行。 */
+.directory-row .secondary-button {
+  flex: none;
+  height: 42px;
+  padding: 0 12px;
+  white-space: nowrap;
 }
 
 .settings-actions {
@@ -1050,8 +1062,18 @@ select:focus,
 
 .workbench {
   display: grid;
-  grid-template-columns: 294px minmax(520px, 1fr) 322px;
+  /* grid-template-columns 由 App 按 settings.ui 的侧栏宽度写成行内样式（可拖动） */
   min-height: 0;
+}
+
+/* 拖动侧栏时关掉过渡抖动，"跟手"优先 */
+.workbench.is-resizing {
+  user-select: none;
+  cursor: col-resize;
+}
+
+.workbench.is-resizing .rail-resizer {
+  background: rgb(36 88 211 / 18%);
 }
 
 .left-rail,
@@ -1069,23 +1091,64 @@ select:focus,
 }
 
 .left-rail {
+  position: relative;
+  /* 左栏自身不滚：高度必须被裁住，否则子块会把整栏撑出窗口（搜索结果多时尤其明显） */
+  overflow: hidden;
   border-right: 1px solid #dfe5ed;
 }
 
 .right-rail {
+  position: relative;
   border-left: 1px solid #dfe5ed;
+}
+
+/**
+ * 侧栏宽度拖动条：压在侧栏内侧边缘上（宽 7px，比 1px 边框好点得多），
+ * 平时透明，悬停才显色，不打扰视觉。
+ */
+.rail-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 6;
+  width: 7px;
+  cursor: col-resize;
+  transition: background 120ms ease;
+}
+
+.rail-resizer:hover {
+  background: rgb(36 88 211 / 18%);
+}
+
+.rail-resizer-left {
+  right: -4px;
+}
+
+.rail-resizer-right {
+  left: -4px;
 }
 
 .rail-header,
 .inspector-header,
 .stage-heading {
-  display: flex;
-  flex: 0 0 52px;
+  /* 三栏：标题 | tabs | 操作。tabs 用 auto 列 + 两侧等宽 1fr 列实现**真正居中**
+   * （用户 2026-10-23：PCB 页没有右侧操作时，flex 的 space-between 会把 tabs 顶到最右）。 */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  column-gap: 12px;
   align-items: center;
-  justify-content: space-between;
+  flex: 0 0 52px;
   padding: 0 16px;
   background: white;
   border-bottom: 1px solid #dfe5ed;
+}
+
+.stage-heading > .stage-tabs {
+  justify-self: center;
+}
+
+.stage-heading > .edit-toolbar {
+  justify-self: end;
 }
 
 .rail-header h2,
@@ -1107,11 +1170,33 @@ select:focus,
   display: flex;
   align-items: baseline;
   gap: 10px;
+  min-width: 0;
+  overflow: hidden;
 }
 
+/* 封装名可以很长：单行省略，别把中间 tabs 挤走 */
+.stage-heading > div:first-child span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/**
+ * 输入区是个"可压缩"的 flex 列：窗口不够高时只压搜索结果的滚动区，
+ * 输入框/按钮保持原尺寸（否则 25 条命中会把下面的队列整个挤出屏幕）。
+ */
 .input-block {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
   padding: 14px;
   border-bottom: 1px solid #dfe5ed;
+}
+
+.input-block > :not(.search-results) {
+  flex: 0 0 auto;
 }
 
 .input-block textarea {
@@ -1134,9 +1219,29 @@ select:focus,
 
 .input-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr auto;
   gap: 8px;
   margin-top: 10px;
+}
+
+/* 「导入本地库」占满整行（除末尾的图标按钮列） */
+.input-actions .wide-action {
+  grid-column: 1 / 3;
+}
+
+.input-actions .icon-action {
+  grid-column: 3;
+  min-width: 40px;
+  padding: 0 10px;
+}
+
+.local-library-hint {
+  margin: 8px 0 0;
+  overflow: hidden;
+  color: #8791a2;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .workbench .primary-button {
@@ -1151,6 +1256,7 @@ select:focus,
 
 .queue-columns {
   display: flex;
+  flex: 0 0 auto;
   justify-content: space-between;
   padding: 10px 14px;
   color: #8791a2;
@@ -1158,8 +1264,10 @@ select:focus,
   font-size: 10px;
 }
 
+/* 队列列表吃掉剩余高度；给个下限，别让搜索结果把它压没 */
 .rail-list {
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 96px;
   overflow: auto;
 }
 
@@ -1176,6 +1284,50 @@ select:focus,
   border: 0;
   border-bottom: 1px solid #edf1f5;
   text-align: left;
+}
+
+/**
+ * 每行外面套一个定位壳：行本身是 <button>，删除按钮不能嵌进去（HTML 不允许
+ * button 套 button），只能做兄弟节点压在同一行的右上角。平时透明，
+ * 悬停/键盘聚焦时浮出来，并把状态图标让开。
+ */
+.rail-item-wrap {
+  position: relative;
+}
+
+.rail-delete {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: #8791a2;
+  background: #fff;
+  border: 1px solid #dfe5ed;
+  border-radius: 6px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease, color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.rail-item-wrap:hover .rail-delete,
+.rail-item-wrap:focus-within .rail-delete {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.rail-item-wrap:hover .rail-state {
+  opacity: 0;
+}
+
+.rail-delete:hover {
+  color: #c13c4a;
+  background: #fff5f6;
+  border-color: #f0c2c7;
 }
 
 .rail-item:hover {
@@ -1233,8 +1385,20 @@ select:focus,
   font-style: normal;
 }
 
+/* 失败原因：红色、允许两行（错误文本比封装名长得多，单行 ellipsis 看不出原因，
+ * 完整内容靠 title 悬停提示） */
+.rail-item .rail-error-text {
+  color: #c13c4a;
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  line-height: 1.5;
+}
+
 .rail-state {
   color: #13856b;
+  transition: opacity 120ms ease;
 }
 
 .rail-state.warning { color: #b46b09; }
@@ -1287,13 +1451,10 @@ select:focus,
   min-height: 0;
   margin: 14px;
   overflow: hidden;
-  background:
-    linear-gradient(rgb(215 222 231 / 34%) 1px, transparent 1px),
-    linear-gradient(90deg, rgb(215 222 231 / 34%) 1px, transparent 1px),
-    linear-gradient(rgb(194 204 216 / 28%) 1px, transparent 1px),
-    linear-gradient(90deg, rgb(194 204 216 / 28%) 1px, transparent 1px),
-    #f8fafc;
-  background-size: 10px 10px, 10px 10px, 50px 50px, 50px 50px;
+  /* 画布底色只留纯色：10px/50px 的屏幕像素网格是**屏幕坐标**，与符号/封装坐标无关，
+   * 会和真正的世界网格叠成"多重网格"（用户 2026-10-22 报的 PCB 背景重影）。
+   * 原理图用 SymbolGrid、PCB 用 #footprint-grid，各自按自己的坐标画。 */
+  background: #f8fafc;
   border: 1px solid #cbd4e0;
   border-radius: 8px;
 }
@@ -1322,10 +1483,63 @@ select:focus,
   height: 100%;
 }
 
+/* 覆盖同名器件的二次确认框：复用进度框的骨架，正文换成两行对比 */
+.overwrite-dialog {
+  width: min(520px, 92vw);
+}
+
+.overwrite-body {
+  display: grid;
+  gap: 10px;
+  color: #36434e;
+  font-size: 12px;
+}
+
+.overwrite-body p {
+  margin: 0;
+  line-height: 1.6;
+}
+
+.overwrite-facts {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 10px 12px;
+  background: #f6f8fb;
+  border: 1px solid #dfe5ed;
+  border-radius: 6px;
+}
+
+.overwrite-facts div {
+  display: flex;
+  gap: 10px;
+}
+
+.overwrite-facts dt {
+  min-width: 62px;
+  color: #8791a2;
+}
+
+.overwrite-facts dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.overwrite-note {
+  color: #8791a2;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+/*
+ * 图例固定在**左下角**、缩放控件固定在**右上角** —— 两块浮层永远不重叠。
+ * 画布很矮时它们也只会各占一角（用户 2026-10-16 截图里两者叠在一起了）。
+ */
 .canvas-legend {
   position: absolute;
-  right: 12px;
+  left: 12px;
   bottom: 10px;
+  max-width: calc(100% - 24px);
   z-index: 3;
   display: flex;
   gap: 10px;
@@ -1354,7 +1568,8 @@ select:focus,
 
 .stage-footer {
   display: flex;
-  flex: 0 0 92px;
+  /* 用户要求：高度只留够放下按钮（按钮本体 42px + 上下各 7px 呼吸） */
+  flex: 0 0 56px;
   align-items: center;
   justify-content: space-between;
   gap: 20px;
@@ -1375,7 +1590,7 @@ select:focus,
   align-items: center;
   gap: 6px;
   max-width: 350px;
-  margin-top: 7px;
+  margin-top: 3px;
   overflow: hidden;
   color: #5f6b7d;
   font-size: 10px;
@@ -1419,10 +1634,41 @@ select:focus,
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin: 0 -15px 10px;
-  padding: 14px 15px 5px;
+  margin: 0;
+  padding: 0;
   color: #172033;
   font-size: 10px;
+}
+
+/* 折叠标题整行可点（右侧有展开/收起箭头） */
+.section-toggle {
+  display: block;
+  width: calc(100% + 30px);
+  margin: 0 -15px 10px;
+  padding: 14px 15px 5px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.section-toggle:hover {
+  background: #f6f8fb;
+}
+
+.section-chevron {
+  color: #8791a2;
+  transform: rotate(90deg);
+  transition: transform 150ms ease;
+}
+
+.inspector-section.is-collapsed .section-chevron {
+  transform: rotate(0deg);
+}
+
+.inspector-section.is-collapsed .section-toggle {
+  margin-bottom: 0;
+  padding-bottom: 12px;
 }
 
 .right-rail .facts {
@@ -1448,32 +1694,41 @@ select:focus,
   gap: 9px;
 }
 
-.layer-list label {
+.layer-row {
   display: grid;
-  grid-template-columns: 16px 12px 1fr 25px;
+  grid-template-columns: 16px 18px 1fr 25px;
   align-items: center;
+  gap: 2px;
   color: #5f6b7d;
   font-size: 9px;
 }
 
-.layer-list input {
+.layer-row input[type="checkbox"] {
   margin: 0;
   accent-color: #2458d3;
 }
 
-.layer-list i {
-  width: 10px;
-  height: 4px;
+/* 颜色块本身就是取色器：点一下就能改图层配色（颜色持久化在设置里） */
+.layer-swatch {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid #cbd4e0;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.layer-swatch::-webkit-color-swatch-wrapper {
+  padding: 1px;
+}
+
+.layer-swatch::-webkit-color-swatch {
+  border: 0;
   border-radius: 2px;
 }
 
-.layer-list i.copper { background: #d4a73f; }
-.layer-list i.silk { background: #fff; border: 1px solid #8791a2; }
-.layer-list i.mask { border: 1px dashed #2458d3; }
-.layer-list i.paste { background: #aeb8c5; }
-.layer-list i.bound { background: #778397; }
-
-.layer-list span {
+.layer-row .layer-count {
   color: #8791a2;
   text-align: right;
 }
@@ -1784,8 +2039,616 @@ select:focus,
   border-color: #1d49b7;
 }
 
-@media (max-width: 1180px) {
-  .workbench {
-    grid-template-columns: 260px minmax(460px, 1fr) 292px;
-  }
+/*
+ * 侧栏宽度由用户拖动决定（行内样式写在 .workbench 上），所以这里不再用媒体查询
+ * 覆盖列宽 —— 行内样式优先级更高，留着只会让人以为还有响应式。
+ */
+
+.local-import-error {
+  margin: 6px 2px 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #c13c4a;
+  word-break: break-all;
+}
+
+.input-actions .secondary-button {
+  flex: none;
+}
+
+/* 按钮标签一律不换行：左栏两列布局下「导入本地库」在 294px 栏宽里会被压成两行。
+   该按钮独占一整行（.wide-action），其余按钮保持左右两列。 */
+.input-actions .primary-button,
+.input-actions .secondary-button {
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.input-actions .wide-action {
+  grid-column: 1 / -1;
+}
+
+/* ---------- 预览分页 / 分区 ---------- */
+.stage-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  background: #eef2f7;
+  border-radius: 8px;
+}
+
+.stage-tabs button {
+  padding: 5px 12px;
+  color: #5f6b7d;
+  font-size: 12px;
+  font-weight: 650;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+}
+
+.stage-tabs button.active {
+  color: #172033;
+  background: white;
+  box-shadow: 0 1px 4px rgb(23 32 51 / 12%);
+}
+
+.stage-tabs button:disabled {
+  opacity: 0.42;
+}
+
+.stage-sections {
+  display: flex;
+  gap: 3px;
+}
+
+.stage-sections button {
+  width: 24px;
+  height: 24px;
+  color: #5f6b7d;
+  font-size: 11px;
+  font-weight: 700;
+  background: #f2f5f9;
+  border: 1px solid #d6dde2;
+  border-radius: 5px;
+}
+
+.stage-sections button.active {
+  color: white;
+  background: #2458d3;
+  border-color: #1d49b7;
+}
+
+/* ---------- 符号「编辑」模式 ---------- */
+/* 与浏览（缩放/平移）互斥：编辑开着时 PanZoom 让位，元素可点选拖动 */
+.edit-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  color: #36434e;
+  font-size: 11px;
+  font-weight: 600;
+  background: white;
+  border: 1px solid #cbd4e0;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.edit-mode-toggle:hover {
+  border-color: #2458d3;
+  color: #1d49b7;
+}
+
+.edit-mode-toggle.on {
+  color: white;
+  background: #e0862c;
+  border-color: #c4721f;
+}
+
+/* 「编辑」+ 撤销/重做 一组 */
+.edit-toolbar {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 原理图元件编辑：画布左上角的网格工具条。
+ * 不放进 52px 的 .stage-heading —— 1120px 最小窗口下 header 已被
+ * 标题 / tabs / 撤销按钮占满，再加带文字的控件会把标题挤掉。 */
+.symbol-toolbar {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  background: rgb(255 255 255 / 94%);
+  border: 1px solid #cbd4e0;
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgb(23 32 51 / 10%);
+}
+
+.symbol-tool {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  color: #4a5561;
+  background: white;
+  border: 1px solid #d7dfea;
+  border-radius: 6px;
+}
+
+.symbol-tool:hover {
+  border-color: #9fb2cc;
+}
+
+.symbol-tool.on {
+  color: white;
+  background: #2459d3;
+  border-color: #2459d3;
+}
+
+.symbol-tool-select {
+  height: 30px;
+  padding: 0 6px;
+  color: #172033;
+  background: white;
+  border: 1px solid #d7dfea;
+  border-radius: 6px;
+  font-size: 11px;
+}
+
+.edit-history-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  color: #36434e;
+  background: white;
+  border: 1px solid #cbd4e0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.edit-history-button:hover:not(:disabled) {
+  border-color: #2458d3;
+  color: #1d49b7;
+}
+
+.edit-history-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* 画布光标：默认箭头（用户 2026-10-16 要求编辑模式别用 move 光标）；
+ * 框线上由内联 style 按方向显示 resize 光标。 */
+
+/* 关键字搜索结果（输入型号时列在导入框下方）。
+ * 命中多时自身滚动——用户 2026-10-19：25 条命中撑出窗口，剩下一半看不到。 */
+.search-results {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+  margin-top: 8px;
+  padding: 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: #f7f9ff;
+  border: 1px solid #d7e2fb;
+  border-radius: 8px;
+}
+
+/* 滚动时把标题行（含「关闭」）钉在顶部 */
+.search-results-header {
+  position: sticky;
+  top: -8px;
+  z-index: 1;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 0;
+  color: #5f6b7d;
+  background: #f7f9ff;
+  font-size: 11px;
+}
+
+.search-hit {
+  display: grid;
+  flex: 0 0 auto;
+  grid-template-columns: auto 1fr;
+  gap: 2px 8px;
+  align-items: baseline;
+  padding: 6px 8px;
+  text-align: left;
+  background: white;
+  border: 1px solid #e2e9f6;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.search-hit:hover {
+  border-color: #2458d3;
+  background: #f2f6ff;
+}
+
+.search-hit strong {
+  color: #1d49b7;
+  font-size: 12px;
+}
+
+.search-hit-mpn {
+  color: #1f2937;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-hit-meta {
+  grid-column: 2;
+  color: #7d8794;
+  font-size: 10px;
+}
+
+/* 设置页的复选行 */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: #36434e;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.toggle-row input {
+  width: 15px;
+  height: 15px;
+  accent-color: #2458d3;
+}
+
+/* 橡皮筋框选：画在世界坐标里，dash 线宽不随缩放变粗 */
+.panzoom-svg .marquee {
+  fill: rgb(36 88 211 / 8%);
+  stroke: #2458d3;
+  stroke-dasharray: 5 4;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+/* ---------- 缩放平移画布 ---------- */
+/* 光标用默认箭头（用户 2026-10-16 要求：编辑模式别用 move/grab 这类"会动"的光标）；
+ * 框线上由内联 style 按方向显示 resize 光标。 */
+.panzoom {
+  position: absolute;
+  inset: 14px 12px 12px;
+  cursor: default;
+  touch-action: none;
+}
+
+.panzoom-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* 禁文本选择：框选拖动会把 SVG 文本"选中"，之后在选中文本上拖动会被浏览器
+   * 当成原生文字拖放 → pointercancel → 我们自己的拖动/框选半途夭折
+   * （实测：拖动只走一步就停、pointerup 消失）。画布类应用的标准做法。 */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.panzoom-controls {
+  position: absolute;
+  right: 10px;
+  top: 10px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  background: rgb(255 255 255 / 94%);
+  border: 1px solid #d6dde2;
+  border-radius: 8px;
+  box-shadow: 0 3px 10px rgb(23 32 51 / 10%);
+}
+
+.panzoom-controls button {
+  display: grid;
+  place-items: center;
+  min-width: 26px;
+  height: 26px;
+  color: #36434e;
+  font-size: 14px;
+  font-weight: 700;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+}
+
+.panzoom-controls button:hover {
+  background: #eef2f7;
+}
+
+.panzoom-controls span {
+  min-width: 46px;
+  color: #8791a2;
+  font-size: 11px;
+  text-align: center;
+}
+
+.panzoom-controls .panzoom-fit {
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+.canvas-legend .legend-reset {
+  margin-left: 8px;
+  padding: 2px 7px;
+  color: #1d49b7;
+  font-size: 11px;
+  background: #eef3ff;
+  border: 1px solid #cfdcfb;
+  border-radius: 5px;
+}
+
+/* ---------- 生成目标多选 ---------- */
+.target-toggles {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  color: #4a5561;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.target-toggles label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+
+.target-toggles input {
+  width: 14px;
+  height: 14px;
+  accent-color: #2458d3;
+}
+
+/* ---------- 输出命名 ---------- */
+.name-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.name-fields label {
+  display: block;
+}
+
+.name-fields label span {
+  display: block;
+  margin-bottom: 4px;
+  color: #303b44;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.name-fields label span em {
+  margin-left: 5px;
+  color: #a3adb8;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 500;
+}
+
+.name-fields input {
+  width: 100%;
+  height: 32px;
+  padding: 0 9px;
+  color: #35414b;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  background: white;
+  border: 1px solid #d8dfe4;
+  border-radius: 6px;
+  outline: 0;
+}
+
+.name-fields input:focus {
+  border-color: #66cdb3;
+  box-shadow: 0 0 0 3px rgb(0 169 130 / 8%);
+}
+
+.name-hint {
+  margin: 0;
+  color: #a3adb8;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+/* ---------- 图层显示面板 ---------- */
+.layer-list label {
+  display: grid;
+  grid-template-columns: auto 9px 1fr auto;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 0;
+  cursor: pointer;
+}
+
+.layer-list label input {
+  width: 14px;
+  height: 14px;
+  accent-color: #2458d3;
+}
+
+.layer-list label i {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+}
+
+/* 注意：行容器从 <label> 换成了 .layer-row（要给取色器留位置），选择器别写回 label */
+.layer-list .layer-name {
+  min-width: 0;
+  color: #36434e;
+  font-size: 11px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.layer-list .layer-name em {
+  display: block;
+  color: #a3adb8;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.layer-list label .layer-count {
+  color: #8791a2;
+  font-size: 11px;
+}
+
+.layer-empty {
+  color: #a3adb8;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+/* 图例最多九项，允许换行 */
+.canvas-legend {
+  flex-wrap: wrap;
+  max-width: 62%;
+  font-size: 10px;
+}
+
+/**
+ * 原理图图例：带一条很长的操作提示 + 「重置调整」按钮。
+ * 不能吃上面那条 62% 的宽度上限 —— 窗口没最大化时提示会提前折行、
+ * 「重置调 整」被压成两行，而右边明明还有空位（用户 2026-10-16 反馈）。
+ */
+.canvas-legend.symbol-legend {
+  max-width: calc(100% - 24px);
+}
+
+.canvas-legend.symbol-legend span:last-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.canvas-legend.symbol-legend .legend-reset {
+  margin-left: auto;
+  flex: none;
+  white-space: nowrap;
+}
+
+.panzoom-controls .panzoom-fit + .panzoom-fit {
+  border-left: 1px solid #e4e9f0;
+  margin-left: 2px;
+}
+
+/* 精确属性面板（用户 2026-10-20）：画布右上、缩放控件下方的小卡片。
+ * 放画布而不是右侧 rail —— 没有封装计划的器件右侧 rail 是空态，面板会跟着消失。 */
+.symbol-props {
+  position: absolute;
+  top: 52px;
+  right: 10px;
+  z-index: 5;
+  width: 178px;
+  padding: 8px 10px 10px;
+  background: rgb(255 255 255 / 96%);
+  border: 1px solid #cbd4e0;
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgb(23 32 51 / 10%);
+}
+
+.symbol-props-title {
+  margin-bottom: 6px;
+  color: #5f6b7d;
+  font-size: 10px;
+  letter-spacing: 0.4px;
+}
+
+.symbol-props-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 8px;
+}
+
+.symbol-prop {
+  display: grid;
+  gap: 2px;
+  color: #8791a2;
+  font-size: 9px;
+}
+
+.symbol-prop input,
+.symbol-prop select {
+  width: 100%;
+  height: 24px;
+  padding: 0 6px;
+  color: #172033;
+  background: white;
+  border: 1px solid #d7dfea;
+  border-radius: 5px;
+  font-size: 11px;
+}
+
+.symbol-prop input:focus,
+.symbol-prop select:focus {
+  outline: 2px solid rgb(36 89 211 / 35%);
+  outline-offset: 0;
+}
+
+/* 符号页只显示**世界坐标网格**（SymbolGrid，按 100/50 mil 档位）。
+ * 容器自带的那层 10px 屏幕像素网格与符号坐标无关：100 mil 档下用户会看到
+ * 一格 10px 的细格，误以为"档位没生效 / 和引脚对不上"（用户 2026-10-21）。
+ * 注意只关符号页，PCB 预览仍用原来的底纹。 */
+.engineering-canvas.symbol-canvas {
+  background: #f8fafc;
+}
+
+.symbol-props-delete {
+  width: 100%;
+  height: 26px;
+  margin-top: 8px;
+  color: #b42318;
+  background: #fff5f4;
+  border: 1px solid #f0b7b1;
+  border-radius: 6px;
+  font-size: 11px;
+}
+
+.symbol-props-delete:hover {
+  background: #ffe9e7;
+}
+
+/* 属性面板标题即拖动把手（用户 2026-10-22：面板可移动并持久化）。
+ * 双击标题回到默认位置。 */
+.symbol-props-title {
+  cursor: move;
+  user-select: none;
+  padding: 2px 0 6px;
+  touch-action: none;
+}
+
+.symbol-props.dragging {
+  box-shadow: 0 10px 26px rgb(23 32 51 / 18%);
 }
