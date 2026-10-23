@@ -181,6 +181,61 @@ describe("easyeda standard symbol", () => {
       expect(labelCollisions(parseMulti()!)).toBe(0);
     });
 
+    /**
+     * 用户 2026-10-23 第二张截图：引脚吸附网格时只挪了引脚、图形没动，
+     * 栅极线/漏源引线看起来"断开一格"。整段一起挪之后引脚端点必须仍落在图元上。
+     */
+    it("引脚端点落在图元上（吸附网格时整段一起挪）", () => {
+      for (const section of parseMulti()!.sections) {
+        const points = section.shapes.flatMap((shape) =>
+          shape.kind === "polyline" ? shape.points : [],
+        );
+        for (const pin of section.pins) {
+          const onDrawing = points.some(
+            (point) =>
+              Math.abs(point.x - pin.body.x) < 1e-6 && Math.abs(point.y - pin.body.y) < 1e-6,
+          );
+          expect(onDrawing, `${section.name} 的引脚 ${pin.number} 没落在图元上`).toBe(true);
+        }
+      }
+    });
+
+    /**
+     * 没有矩形本体（MOSFET/三极管/二极管）时，本体必须取**图元包围盒**：
+     * 拿含引脚桩的 bounds 当本体，Capture 会把引脚名画在引脚末端、脚号画到框外。
+     */
+    it("没有矩形本体时 SymbolBBox 取图元包围盒，不含引脚桩", () => {
+      const symbol = parseMulti()!;
+      const section = symbol.sections[0];
+      const body = bodyBoxOf(section);
+      const xs = section.shapes.flatMap((shape) =>
+        shape.kind === "polyline" ? shape.points.map((point) => point.x) : [],
+      );
+      expect(body.minX).toBe(Math.min(...xs));
+      expect(body.minX).toBeGreaterThan(section.bounds.minX);
+      const xml = buildCaptureLibraryXml(symbol, "C:/libs/target.OLB");
+      expect(xml).toContain(
+        `<Defn x1="${body.minX}" x2="${body.maxX}" y1="${body.minY}" y2="${body.maxY}" />`,
+      );
+    });
+
+    /**
+     * Capture 的引脚字号固定 9 单位。源符号本体只有 20 单位高，D1/S1 两个竖排名字
+     * 必然在中间撞上 —— 解析阶段把整段按整数倍放大，直到标签互不重叠。
+     */
+    it("本体放不下引脚名时整段放大，引脚仍落在 10 单位网格上", () => {
+      const symbol = parseMulti()!;
+      const section = symbol.sections[0];
+      const body = bodyBoxOf(section);
+      // 源本体 34×20 → 放大 2 倍后 68×40
+      expect(body.maxY - body.minY).toBe(40);
+      expect(body.maxX - body.minX).toBe(68);
+      for (const pin of section.pins) {
+        expect(pin.connection.x % 10).toBe(0);
+        expect(pin.connection.y % 10).toBe(0);
+      }
+    });
+
     it("写成 Capture 库 XML 时按多段 Package 输出（A/B 段 + 全部 6 脚）", () => {
       const xml = buildCaptureLibraryXml(parseMulti()!, "C:/libs/target.OLB");
       expect(xml).toMatch(/alphabeticNumbering="1" isHomogeneous="0"/);

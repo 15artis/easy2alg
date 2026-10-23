@@ -9,7 +9,12 @@ import type {
 } from "../../shared/schemas";
 import { NormalizedSymbolSchema } from "../../shared/schemas";
 import { avoidLabelOverlapInSection } from "../../shared/symbol-layout";
-import { attachPinLabelAnchors, DEFAULT_SYMBOL_TEXT_HEIGHT } from "../../shared/symbol-labels";
+import {
+  attachPinLabelAnchors,
+  bodyBoxOf,
+  DEFAULT_SYMBOL_TEXT_HEIGHT,
+  sectionLabelsCollide,
+} from "../../shared/symbol-labels";
 import { alignPinsToGrid } from "../../shared/symbol-layout";
 import { dedupePinNames } from "../../shared/symbol-normalize";
 import { refdesPrefixFrom, sanitizeSymbolName } from "./naming";
@@ -319,6 +324,11 @@ const parsePart = (
   };
 };
 
+/** 引脚标签塞不进本体时，整段最多放大到几倍（1 = 不放大）。 */
+const MAX_LABEL_FIT_SCALE = 4;
+/** 只有小于这个尺寸（单位 = 10 mil）的本体才考虑放大：9 单位字高塞不下 40 单位见方的本体。 */
+const LABEL_FIT_MIN_BODY = 40;
+
 /** 单段几何 → NormalizedSymbolSection（锚点归零 + 去重 + 吸附 + 标签避让）。 */
 const buildSection = (part: ParsedPart, name: string): NormalizedSymbolSection => {
   const { pins, shapes, bounds } = part;
@@ -329,41 +339,70 @@ const buildSection = (part: ParsedPart, name: string): NormalizedSymbolSection =
   const dx = -anchorX;
   const dy = -anchorY;
 
-  const movePoint = (point: Point): Point => ({ x: point.x + dx, y: point.y + dy });
-  const moveShape = (shape: NormalizedSymbolShape): NormalizedSymbolShape => {
-    if (shape.kind === "rect") {
-      return { ...shape, min: movePoint(shape.min), max: movePoint(shape.max) };
-    }
-    if (shape.kind === "polyline") {
-      return { ...shape, points: shape.points.map(movePoint) };
-    }
-    return { ...shape, at: movePoint(shape.at) };
+  const assemble = (scale: number): NormalizedSymbolSection => {
+    const movePoint = (point: Point): Point => ({
+      x: (point.x + dx) * scale,
+      y: (point.y + dy) * scale,
+    });
+    const moveShape = (shape: NormalizedSymbolShape): NormalizedSymbolShape => {
+      if (shape.kind === "rect") {
+        return { ...shape, min: movePoint(shape.min), max: movePoint(shape.max) };
+      }
+      if (shape.kind === "polyline") {
+        return { ...shape, points: shape.points.map(movePoint) };
+      }
+      return { ...shape, at: movePoint(shape.at) };
+    };
+
+    // ① 引脚名去重（Cadence 不接受重复引脚文本）→ ② 引脚标签避让。
+    // 顺序不能反：避让按引脚名的字宽算竖带深度，必须用**最终名字**（GND_18 比 GND 宽）。
+    // 都在解析阶段做，预览与写库看到的是同一份结果。
+    return attachPinLabelAnchors(
+      avoidLabelOverlapInSection(
+        alignPinsToGrid(
+          dedupePinNames({
+            name,
+            bounds: {
+              minX: (bounds.minX + dx) * scale,
+              minY: (bounds.minY + dy) * scale,
+              maxX: (bounds.maxX + dx) * scale,
+              maxY: (bounds.maxY + dy) * scale,
+            },
+            pins: pins.map((pin) => ({
+              ...pin,
+              connection: movePoint(pin.connection),
+              body: movePoint(pin.body),
+            })),
+            shapes: shapes.map(moveShape),
+          }),
+        ),
+      ),
+    );
   };
 
-  // ① 引脚名去重（Cadence 不接受重复引脚文本）→ ② 引脚标签避让。
-  // 顺序不能反：避让按引脚名的字宽算竖带深度，必须用**最终名字**（GND_18 比 GND 宽）。
-  // 都在解析阶段做，预览与写库看到的是同一份结果。
-  return attachPinLabelAnchors(
-    avoidLabelOverlapInSection(
-      alignPinsToGrid(
-        dedupePinNames({
-          name,
-          bounds: {
-            minX: bounds.minX + dx,
-            minY: bounds.minY + dy,
-            maxX: bounds.maxX + dx,
-            maxY: bounds.maxY + dy,
-          },
-          pins: pins.map((pin) => ({
-            ...pin,
-            connection: movePoint(pin.connection),
-            body: movePoint(pin.body),
-          })),
-          shapes: shapes.map(moveShape),
-        }),
-      ),
-    ),
-  );
+  /**
+   * Capture 的引脚字号固定 9 单位，不随符号大小变。MOSFET / 三极管这类本体只有
+   * 20 单位高的符号，名字从上下两边往中间长必然压在一起 —— 这时把**整段按整数倍
+   * 放大**（引脚与图元一起放大、字号不变），直到标签互不重叠。
+   *
+   * 只对**小本体**放大：大符号（RP2048 这类几百单位的）标签本来就排得开，
+   * 万一避让没解干净也不能把整个符号放大 4 倍。
+   */
+  const natural = assemble(1);
+  const naturalBody = bodyBoxOf(natural);
+  const tooSmall =
+    Math.min(naturalBody.maxX - naturalBody.minX, naturalBody.maxY - naturalBody.minY) <
+    LABEL_FIT_MIN_BODY;
+  if (!tooSmall || !sectionLabelsCollide(natural)) {
+    return natural;
+  }
+  for (let scale = 2; scale <= MAX_LABEL_FIT_SCALE; scale += 1) {
+    const section = assemble(scale);
+    if (!sectionLabelsCollide(section)) {
+      return section;
+    }
+  }
+  return assemble(MAX_LABEL_FIT_SCALE);
 };
 
 /**
