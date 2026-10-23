@@ -38,6 +38,8 @@ const OlbWriteRequestSchema = z.object({
   libraryName: z.string().min(1),
   confirmOverwrite: z.boolean().optional(),
   snapPins: z.boolean().optional(),
+  // 界面按「全局开关 && 勾了 PCB 封装」算好再传（用户 2026-10-23）
+  fillPcbFootprint: z.boolean().optional(),
 });
 
 const resolveInstall = async (
@@ -250,7 +252,9 @@ const registerHandlers = (): void => {
       libraryPath,
       // 必须转发：漏掉它 => 用户点了「覆盖写入」也依然返回 needsConfirm，弹窗无限重来
       confirmOverwrite: request.confirmOverwrite,
-      fillPcbFootprint: settings.fillPcbFootprint,
+      // 界面按「全局开关 && 勾了 PCB 封装」算好再传（用户 2026-10-23）；
+      // 没传（老调用方 / 测试）时退回设置里的全局开关。
+      fillPcbFootprint: request.fillPcbFootprint ?? settings.fillPcbFootprint,
       snapPins: request.snapPins ?? true,
     });
   });

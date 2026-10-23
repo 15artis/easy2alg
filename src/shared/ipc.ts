@@ -27,6 +27,12 @@ export type OlbWriteRequest = {
    * 省略 = true（老行为）；false 时按实际坐标写入，但仍会取整成整数（XSD 要求）。
    */
   readonly snapPins?: boolean;
+  /**
+   * 是否把 PCB 封装名写进器件的 PCB Footprint 字段。
+   * 省略 = 跟随设置里的全局开关。用户 2026-10-23：只生成原理图元件时这个字段
+   * 应该留空（封装名此时没有意义），所以调用方会传「全局开关 && 勾了 PCB」。
+   */
+  readonly fillPcbFootprint?: boolean;
 };
 
 export type Easy2AlgApi = {

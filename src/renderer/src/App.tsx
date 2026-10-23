@@ -2130,6 +2130,11 @@ const ConverterPage = ({
             libraryName: entry.libraryName,
             // 跟随界面磁吸开关（用户 2026-10-20）：关掉后写库按实际坐标，仍取整
             snapPins: settings.ui.symbolSnapEnabled,
+            // 用户 2026-10-23：只生成原理图元件时不填 PCB Footprint 字段 ——
+            // 这次没生成封装，写进去的封装名对不上任何 .dra，反而误导。
+            // 三个条件都要满足：设置里允许填、勾了 PCB 封装、这个器件确实有封装计划
+            // （plan 为 null 时即使勾了 PCB 也不会产出 .dra，见上面 ① 的判断）。
+            fillPcbFootprint: settings.fillPcbFootprint && wantPcb && plan !== null,
           };
           let outcome = await api.writeOlb(request);
           // 库里已有同名器件 → 二次确认后再覆盖（用户 2026-10-16 要求）。
@@ -3280,7 +3285,7 @@ const SettingsPage = ({
                 onChange={(event) => setDraft({ ...draft, fillPcbFootprint: event.target.checked })}
                 data-testid="setting-fill-footprint"
               />
-              <span>在 .olb 的器件里填入 PCB Footprint 字段</span>
+              <span>在 .olb 的器件里填入 PCB Footprint 字段（仅同时生成 PCB 封装时生效）</span>
             </label>
           </div>
         </div>
