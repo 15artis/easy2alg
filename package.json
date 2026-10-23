@@ -1,6 +1,6 @@
 {
   "name": "easy2alg",
-  "version": "0.1.53",
+  "version": "0.1.54",
   "description": "Convert EasyEDA/LCSC footprints into Cadence Allegro libraries",
   "main": "out/main/index.js",
   "type": "module",

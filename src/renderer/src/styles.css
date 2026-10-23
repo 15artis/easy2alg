@@ -1131,13 +1131,24 @@ select:focus,
 .rail-header,
 .inspector-header,
 .stage-heading {
-  display: flex;
-  flex: 0 0 52px;
+  /* 三栏：标题 | tabs | 操作。tabs 用 auto 列 + 两侧等宽 1fr 列实现**真正居中**
+   * （用户 2026-10-23：PCB 页没有右侧操作时，flex 的 space-between 会把 tabs 顶到最右）。 */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  column-gap: 12px;
   align-items: center;
-  justify-content: space-between;
+  flex: 0 0 52px;
   padding: 0 16px;
   background: white;
   border-bottom: 1px solid #dfe5ed;
+}
+
+.stage-heading > .stage-tabs {
+  justify-self: center;
+}
+
+.stage-heading > .edit-toolbar {
+  justify-self: end;
 }
 
 .rail-header h2,
@@ -1159,6 +1170,15 @@ select:focus,
   display: flex;
   align-items: baseline;
   gap: 10px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* 封装名可以很长：单行省略，别把中间 tabs 挤走 */
+.stage-heading > div:first-child span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /**
