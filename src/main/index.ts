@@ -9,9 +9,13 @@ import { JsonStore } from "./connectors/json-store";
 import { AllegroRunner } from "./connectors/allegro-runner";
 import {
   autoLibraryPath,
+  incomingSummary,
+  readLibraryParts,
   resolveCaptureToolchain,
   writeCaptureLibrary,
 } from "./connectors/capture-writer";
+import { captureLockState } from "./connectors/capture-lock";
+import { PendingOlbQueueSchema, PendingOlbWrites } from "./connectors/olb-pending";
 import { createConversionPlan } from "./conversion/validate";
 import { configureLogging, writeLog } from "./logging";
 import { lastWindowCloseAction } from "./lifecycle";
@@ -109,6 +113,67 @@ const registerHandlers = (): void => {
   const elibz2 = new Elibz2Connector();
   const detector = new AllegroDetector();
   const runner = new AllegroRunner();
+
+  /** 写库 / 补写都要用同一套工具链解析（tclsh + orDb DLL）。 */
+  const toolchainFor = async (settings: AppSettings) => {
+    const installs = await detector.detect();
+    const install = await resolveInstall(settings, installs, (path) =>
+      detector.inspectExecutable(path, null),
+    );
+    return resolveCaptureToolchain(install?.executablePath ?? null);
+  };
+
+  /**
+   * 被 Capture 占用的库写完之后登记在这里，等锁消失自动重放（见 olb-pending.ts）。
+   * 存盘（pending-olb.json）是为了应用重启后还能补上。
+   */
+  const pendingWrites = new PendingOlbWrites(
+    new JsonStore(
+      join(dataDirectory, "pending-olb.json"),
+      PendingOlbQueueSchema,
+      [],
+    ),
+    {
+      isBlocked: async (libraryPath) => (await captureLockState(libraryPath)).blocked,
+      readParts: async (libraryPath) => {
+        const toolchain = await toolchainFor(await settingsStore.read());
+        return toolchain === null
+          ? new Map()
+          : readLibraryParts(toolchain, libraryPath);
+      },
+      write: async (item) => {
+        const toolchain = await toolchainFor(await settingsStore.read());
+        if (toolchain === null) {
+          throw new Error(
+            "未找到 Cadence 的 tclsh.exe / orDb_Dll_Tcl64.dll，无法补写 .olb。",
+          );
+        }
+        const outcome = await writeCaptureLibrary({
+          symbol: item.symbol,
+          toolchain,
+          libraryPath: item.libraryPath,
+          // 补写就是"把用户已经确认过的那次写入再做一遍"，不再弹确认
+          confirmOverwrite: true,
+          fillPcbFootprint: item.fillPcbFootprint,
+          snapPins: item.snapPins,
+        });
+        if (outcome.status !== "written") {
+          throw new Error("补写被跳过：库里出现了同名器件，需要确认覆盖。");
+        }
+      },
+    },
+  );
+
+  // 队列非空时每 15s 看一眼 Capture 是否已经放手；空队列只是一次内存判断。
+  const pendingTimer = setInterval(() => {
+    void pendingWrites.flush().catch(() => undefined);
+  }, 15_000);
+  pendingTimer.unref();
+  // 启动后先冲一次：上次退出时 Capture 很可能已经关掉了。
+  const pendingBootFlush = setTimeout(() => {
+    void pendingWrites.flush().catch(() => undefined);
+  }, 8_000);
+  pendingBootFlush.unref();
 
   ipcMain.handle(IpcChannels.getAppInfo, () => ({
     platform: process.platform,
@@ -246,7 +311,9 @@ const registerHandlers = (): void => {
         request.libraryName,
         settings.unifiedLibraryFolder,
       );
-    return writeCaptureLibrary({
+    const fillPcbFootprint = request.fillPcbFootprint ?? settings.fillPcbFootprint;
+    const snapPins = request.snapPins ?? true;
+    const outcome = await writeCaptureLibrary({
       symbol: request.symbol,
       toolchain,
       libraryPath,
@@ -254,9 +321,28 @@ const registerHandlers = (): void => {
       confirmOverwrite: request.confirmOverwrite,
       // 界面按「全局开关 && 勾了 PCB 封装」算好再传（用户 2026-10-23）；
       // 没传（老调用方 / 测试）时退回设置里的全局开关。
-      fillPcbFootprint: request.fillPcbFootprint ?? settings.fillPcbFootprint,
-      snapPins: request.snapPins ?? true,
+      fillPcbFootprint,
+      snapPins,
     });
+    // 库被 Capture 打开着也照写（见 capture-writer 注释），但 Capture 保存时会用内存里的
+    // 旧副本覆盖回去 → 登记一次补写，等它关掉这个库再重放。
+    if (outcome.status === "written" && outcome.result.pendingWrite === true) {
+      await pendingWrites.enqueue({
+        symbol: request.symbol,
+        libraryPath: outcome.result.libraryPath,
+        fillPcbFootprint,
+        snapPins,
+        expected: incomingSummary(request.symbol),
+        previous: outcome.result.previous ?? null,
+      });
+      await writeLog("info", "olb_pending_enqueued", {
+        libraryPath: outcome.result.libraryPath,
+        packageName: request.symbol.name,
+      });
+      // 顺手冲一次队列：可能别的库已经解锁了。
+      void pendingWrites.flush().catch(() => undefined);
+    }
+    return outcome;
   });
   ipcMain.handle(IpcChannels.createPlan, (_event, rawFootprint: unknown) =>
     createConversionPlan(NormalizedFootprintSchema.parse(rawFootprint)),

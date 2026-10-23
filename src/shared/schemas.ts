@@ -321,6 +321,15 @@ export const NormalizedSymbolSchema = z.object({
 });
 export type NormalizedSymbol = z.infer<typeof NormalizedSymbolSchema>;
 
+/** 库里某个器件的概览（写入前探测同名器件用）。 */
+export const OlbPartSummarySchema = z.object({
+  sectionCount: z.number().int().positive(),
+  pinCount: z.number().int().nonnegative(),
+  /** 本体包围盒横向范围，用来区分"内容真的换了"和"只是名字相同" */
+  bodyWidth: z.number().finite().nullable(),
+});
+export type OlbPartSummary = z.infer<typeof OlbPartSummarySchema>;
+
 export const OlbWriteResultSchema = z.object({
   libraryPath: z.string().min(1),
   /** true = 本次新建了库文件（此前不存在） */
@@ -330,18 +339,21 @@ export const OlbWriteResultSchema = z.object({
   pinCount: z.number().int().nonnegative(),
   backupPath: z.string().min(1).nullable(),
   bytes: z.number().int().nonnegative(),
+  /**
+   * 写入时目标库被 OrCAD Capture 打开着的锁文件路径（null = 没被占用）。
+   *
+   * 这个锁**不阻止写入**（它只是 Capture 的标记文件，.olb 本身没有被独占），
+   * 但 Capture 用的是内存里的旧副本：用户在 Capture 里保存该库时会把我们刚写的
+   * 内容覆盖掉。因此写完后会登记一次"补写"，等锁消失再重放（见 olb-pending.ts）。
+   */
+  captureLockPath: z.string().min(1).nullable().optional(),
+  /** true = 已登记自动补写（Capture 关掉该库后重放一次） */
+  pendingWrite: z.boolean().optional(),
+  /** 写入前库里同名器件的概览（补写时用来判断"被 Capture 覆盖"还是"被用户手改"） */
+  previous: OlbPartSummarySchema.nullable().optional(),
   message: z.string().min(1),
 });
 export type OlbWriteResult = z.infer<typeof OlbWriteResultSchema>;
-
-/** 库里某个器件的概览（写入前探测同名器件用）。 */
-export const OlbPartSummarySchema = z.object({
-  sectionCount: z.number().int().positive(),
-  pinCount: z.number().int().nonnegative(),
-  /** 本体包围盒横向范围，用来区分"内容真的换了"和"只是名字相同" */
-  bodyWidth: z.number().finite().nullable(),
-});
-export type OlbPartSummary = z.infer<typeof OlbPartSummarySchema>;
 
 /**
  * 写入 .olb 的结果。目标库里**已有同名器件**时先返回 needsConfirm，

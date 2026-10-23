@@ -2966,8 +2966,22 @@ const ConverterPage = ({
                 </div>
               ) : selectedOlb.status === "ok" ? (
                 <>
-                  <div className="model-row"><Check size={15} className="green-icon" />{selectedOlb.result.message}</div>
+                  <div className="model-row">
+                    {selectedOlb.result.pendingWrite === true ? (
+                      <TriangleAlert size={15} className="warning-icon" />
+                    ) : (
+                      <Check size={15} className="green-icon" />
+                    )}
+                    {selectedOlb.result.message}
+                  </div>
                   <div className="model-row"><span className="muted">{selectedOlb.result.libraryPath}</span></div>
+                  {selectedOlb.result.pendingWrite === true && (
+                    // 库被 Capture 占着：内容已经落盘，但 Capture 用的是内存里的旧副本。
+                    // 关掉这个库后由主进程自动补写一次，用户不需要再做别的。
+                    <div className="model-row">
+                      <span className="muted">已在后台登记补写：Capture 关掉该库后自动重放，不会丢。</span>
+                    </div>
+                  )}
                 </>
               ) : (
                 <div className="model-row"><TriangleAlert size={15} className="warning-icon" />{selectedOlb.message}</div>

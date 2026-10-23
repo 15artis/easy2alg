@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 import { promisify } from "node:util";
@@ -12,6 +12,7 @@ import type {
 } from "../../shared/schemas";
 import { buildCaptureLibraryXml } from "../conversion/capture-olb";
 import { writeLog } from "../logging";
+import { captureLockState } from "./capture-lock";
 
 const executeFile = promisify(execFile);
 
@@ -39,23 +40,8 @@ const fileExists = async (path: string): Promise<boolean> => {
 
 /**
  * Capture 的库锁文件：`<库名>lck`（实测 `EASY2ALG.OLBlck`），有的版本写成 `.lck`。
- * 只按同目录、同名（大小写不敏感）匹配，别误伤别的库。
+ * 判定逻辑（含"残留锁"与"Capture 是否真在跑"）见 capture-lock.ts。
  */
-const captureLockFile = async (libraryPath: string): Promise<string | null> => {
-  const directory = dirname(libraryPath);
-  const name = basename(libraryPath).toLowerCase();
-  let entries: string[];
-  try {
-    entries = await readdir(directory);
-  } catch {
-    return null;
-  }
-  const found = entries.find((entry) => {
-    const lower = entry.toLowerCase();
-    return lower === `${name}lck` || lower === `${name}.lck`;
-  });
-  return found === undefined ? null : join(directory, found);
-};
 
 /** Tcl 双引号字符串转义：反斜杠、引号、$ 与 [] 都必须在字面量里失效。 */
 const tclString = (value: string): string =>
@@ -246,15 +232,15 @@ export const inspectLibraryPart = (
   packageName: string,
 ): OlbPartSummary | null => {
   const part = libraryParts(xml).find((item) => item.name === packageName);
-  if (part === undefined) {
-    return null;
-  }
-  return {
-    sectionCount: Math.max((part.body.match(/<LibPart>/g) ?? []).length, 1),
-    pinCount: (part.body.match(/<SymbolPinScalar>/g) ?? []).length,
-    bodyWidth: firstSectionBodyWidth(part.body),
-  };
+  return part === undefined ? null : summarizePart(part.body);
 };
+
+/** 一个 Package 块的概览（段数 / 脚数 / 第 1 段本体宽度）。 */
+const summarizePart = (packageBody: string): OlbPartSummary => ({
+  sectionCount: Math.max((packageBody.match(/<LibPart>/g) ?? []).length, 1),
+  pinCount: (packageBody.match(/<SymbolPinScalar>/g) ?? []).length,
+  bodyWidth: firstSectionBodyWidth(packageBody),
+});
 
 /**
  * 本体宽度 = **第 1 段里第一个 `<Rect>`** 的宽度。
@@ -274,6 +260,35 @@ const firstSectionBodyWidth = (packageBody: string): number | null => {
     Number(new RegExp(`\\b${key}="(-?[\\d.]+)"`).exec(attrs)?.[1] ?? "NaN");
   const [x1, x2] = [num("x1"), num("x2")];
   return Number.isNaN(x1) || Number.isNaN(x2) ? null : Math.abs(x2 - x1);
+};
+
+/**
+ * 一次导出拿到整个库里所有器件的概览（补写队列用：判断这次写入有没有被 Capture 覆盖）。
+ *
+ * 必须整库一次读完：队列里可能压着同一个库的十来个器件，逐器件导出会把
+ * XMATIC_OLB2XML 跑十来遍（每遍几秒）。导出失败（库被删/正在被改写）时返回空表。
+ */
+export const readLibraryParts = async (
+  toolchain: CaptureToolchain,
+  libraryPath: string,
+): Promise<ReadonlyMap<string, OlbPartSummary>> => {
+  const workDirectory = join(tmpdir(), `easy2alg-olb-${randomUUID()}`);
+  await mkdir(workDirectory, { recursive: true });
+  try {
+    const xml = await exportLibrary(toolchain, libraryPath, workDirectory);
+    const parts = new Map<string, OlbPartSummary>();
+    if (xml.length === 0) {
+      return parts;
+    }
+    for (const part of libraryParts(xml)) {
+      if (part.name.length > 0) {
+        parts.set(part.name, summarizePart(part.body));
+      }
+    }
+    return parts;
+  } finally {
+    await rm(workDirectory, { recursive: true, force: true }).catch(() => undefined);
+  }
 };
 
 export type OlbWriteOptions = {
@@ -296,7 +311,7 @@ export type OlbWriteOptions = {
 };
 
 /** 本次要写进去的器件概览（用来和库里的旧内容比对）。 */
-const incomingSummary = (symbol: NormalizedSymbol): OlbPartSummary => {
+export const incomingSummary = (symbol: NormalizedSymbol): OlbPartSummary => {
   const section = symbol.sections[0];
   const rect = section?.shapes.find((shape) => shape.kind === "rect");
   return {
@@ -309,7 +324,8 @@ const incomingSummary = (symbol: NormalizedSymbol): OlbPartSummary => {
   };
 };
 
-const samePart = (a: OlbPartSummary, b: OlbPartSummary): boolean =>
+/** 器件内容是否一致（段数 / 脚数 / 本体宽度）。补写判定也复用它。 */
+export const samePartSummary = (a: OlbPartSummary, b: OlbPartSummary): boolean =>
   a.sectionCount === b.sectionCount && a.pinCount === b.pinCount && a.bodyWidth === b.bodyWidth;
 
 const timestamp = (): string => {
@@ -330,17 +346,26 @@ export const writeCaptureLibrary = async (
   options: OlbWriteOptions,
 ): Promise<OlbWriteOutcome> => {
   const { symbol, toolchain, libraryPath } = options;
-  // Capture 打开着库时会留一个 `<库名>lck`（实测 `EASY2ALG.OLBlck`）。此时写进去的内容
-  // 会被 Capture 用内存里的旧内容覆盖；用户甚至会看到"刚删掉的 OLB 又回来了"
-  // （2026-10-19 实际发生），所以直接拒绝并说清原因。
-  const lockPath = await captureLockFile(libraryPath);
-  if (lockPath !== null) {
-    await writeLog("warn", "olb_locked_by_capture", { libraryPath, lockPath });
-    throw new Error(
-      `OrCAD Capture 正打开着这个库（目录里有 ${basename(lockPath)}）。` +
-        `请先在 Capture 里关闭 ${basename(libraryPath)} 再重试 —— ` +
-        `否则 Capture 会把内存里的旧内容写回磁盘，看起来就像删掉的文件又出现了。`,
-    );
+  // Capture 打开着库时会留一个 `<库名>lck`（实测 `EASY2ALG.OLBlck`）。但这个文件只是
+  // Capture 自己的标记，**目标 .olb 并没有被独占**（2026-10-23 实测：同目录里躺着
+  // EASY2ALG.OLBlck 时，对该文件 open(r+b) / rename 全部成功，XMATIC_XML2OLB 也能正常
+  // 导入）。所以这里不再拒绝写入，而是"照写 + 交给调用方登记补写"：
+  //  - 写完 Capture 里看不到（它用的是内存里的旧副本），关掉该库窗口再打开才有；
+  //  - 用户若在 Capture 里保存了该库，会用旧内容覆盖我们的写入 → 由 olb-pending
+  //    在锁消失后自动重放一次，最终结果仍然是我们生成的内容。
+  const lock = await captureLockState(libraryPath);
+  if (lock.blocked) {
+    await writeLog("warn", "olb_locked_by_capture", {
+      libraryPath,
+      lockPath: lock.lockPath,
+      action: "write-through",
+    });
+  } else if (lock.lockPath !== null) {
+    // 崩溃/强杀留下的残留锁：没有 Capture 进程就没人会覆盖，直接当没锁。
+    await writeLog("info", "olb_stale_lock_ignored", {
+      libraryPath,
+      lockPath: lock.lockPath,
+    });
   }
   const existedBefore = await fileExists(libraryPath);
   const mode = existedBefore ? 1 : 0;
@@ -479,7 +504,7 @@ export const writeCaptureLibrary = async (
       `OLB 已写入但回读未找到器件 ${symbol.name}，请检查 ${libraryPath}。`,
     );
   }
-  if (!samePart(after, incoming)) {
+  if (!samePartSummary(after, incoming)) {
     await writeLog("error", "olb_verify_stale", {
       libraryPath,
       packageName: symbol.name,
@@ -489,7 +514,9 @@ export const writeCaptureLibrary = async (
     throw new Error(
       `OLB 里 ${symbol.name} 的内容与本次写入不一致（库中 ${after.sectionCount} 段 / ${after.pinCount} 脚，` +
         `本次 ${incoming.sectionCount} 段 / ${incoming.pinCount} 脚）。` +
-        "如果 OrCAD Capture 正开着这个库，请先关闭它再重新生成 —— Capture 会把内存里的旧内容写回去。",
+        (lock.blocked
+          ? "Capture 正好在保存这个库，把旧内容写了回去；已登记补写，关掉该库后会自动重试。"
+          : "请确认该库没有被其它程序（Capture 之外的）打开后重试。"),
     );
   }
 
@@ -518,9 +545,17 @@ export const writeCaptureLibrary = async (
       pinCount: pinned,
       backupPath,
       bytes: fileSize,
-      message: existedBefore
-        ? `已写入 ${basename(libraryPath)}（${symbol.sections.length} 段 / ${pinned} 脚，内容已核对）`
-        : `已新建 ${basename(libraryPath)}（${symbol.sections.length} 段 / ${pinned} 脚）`,
+      // 锁还在 → 调用方（index.ts）据此登记补写；Capture 关掉该库后会自动重放。
+      captureLockPath: lock.blocked ? lock.lockPath : null,
+      pendingWrite: lock.blocked,
+      previous: existing,
+      message: lock.blocked
+        ? `已写入 ${basename(libraryPath)}（${symbol.sections.length} 段 / ${pinned} 脚）。` +
+          "Capture 正打开着这个库：要在 Capture 里看到，请先关掉该库再重新打开；" +
+          "Capture 关闭后本工具会自动补写一次，保存也不会把它冲掉。"
+        : existedBefore
+          ? `已写入 ${basename(libraryPath)}（${symbol.sections.length} 段 / ${pinned} 脚，内容已核对）`
+          : `已新建 ${basename(libraryPath)}（${symbol.sections.length} 段 / ${pinned} 脚）`,
     },
   };
 };
