@@ -2089,10 +2089,15 @@ const ConverterPage = ({
       const notes: string[] = [];
       let pcbFailure: string | null = null;
       let pcbResult: ConversionResult | null = null;
+      // 原理图元件写进去了，但 Capture 正打开着这个库 → 列表里必须显式提示，
+      // 否则"生成完却在 Capture 里找不到"会被当成失败（用户 2026-10-23 实际踩到）。
+      let olbPending: string | null = null;
 
       updateItem(item.id, {
         state: "loading",
         message: wantPcb ? "Allegro 正在生成并检查…" : "正在写入原理图元件库（.olb）…",
+        // 清掉上一轮留下的行内提示（updateItem 是浅合并，不清会一直挂着）
+        notice: undefined,
       });
 
       // ① PCB 封装（.dra/.psm/.pad）
@@ -2162,6 +2167,12 @@ const ConverterPage = ({
               [item.id]: { status: "ok", result: outcome.result },
             }));
             notes.push(outcome.result.message);
+            if (outcome.result.pendingWrite === true) {
+              olbPending = "已写入 .olb，但 Capture 正打开着该库：关掉该库再打开才看得到";
+            } else if (outcome.result.captureLockPath !== null && outcome.result.captureLockPath !== undefined) {
+              // 内容本来就一致、没登记补写：同样要说明"Capture 里看不到不是没写进去"
+              olbPending = "已在 .olb 里（内容未变）；Capture 需关掉该库再打开才看得到";
+            }
           }
         } catch (error) {
           const message = errorMessage(error);
@@ -2180,6 +2191,7 @@ const ConverterPage = ({
         updateItem(item.id, {
           state: "generationFailed",
           message: `上次生成失败，可直接重试：${pcbFailure}`,
+          notice: undefined,
         });
         if (wantPcb && pcbResult === null) {
           const previousProgress = progressRef.current;
@@ -2195,8 +2207,11 @@ const ConverterPage = ({
           progressRef.current = failedProgress;
           setProgress(failedProgress);
         }
+      } else if (olbPending !== null) {
+        // 黄灯而不是绿灯：文件确实写好了，但 Capture 里还看不到，需要用户做一步操作。
+        updateItem(item.id, { state: "warning", message: notes.join(""), notice: olbPending });
       } else {
-        updateItem(item.id, { state: "generated", message: notes.join("") });
+        updateItem(item.id, { state: "generated", message: notes.join(""), notice: undefined });
       }
       if (pcbResult !== null) {
         onGenerated({ ...pcbResult, id: `${pcbResult.lcscId}-${pcbResult.completedAt}` });
@@ -2425,7 +2440,10 @@ const ConverterPage = ({
                   <strong>{item.id}</strong><small>{item.footprint?.info.name ?? ""}</small>
                   {/* 失败时必须让用户看到原因（2026-10-19：Capture 占着库导致写入被拒，
                    * 但 em 槽位被封装名占着，错误文本根本显示不出来，用户只看到红 X） */}
-                  {item.state === "error" || item.state === "generationFailed" ? (
+                  {item.notice !== undefined ? (
+                    // 已写入但 Capture 里看不到：用黄字说明，别让用户以为没生成
+                    <em className="rail-notice-text" title={item.message}>{item.notice}</em>
+                  ) : item.state === "error" || item.state === "generationFailed" ? (
                     <em className="rail-error-text" title={item.message}>{item.message}</em>
                   ) : (
                     <em>
@@ -2967,7 +2985,8 @@ const ConverterPage = ({
               ) : selectedOlb.status === "ok" ? (
                 <>
                   <div className="model-row">
-                    {selectedOlb.result.pendingWrite === true ? (
+                    {selectedOlb.result.pendingWrite === true ||
+                    selectedOlb.result.captureLockPath != null ? (
                       <TriangleAlert size={15} className="warning-icon" />
                     ) : (
                       <Check size={15} className="green-icon" />
@@ -2982,6 +3001,13 @@ const ConverterPage = ({
                       <span className="muted">已在后台登记补写：Capture 关掉该库后自动重放，不会丢。</span>
                     </div>
                   )}
+                  {selectedOlb.result.pendingWrite !== true &&
+                    selectedOlb.result.captureLockPath != null && (
+                      // 内容本来就一致，没什么可补的 —— 只是 Capture 里看不到
+                      <div className="model-row">
+                        <span className="muted">库内容没有变化，无需补写；在 Capture 里关掉该库再打开即可看到。</span>
+                      </div>
+                    )}
                 </>
               ) : (
                 <div className="model-row"><TriangleAlert size={15} className="warning-icon" />{selectedOlb.message}</div>

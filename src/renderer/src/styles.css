@@ -1396,6 +1396,16 @@ select:focus,
   line-height: 1.5;
 }
 
+/* 已写入 .olb、但 Capture 缓存着看不到：黄色说明，和"失败"的红字区分开 */
+.rail-item .rail-notice-text {
+  color: #b46b09;
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  line-height: 1.5;
+}
+
 .rail-state {
   color: #13856b;
   transition: opacity 120ms ease;

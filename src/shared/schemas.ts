@@ -349,6 +349,13 @@ export const OlbWriteResultSchema = z.object({
   captureLockPath: z.string().min(1).nullable().optional(),
   /** true = 已登记自动补写（Capture 关掉该库后重放一次） */
   pendingWrite: z.boolean().optional(),
+  /**
+   * true = 库里同名器件的内容与本次**完全一致**（只是重写了一遍）。
+   *
+   * 用户 2026-10-23 的实际场景：器件早写进去了，只是 Capture 缓存着看不到，他以为失败又点
+   * 一次，于是弹"已有同名器件 1段9脚 → 1段9脚"，反而更像工具没写。内容一样就不该再问。
+   */
+  identical: z.boolean().optional(),
   /** 写入前库里同名器件的概览（补写时用来判断"被 Capture 覆盖"还是"被用户手改"） */
   previous: OlbPartSummarySchema.nullable().optional(),
   message: z.string().min(1),
@@ -470,6 +477,12 @@ export const QueueItemSchema = z.object({  id: z.string().regex(/^C\d+$/),
   ]),
   footprint: NormalizedFootprintSchema.nullable(),
   message: z.string(),
+  /**
+   * 行内提示（显示在封装名那一行的位置）。目前只有一种来源：原理图元件已写入，
+   * 但 Capture 正打开着 .olb，需要关掉该库再打开才能看到（用户 2026-10-23）。
+   * 有值时列表里显示它，替代封装名 —— 否则"生成了却看不到"会被误判成失败。
+   */
+  notice: z.string().optional(),
   selected: z.boolean(),
   /**
    * 本地库器件的溯源信息。符号条目（symbols 表）丢了之后要靠它补拉 ——

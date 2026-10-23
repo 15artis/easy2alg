@@ -328,6 +328,29 @@ export const incomingSummary = (symbol: NormalizedSymbol): OlbPartSummary => {
 export const samePartSummary = (a: OlbPartSummary, b: OlbPartSummary): boolean =>
   a.sectionCount === b.sectionCount && a.pinCount === b.pinCount && a.bodyWidth === b.bodyWidth;
 
+/**
+ * 从导出的库 XML 里取某个器件的引脚名（按出现顺序）。库里没有该器件返回 null。
+ * 只用于"内容是否完全一致"的判定 —— 概览（段数/脚数/宽度）看不出引脚改名。
+ */
+const packagePinNames = (xml: string, packageName: string): string[] | null => {
+  const part = libraryParts(xml).find((item) => item.name === packageName);
+  if (part === undefined) {
+    return null;
+  }
+  return [...part.body.matchAll(/<SymbolPinScalar>\s*<Defn\b([^>]*?)\/>/g)].map(
+    (match) => / name="([^"]*)"/.exec(match[1])?.[1] ?? "",
+  );
+};
+
+const samePinNames = (a: readonly string[], b: readonly string[]): boolean => {
+  if (a.length !== b.length) {
+    return false;
+  }
+  const left = [...a].sort();
+  const right = [...b].sort();
+  return left.every((name, index) => name === right[index]);
+};
+
 const timestamp = (): string => {
   const now = new Date();
   const pad = (value: number): string => String(value).padStart(2, "0");
@@ -378,11 +401,32 @@ export const writeCaptureLibrary = async (
   // 写入前先看一眼目标库：已有同名器件就必须让用户确认（二次提醒）。
   // 实测 mode 1 会覆盖同名器件，但旧版校验只查名字 —— 旧数据也能通过，
   // 所以这里把"库里的旧内容"和"本次要写的内容"都摆出来给用户看。
+  //
+  // 例外：内容**完全一致**时不问。用户 2026-10-23 的实际情况就是——器件其实早写进去了，
+  // 只是 Capture 缓存着看不到，他以为失败又点了一次，结果弹"已有同名器件，1段9脚 → 1段9脚"，
+  // 更容易让人以为是工具没写。内容一样就没什么可覆盖的，直接重写一遍即可。
   let existing: OlbPartSummary | null = null;
+  let identical = false;
   if (existedBefore) {
     const before = await exportLibrary(toolchain, libraryPath, workDirectory).catch(() => "");
     existing = before.length > 0 ? inspectLibraryPart(before, symbol.name) : null;
-    if (existing !== null && options.confirmOverwrite !== true) {
+    // 概览只比段数/脚数/本体宽度，太粗：改一个引脚名它看不出来。所以再比一遍引脚名，
+    // 只有"概览一致 + 引脚名一致"才算真的相同，才跳过确认。
+    identical =
+      existing !== null &&
+      samePartSummary(existing, incoming) &&
+      samePinNames(
+        packagePinNames(before, symbol.name) ?? [],
+        symbol.sections.flatMap((section) => section.pins.map((pin) => pin.name)),
+      );
+    if (identical) {
+      await writeLog("info", "olb_rewrite_identical", {
+        libraryPath,
+        packageName: symbol.name,
+        summary: JSON.stringify(incoming),
+      });
+    }
+    if (existing !== null && options.confirmOverwrite !== true && !identical) {
       await writeLog("info", "olb_overwrite_needs_confirm", {
         libraryPath,
         packageName: symbol.name,
@@ -546,16 +590,22 @@ export const writeCaptureLibrary = async (
       backupPath,
       bytes: fileSize,
       // 锁还在 → 调用方（index.ts）据此登记补写；Capture 关掉该库后会自动重放。
+      // 内容本来就一致时不登记：Capture 手里那份和我们要写的完全相同，覆盖也没损失。
       captureLockPath: lock.blocked ? lock.lockPath : null,
-      pendingWrite: lock.blocked,
+      pendingWrite: lock.blocked && !identical,
+      identical,
       previous: existing,
       message: lock.blocked
-        ? `已写入 ${basename(libraryPath)}（${symbol.sections.length} 段 / ${pinned} 脚）。` +
-          "Capture 正打开着这个库：要在 Capture 里看到，请先关掉该库再重新打开；" +
-          "Capture 关闭后本工具会自动补写一次，保存也不会把它冲掉。"
-        : existedBefore
-          ? `已写入 ${basename(libraryPath)}（${symbol.sections.length} 段 / ${pinned} 脚，内容已核对）`
-          : `已新建 ${basename(libraryPath)}（${symbol.sections.length} 段 / ${pinned} 脚）`,
+        ? identical
+          ? `${symbol.name} 在 ${basename(libraryPath)} 里已经是这个内容（${symbol.sections.length} 段 / ${pinned} 脚），本次重写了一遍。` +
+            "Capture 正打开着这个库：关掉该库再重新打开就能看到。"
+          : `已写入 ${basename(libraryPath)}（${symbol.sections.length} 段 / ${pinned} 脚）。` +
+            "Capture 正打开着这个库：关掉该库再重新打开才能看到；之后会自动补写一次，保存也不会把它冲掉。"
+        : identical
+          ? `${basename(libraryPath)} 里已有完全相同的内容（${symbol.sections.length} 段 / ${pinned} 脚），本次按原样重写了一遍。`
+          : existedBefore
+            ? `已写入 ${basename(libraryPath)}（${symbol.sections.length} 段 / ${pinned} 脚，内容已核对）`
+            : `已新建 ${basename(libraryPath)}（${symbol.sections.length} 段 / ${pinned} 脚）`,
     },
   };
 };
