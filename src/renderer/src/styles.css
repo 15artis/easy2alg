@@ -1143,8 +1143,14 @@ select:focus,
   border-bottom: 1px solid #dfe5ed;
 }
 
-.stage-heading > .stage-tabs {
+/* tabs 与 A/B 分段按钮同属中间那一列：分段按钮必须留在 header 行内，
+ * 不能作为 header 的第 4 个 grid 子项（会掉到第二行、压到画布上）。 */
+.stage-heading > .stage-tabs-group {
   justify-self: center;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
 }
 
 .stage-heading > .edit-toolbar {
@@ -1157,6 +1163,12 @@ select:focus,
   margin: 0;
   color: #172033;
   font-size: 13px;
+}
+
+/* 「封装预览」是固定标题，绝不能被挤成两行（用户 2026-10-23 截图反馈） */
+.stage-heading h2 {
+  flex: none;
+  white-space: nowrap;
 }
 
 .rail-header span,
@@ -2120,18 +2132,29 @@ select:focus,
 
 .stage-sections {
   display: flex;
+  align-items: center;
   gap: 3px;
+  /* 与 tabs 之间用一条细分隔线隔开，表示"这是同一个器件内的分段" */
+  padding-left: 10px;
+  border-left: 1px solid #e2e8f0;
 }
 
 .stage-sections button {
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
   color: #5f6b7d;
   font-size: 11px;
   font-weight: 700;
   background: #f2f5f9;
   border: 1px solid #d6dde2;
   border-radius: 5px;
+  cursor: pointer;
+}
+
+.stage-sections button:hover {
+  color: #1d49b7;
+  border-color: #2458d3;
 }
 
 .stage-sections button.active {

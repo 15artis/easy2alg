@@ -2537,30 +2537,53 @@ const ConverterPage = ({
                     ? "请选择器件"
                     : normalizePackageName(selected.footprint.info.sourcePackageName)}
                 </span></div>
-          <div className="stage-tabs" role="tablist">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={previewTab === "pcb"}
-              className={previewTab === "pcb" ? "active" : ""}
-              onClick={() => setPreviewTab("pcb")}
-              disabled={selected?.footprint === null || selected?.footprint === undefined}
-              data-testid="tab-pcb"
-            >
-              PCB 封装
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={previewTab === "sch"}
-              className={previewTab === "sch" ? "active" : ""}
-              onClick={() => setPreviewTab("sch")}
-              disabled={editedSymbol === null}
-              title={editedSymbol === null ? "该器件的源数据里没有原理图元件" : undefined}
-              data-testid="tab-sch"
-            >
-              原理图元件
-            </button>
+          <div className="stage-tabs-group">
+            <div className="stage-tabs" role="tablist">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={previewTab === "pcb"}
+                className={previewTab === "pcb" ? "active" : ""}
+                onClick={() => setPreviewTab("pcb")}
+                disabled={selected?.footprint === null || selected?.footprint === undefined}
+                data-testid="tab-pcb"
+              >
+                PCB 封装
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={previewTab === "sch"}
+                className={previewTab === "sch" ? "active" : ""}
+                onClick={() => setPreviewTab("sch")}
+                disabled={editedSymbol === null}
+                title={editedSymbol === null ? "该器件的源数据里没有原理图元件" : undefined}
+                data-testid="tab-sch"
+              >
+                原理图元件
+              </button>
+            </div>
+            {/* 多子部件器件（双 MOSFET / 双运放）的 A/B 段切换。
+             * 必须跟 tabs 同一行：以前它是 header 的第 4 个 grid 子项，被挤到第二行、
+             * 掉出 52px 的 header 压在画布上（用户 2026-10-23 截图反馈）。 */}
+            {previewTab === "sch" && editedSymbol !== null && editedSymbol.sections.length > 1 ? (
+              <div className="stage-sections" aria-label="符号分段" title="多段器件：切换 A / B 段">
+                {editedSymbol.sections.map((section, index) => (
+                  <button
+                    key={section.name}
+                    type="button"
+                    className={index === sectionIndex ? "active" : ""}
+                    onClick={() => {
+                      setSectionIndex(index);
+                      setSelectedKeys([]);
+                    }}
+                    title={section.name}
+                  >
+                    {String.fromCharCode(65 + (index % 26))}
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </div>
           {previewTab === "sch" && editedSymbol !== null ? (
             <div className="edit-toolbar">
@@ -2604,24 +2627,6 @@ const ConverterPage = ({
               >
                 <Redo2 size={15} />
               </button>
-            </div>
-          ) : null}
-          {previewTab === "sch" && editedSymbol !== null && editedSymbol.sections.length > 1 ? (
-            <div className="stage-sections" aria-label="符号分段">
-              {editedSymbol.sections.map((section, index) => (
-                <button
-                  key={section.name}
-                  type="button"
-                  className={index === sectionIndex ? "active" : ""}
-                  onClick={() => {
-                    setSectionIndex(index);
-                    setSelectedKeys([]);
-                  }}
-                  title={section.name}
-                >
-                  {String.fromCharCode(65 + (index % 26))}
-                </button>
-              ))}
             </div>
           ) : null}
         </header>
