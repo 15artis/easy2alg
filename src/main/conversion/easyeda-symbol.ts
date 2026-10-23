@@ -271,17 +271,31 @@ const RawSymbolSchema = z.object({
 });
 
 /**
- * 把一次器件响应的 `dataStr`（原理图符号）解析成 NormalizedSymbol。
- * 没有符号数据（老器件 / 只有封装）时返回 null，调用方跳过 .olb 写入。
+ * 多子部件器件（双运放 / 双 MOSFET / 四门逻辑 …）的一段符号。
+ *
+ * 实测（C18221391 = AGM609MNA 双 MOSFET、C55807314 = LM358）：
+ * 这类器件 `result.dataStr.shape` 是**空数组**，真实图形逐段放在
+ * `result.subparts[]` 里，每段自带 head.c_para（`pre` 形如 `U?.1`）与 BBox。
+ * 只读 dataStr 的旧逻辑会把它们当成"没有原理图符号"。
  */
-export const parseEasyEdaSymbol = (
+export type EasyEdaSubpart = {
+  readonly title?: string;
+  readonly dataStr?: unknown;
+};
+
+type ParsedPart = {
+  readonly name: string;
+  readonly refdesPrefix: string;
+  readonly pins: readonly NormalizedSymbolPin[];
+  readonly shapes: readonly NormalizedSymbolShape[];
+  readonly bounds: { minX: number; minY: number; maxX: number; maxY: number };
+};
+
+/** 解析一段符号（单段器件的 dataStr，或多子部件器件的一段 subpart）。 */
+const parsePart = (
   rawDataStr: unknown,
-  options: {
-    readonly lcscId: string;
-    readonly fallbackName: string;
-    readonly pcbFootprint: string;
-  },
-): NormalizedSymbol | null => {
+  options: { readonly fallbackName: string; readonly fallbackSymbol: string },
+): ParsedPart | null => {
   const parsed = RawSymbolSchema.safeParse(rawDataStr);
   if (!parsed.success) {
     return null;
@@ -295,10 +309,19 @@ export const parseEasyEdaSymbol = (
   if (pins.length === 0 && shapes.length === 0) {
     return null;
   }
-
   const cPara = data.head?.c_para ?? {};
-  const fallback = `SYM_${options.lcscId}`;
-  const bounds = boundsOf(pins, shapes, data.BBox);
+  return {
+    name: sanitizeSymbolName(cPara.name ?? options.fallbackName, options.fallbackSymbol),
+    refdesPrefix: refdesPrefixFrom(cPara.pre),
+    pins,
+    shapes,
+    bounds: boundsOf(pins, shapes, data.BBox),
+  };
+};
+
+/** 单段几何 → NormalizedSymbolSection（锚点归零 + 去重 + 吸附 + 标签避让）。 */
+const buildSection = (part: ParsedPart, name: string): NormalizedSymbolSection => {
+  const { pins, shapes, bounds } = part;
   // 本体锚点归零：取本体 RECT 的 min 角（不是整体 bounds —— 左右引脚伸到 x<0 是正常的）。
   const bodyRect = shapes.find((shape) => shape.kind === "rect");
   const anchorX = bodyRect === undefined ? bounds.minX : Math.min(bodyRect.min.x, bodyRect.max.x);
@@ -320,37 +343,89 @@ export const parseEasyEdaSymbol = (
   // ① 引脚名去重（Cadence 不接受重复引脚文本）→ ② 引脚标签避让。
   // 顺序不能反：避让按引脚名的字宽算竖带深度，必须用**最终名字**（GND_18 比 GND 宽）。
   // 都在解析阶段做，预览与写库看到的是同一份结果。
-  const section: NormalizedSymbolSection = attachPinLabelAnchors(
+  return attachPinLabelAnchors(
     avoidLabelOverlapInSection(
       alignPinsToGrid(
-      dedupePinNames({
-        name: sanitizeSymbolName(cPara.name ?? options.fallbackName, fallback),
-        bounds: {
-          minX: bounds.minX + dx,
-          minY: bounds.minY + dy,
-          maxX: bounds.maxX + dx,
-          maxY: bounds.maxY + dy,
-        },
-        pins: pins.map((pin) => ({
-          ...pin,
-          connection: movePoint(pin.connection),
-          body: movePoint(pin.body),
-        })),
-        shapes: shapes.map(moveShape),
-      }),
+        dedupePinNames({
+          name,
+          bounds: {
+            minX: bounds.minX + dx,
+            minY: bounds.minY + dy,
+            maxX: bounds.maxX + dx,
+            maxY: bounds.maxY + dy,
+          },
+          pins: pins.map((pin) => ({
+            ...pin,
+            connection: movePoint(pin.connection),
+            body: movePoint(pin.body),
+          })),
+          shapes: shapes.map(moveShape),
+        }),
+      ),
     ),
-  ),
   );
+};
+
+/**
+ * 把一次器件响应的符号数据解析成 NormalizedSymbol。
+ *
+ * - 单段器件：图形在 `dataStr` 里（RP2040 / LM393 等绝大多数器件）。
+ * - 多子部件器件：`dataStr.shape` 为空，图形逐段在 `subparts[].dataStr` 里，
+ *   每段对应 OLB 里的一个 LibPart（A/B/C…），用户 2026-10-23 报的 C18221391 就是这种。
+ *
+ * 没有符号数据（老器件 / 只有封装）时返回 null，调用方跳过 .olb 写入。
+ */
+export const parseEasyEdaSymbol = (
+  rawDataStr: unknown,
+  options: {
+    readonly lcscId: string;
+    readonly fallbackName: string;
+    readonly pcbFootprint: string;
+    /** 多子部件器件的各段（`result.subparts`），dataStr 为空时才会用到 */
+    readonly subparts?: readonly EasyEdaSubpart[];
+  },
+): NormalizedSymbol | null => {
+  const fallbackSymbol = `SYM_${options.lcscId}`;
+  const partOptions = { fallbackName: options.fallbackName, fallbackSymbol };
+
+  const candidates: { readonly part: ParsedPart; readonly title: string | undefined }[] = [];
+  const primary = parsePart(rawDataStr, partOptions);
+  if (primary !== null) {
+    candidates.push({ part: primary, title: undefined });
+  } else {
+    // 多子部件：dataStr 只是空壳，逐段取 subparts。空段（只有电源脚/无图形）直接跳过。
+    for (const subpart of options.subparts ?? []) {
+      const part = parsePart(subpart.dataStr, partOptions);
+      if (part !== null) {
+        candidates.push({ part, title: subpart.title });
+      }
+    }
+  }
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  const symbolName = candidates[0].part.name;
+  const multiSection = candidates.length > 1;
+  const sections = candidates.map(({ part, title }, index) =>
+    buildSection(
+      part,
+      // 段名只用于界面标签 / React key，必须唯一：优先用源 subpart 标题（AGM609MNA.1）。
+      multiSection ? title?.trim() || `${symbolName}.${index + 1}` : symbolName,
+    ),
+  );
+
   const symbol: NormalizedSymbol = {
-    name: sanitizeSymbolName(cPara.name ?? options.fallbackName, fallback),
-    refdesPrefix: refdesPrefixFrom(cPara.pre),
+    name: symbolName,
+    refdesPrefix: candidates[0].part.refdesPrefix,
     pcbFootprint: options.pcbFootprint,
-    sections: [section],
+    sections,
     sourceJson: JSON.stringify({
       source: "easyeda-standard-symbol",
       lcscId: options.lcscId,
-      pinCount: pins.length,
-      shapeCount: shapes.length,
+      pinCount: sections.reduce((total, section) => total + section.pins.length, 0),
+      shapeCount: sections.reduce((total, section) => total + section.shapes.length, 0),
+      sectionNames: sections.map((section) => section.name),
     }),
   };
   return NormalizedSymbolSchema.parse(symbol);

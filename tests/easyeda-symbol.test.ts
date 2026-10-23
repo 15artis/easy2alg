@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { parseEasyEdaSymbol } from "../src/main/conversion/easyeda-symbol";
+import { RawEasyEdaResponseSchema } from "../src/main/conversion/normalize";
 import {
   bodyBoxOf,
   boxesOverlap,
@@ -22,7 +23,10 @@ import type { NormalizedSymbol } from "../src/shared/schemas";
  */
 const fixtures = JSON.parse(
   readFileSync(fileURLToPath(new URL("./fixtures/easyeda-symbols.json", import.meta.url)), "utf8"),
-) as Record<string, { title: string; dataStr: unknown }>;
+) as Record<
+  string,
+  { title: string; dataStr: unknown; subparts?: { title?: string; dataStr?: unknown }[] }
+>;
 
 const parse = (lcscId: string): NormalizedSymbol | null =>
   parseEasyEdaSymbol(fixtures[lcscId].dataStr, {
@@ -129,6 +133,92 @@ describe("easyeda standard symbol", () => {
     expect(
       parseEasyEdaSymbol({ shape: [] }, { lcscId: "C1", fallbackName: "X", pcbFootprint: "" }),
     ).toBeNull();
+  });
+
+  /**
+   * 多子部件器件（用户 2026-10-23 报的 C18221391 = AGM609MNA 双 MOSFET）：
+   * `result.dataStr.shape` 是空数组，真实图形逐段放在 `result.subparts[].dataStr`。
+   * 旧逻辑只读 dataStr → 解析成 null → 界面连预览都没有。
+   */
+  describe("多子部件器件（subparts）", () => {
+    const fixture = fixtures.C18221391;
+    const parseMulti = () =>
+      parseEasyEdaSymbol(fixture.dataStr, {
+        lcscId: "C18221391",
+        fallbackName: fixture.title,
+        pcbFootprint: "PKG_UNDER_TEST",
+        subparts: fixture.subparts,
+      });
+
+    it("dataStr 为空壳时，从 subparts 逐段解析成多段符号", () => {
+      // 前提：这份真实数据的主 dataStr 确实没有任何图形
+      expect((fixture.dataStr as { shape: string[] }).shape).toHaveLength(0);
+      const symbol = parseMulti();
+      expect(symbol).not.toBeNull();
+      expect(symbol!.name).toBe("AGM609MNA");
+      // 位号前缀跟源数据走：源 pre = "U?.1" → U（EasyEDA 对多段器件用 U，不是 Q）
+      expect(symbol!.refdesPrefix).toBe("U");
+      expect(symbol!.sections).toHaveLength(2);
+      expect(symbol!.sections.map((section) => section.name)).toEqual([
+        "AGM609MNA.1",
+        "AGM609MNA.2",
+      ]);
+      expect(symbol!.sections.map((section) => section.pins.map((pin) => pin.number))).toEqual([
+        ["6", "1", "2"],
+        ["5", "3", "4"],
+      ]);
+      expect(symbol!.sections.map((section) => section.pins.map((pin) => pin.name))).toEqual([
+        ["D1", "S1", "G1"],
+        ["D2", "S2", "G2"],
+      ]);
+      for (const section of symbol!.sections) {
+        expect(section.pins).toHaveLength(3);
+        expect(section.shapes.length).toBeGreaterThan(0);
+      }
+    });
+
+    it("每一段都做标签避让（预览/写库看到的是同一份几何）", () => {
+      expect(labelCollisions(parseMulti()!)).toBe(0);
+    });
+
+    it("写成 Capture 库 XML 时按多段 Package 输出（A/B 段 + 全部 6 脚）", () => {
+      const xml = buildCaptureLibraryXml(parseMulti()!, "C:/libs/target.OLB");
+      expect(xml).toMatch(/alphabeticNumbering="1" isHomogeneous="0"/);
+      expect(xml).toContain('<Defn CellName="AGM609MNAA" />');
+      expect(xml).toContain('<Defn CellName="AGM609MNAB" />');
+      expect(xml.match(/<SymbolPinScalar>/g)).toHaveLength(6);
+    });
+
+    it("主 dataStr 有图形时仍走单段老路径（不会被 subparts 覆盖）", () => {
+      const symbol = parseEasyEdaSymbol(fixtures.C2040.dataStr, {
+        lcscId: "C2040",
+        fallbackName: "RP2040",
+        pcbFootprint: "",
+        subparts: fixture.subparts,
+      });
+      expect(symbol!.sections).toHaveLength(1);
+      expect(symbol!.sections[0].pins).toHaveLength(57);
+    });
+
+    it("响应结构校验不会把 subparts 丢掉（连接器实际走的就是这条路）", () => {
+      const parsed = RawEasyEdaResponseSchema.parse({
+        success: true,
+        code: 0,
+        result: {
+          dataStr: fixture.dataStr,
+          subparts: fixture.subparts,
+          packageDetail: { title: "PKG", dataStr: { head: { x: 0, y: 0 }, shape: [] } },
+        },
+      });
+      expect(parsed.result.subparts).toHaveLength(2);
+      const symbol = parseEasyEdaSymbol(parsed.result.dataStr, {
+        lcscId: "C18221391",
+        fallbackName: fixture.title,
+        pcbFootprint: "PKG",
+        subparts: parsed.result.subparts ?? [],
+      });
+      expect(symbol!.sections).toHaveLength(2);
+    });
   });
 
   it("falls back to a safe library name when the source name has odd characters", () => {

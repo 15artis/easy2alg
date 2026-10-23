@@ -115,9 +115,18 @@ export class EasyEdaConnector {
       lcscId,
       fallbackName: result.title ?? lcscId,
       pcbFootprint,
+      // 多子部件器件（双 MOSFET / 双运放等）的真实符号在 subparts 里，
+      // dataStr 只是空壳 —— 不传进去就会误判成"没有原理图符号"。
+      subparts: result.subparts ?? [],
     });
     if (symbol === null) {
       await writeLog("info", "easyeda_symbol_absent", { lcscId });
+    } else if (symbol.sections.length > 1) {
+      await writeLog("info", "easyeda_symbol_multi_section", {
+        lcscId,
+        sectionCount: symbol.sections.length,
+        sectionNames: symbol.sections.map((section) => section.name).join("|"),
+      });
     }
     return symbol;
   }
