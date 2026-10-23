@@ -70,6 +70,7 @@ const api: Easy2AlgApi = {
   createOlbLibrary: (suggestedName) =>
     ipcRenderer.invoke(IpcChannels.createOlbLibrary, suggestedName),
   writeOlb: (request) => ipcRenderer.invoke(IpcChannels.writeOlb, request),
+  getOlbLock: () => ipcRenderer.invoke(IpcChannels.getOlbLock),
   createPlan: (footprint) => ipcRenderer.invoke(IpcChannels.createPlan, footprint),
   generate: (plan) => ipcRenderer.invoke(IpcChannels.generate, plan),
   onGenerationProgress: (listener) => {

@@ -35,6 +35,19 @@ export type OlbWriteRequest = {
   readonly fillPcbFootprint?: boolean;
 };
 
+/**
+ * 目标 .olb 此刻是否被 OrCAD Capture 打开着。
+ *
+ * 用途：生成前就告诉用户"写进去也看不到，得关掉该库再打开"，避免把"Capture 没刷新"
+ * 误判成"工具没写"（用户 2026-10-23 实际踩到）。
+ */
+export type OlbLockState = {
+  readonly libraryPath: string | null;
+  readonly lockPath: string | null;
+  /** true = 锁文件在且 Capture 在跑（残留锁不算） */
+  readonly blocked: boolean;
+};
+
 export type Easy2AlgApi = {
   getAppInfo: () => Promise<AppApiInfo>;
   getSettings: () => Promise<AppSettings>;
@@ -63,6 +76,8 @@ export type Easy2AlgApi = {
   chooseOlbLibrary: () => Promise<string | null>;
   createOlbLibrary: (suggestedName: string) => Promise<string | null>;
   writeOlb: (request: OlbWriteRequest) => Promise<OlbWriteOutcome>;
+  /** 目标 .olb 是否被 Capture 打开着（生成前提示用） */
+  getOlbLock: () => Promise<OlbLockState>;
   createPlan: (footprint: NormalizedFootprint) => Promise<ConversionPlan>;
   generate: (plan: ConversionPlan) => Promise<ConversionResult>;
   onGenerationProgress: (listener: (progress: GenerationProgress) => void) => () => void;
@@ -88,6 +103,7 @@ export const IpcChannels = {
   chooseOlbLibrary: "dialog:choose-olb-library",
   createOlbLibrary: "dialog:create-olb-library",
   writeOlb: "olb:write",
+  getOlbLock: "olb:lock-state",
   createPlan: "conversion:create-plan",
   generate: "conversion:generate",
   generationProgress: "conversion:progress",

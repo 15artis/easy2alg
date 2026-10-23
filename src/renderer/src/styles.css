@@ -1595,6 +1595,17 @@ select:focus,
   font-size: 9px;
 }
 
+/* Capture 占着 .olb 时的页脚提示：写入会成功，但 Capture 不会自动刷新已打开的库 */
+.stage-footer .footer-lock {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 330px;
+  color: #b46b09;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
 .stage-footer strong {
   display: flex;
   align-items: center;

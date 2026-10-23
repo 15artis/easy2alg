@@ -44,7 +44,7 @@ import {
   type ReactNode,
   type SetStateAction,
 } from "react";
-import type { Easy2AlgApi } from "../../shared/ipc";
+import type { Easy2AlgApi, OlbLockState } from "../../shared/ipc";
 import type {
   AllegroInstall,
   AllegroVersion,
@@ -164,6 +164,7 @@ const createUnavailableApi = (): Easy2AlgApi => {
     chooseOlbLibrary: unavailable,
     createOlbLibrary: unavailable,
     writeOlb: unavailable,
+    getOlbLock: unavailable,
     createPlan: unavailable,
     generate: unavailable,
     onGenerationProgress: () => () => undefined,
@@ -923,6 +924,11 @@ const ConverterPage = ({
   const [previewTab, setPreviewTab] = useState<"pcb" | "sch">("pcb");
   const [sectionIndex, setSectionIndex] = useState(0);
   /**
+   * 目标 .olb 是否正被 Capture 打开着。生成前先摆出来 —— Capture 不会自动刷新已打开的库，
+   * 写进去也看不到，用户会以为工具没生成（2026-10-23 实际发生）。
+   */
+  const [olbLock, setOlbLock] = useState<OlbLockState | null>(null);
+  /**
    * 符号编辑的**选中集**：支持多选（空白处拖出橡皮筋框选，然后一起移动 ——
    * 用户 2026-10-16 要求）。单选就是长度为 1。
    */
@@ -1064,6 +1070,23 @@ const ConverterPage = ({
       setPreviewTab("pcb");
     }
   }, [hasSymbol]);
+
+  // 目标 .olb 被 Capture 占着时提前提示：写进去也看不到，得关掉该库再打开。
+  // 换了库路径要重新判定（设置里改过 olbLibraryPath）。
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .getOlbLock()
+      .then((state) => {
+        if (!cancelled) {
+          setOlbLock(state);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [settings.olbLibraryPath]);
 
   /**
    * 符号条目自愈：选中的器件在 symbols 表里缺条目时自动补拉一次。
@@ -2220,6 +2243,8 @@ const ConverterPage = ({
     } finally {
       // 任何一步抛出来都不能把 running 卡在 true —— 那会让按钮永远灰着（用户 2026-10-19）
       setRunning(false);
+      // 这一轮里用户可能顺手把 Capture 的库关了，提示跟着刷新
+      void api.getOlbLock().then(setOlbLock).catch(() => undefined);
     }
   };
 
@@ -2837,7 +2862,22 @@ const ConverterPage = ({
           ) : null}
         </div>
         <footer className="stage-footer">
-          <div><span>ALLEGRO 库目录</span><strong><Folder size={14} />{settings.libraryDirectory}</strong></div>
+          <div>
+            <span>ALLEGRO 库目录</span>
+            <strong><Folder size={14} />{settings.libraryDirectory}</strong>
+          </div>
+          {olbLock !== null && olbLock.blocked && (
+            // Capture 没有"重新加载库"的接口，只能关掉该库再打开。提前说清楚，
+            // 免得生成完在 Capture 里找不到又被当成失败（用户 2026-10-23）。
+            <div
+              className="footer-lock"
+              data-testid="olb-lock-hint"
+              title={`${olbLock.libraryPath ?? ""} 正被 OrCAD Capture 打开。写入会成功，但 Capture 不会自动刷新已打开的库：关掉该库再重新打开即可看到。`}
+            >
+              <TriangleAlert size={13} />
+              <span>Capture 正打开着库：写入后需关掉该库再重开才看得到</span>
+            </div>
+          )}
           <div className="generation-side">
             <div className="target-toggles">
               <label title="生成 Allegro 封装：.dra / .psm / .pad">

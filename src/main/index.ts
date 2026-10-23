@@ -291,6 +291,19 @@ const registerHandlers = (): void => {
     });
     return result.canceled || result.filePath === undefined ? null : result.filePath;
   });
+  ipcMain.handle(IpcChannels.getOlbLock, async () => {
+    const settings = await settingsStore.read();
+    if (settings.olbLibraryPath === null) {
+      // 没指定库 = 每次按源库名自动建，路径不固定，这里不做预判
+      return { libraryPath: null, lockPath: null, blocked: false };
+    }
+    const state = await captureLockState(settings.olbLibraryPath);
+    return {
+      libraryPath: settings.olbLibraryPath,
+      lockPath: state.lockPath,
+      blocked: state.blocked,
+    };
+  });
   ipcMain.handle(IpcChannels.writeOlb, async (_event, rawRequest: unknown) => {
     const request = OlbWriteRequestSchema.parse(rawRequest);
     const settings = await settingsStore.read();

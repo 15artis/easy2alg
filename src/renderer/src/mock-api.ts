@@ -123,6 +123,7 @@ export const createMockApi = (): Easy2AlgApi => {
     writeOlb: async () => {
       throw new Error("浏览器预览不支持写入 OLB，请使用桌面版。");
     },
+    getOlbLock: async () => ({ libraryPath: null, lockPath: null, blocked: false }),
     createPlan: async (footprint) => {
       const largePad = footprint.pads.some((pad) => pad.width * pad.height > 16);
       return {
