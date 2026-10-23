@@ -12,6 +12,7 @@
  *   node scripts/publish-github.mjs --dry-run       # 只检查并打印计划，不动任何东西
  *   node scripts/publish-github.mjs --skip-build    # 用 release/ 里已有的安装包，不重新构建
  *   node scripts/publish-github.mjs --build-first   # 先打包（一定产出 exe），再判断要不要发布
+ *   node scripts/publish-github.mjs --build-only    # 只打包验证，不碰 GitHub（dist:win:local 走这个）
  *   node scripts/publish-github.mjs --force         # 忽略间隔与重复版本拦截
  *   node scripts/publish-github.mjs --min-hours 48  # 改最小间隔（0 = 不限制）
  *   node scripts/publish-github.mjs --notes FILE    # 用指定 markdown 作为 Release 说明
@@ -23,9 +24,10 @@
  *
  * 凭据来源（按顺序）：环境变量 GITHUB_TOKEN 或 GH_TOKEN → git credential（本机已存的账号）。
  *
- * 构建说明：本机直接调 electron-builder（`npm run dist:win:local`）会因为 IDE 占用
- * release/win-unpacked 而失败；`npm run dist:win` 走本脚本，固定把产物输出到系统临时
- * 目录，再把安装包拷回 release/，因此不会撞上那个问题。
+ * 构建说明：electron-builder 默认输出到 `release/`，而本机 IDE（WorkBuddyAI.exe）会一直
+ * 占着 `release/win-unpacked/resources/app.asar`，导致打包前的清理直接失败。所以本脚本
+ * 固定把产物输出到系统临时目录，再把安装包拷回 `release/`，绕开这个占用问题。
+ * `npm run dist:win`（--build-first）与 `npm run dist:win:local`（--build-only）都走这条路。
  */
 import { spawnSync, execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -52,6 +54,8 @@ const options = {
   dryRun: flag("--dry-run"),
   skipBuild: flag("--skip-build"),
   buildFirst: flag("--build-first"),
+  /** 只打包、不发布（验证用）：构建完立刻退出，不查 Release、不推 tag */
+  buildOnly: flag("--build-only"),
   force: flag("--force"),
   pushTag: !flag("--no-push-tag"),
   minHours: Number(valueOf("--min-hours", "24")),
@@ -168,14 +172,17 @@ const formatAge = (ms) => {
 
 const version = readVersion();
 const tag = `v${version}`;
-const repo = resolveRepo();
-const token = resolveToken();
+// --build-only 是纯打包（不碰 GitHub），既不需要仓库地址也不需要 token。
+const repo = options.buildOnly ? null : resolveRepo();
+const token = options.buildOnly ? "" : resolveToken();
 
-log(`仓库    ${repo}`);
-log(`版本    ${version}（tag ${tag}）`);
-log(`间隔    ${options.minHours === 0 ? "不限制" : `至少 ${options.minHours} 小时`}`);
-if (options.dryRun) log("模式    预览（不会构建，也不会发布）");
-log("");
+if (repo !== null) {
+  log(`仓库    ${repo}`);
+  log(`版本    ${version}（tag ${tag}）`);
+  log(`间隔    ${options.minHours === 0 ? "不限制" : `至少 ${options.minHours} 小时`}`);
+  if (options.dryRun) log("模式    预览（不会构建，也不会发布）");
+  log("");
+}
 
 // ---------------------------------------------------------------- 安装包
 
@@ -240,6 +247,17 @@ const prepareAssets = () => {
   assetsDir = outDir;
   copyToRelease(outDir);
 };
+
+// --build-only：纯打包（验证用）。打包完就退出，不查 Release、不推 tag、不上传。
+if (options.buildOnly) {
+  prepareAssets();
+  log("\n[2/2] 完成");
+  log(`      ${setupName}`);
+  log(`      ${portableName}`);
+  log(`      构建目录 ${assetsDir}`);
+  log(`      安装包已拷回 ${releaseDir}`);
+  process.exit(0);
+}
 
 // --build-first：先打包。被打包命令调用时用，保证 exe 一定产出。
 if (options.buildFirst) prepareAssets();

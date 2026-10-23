@@ -33,7 +33,7 @@ npm run dist:win
 
 两条都不满足时只会打包、不发版，退出码 `2`（正常跳过，不是错误）。所以发版前记得先抬 `package.json` 的版本号。
 
-只打包、不碰 GitHub：`npm run dist:win:local`。只发布 `release/` 里现成的包：`npm run publish:github:only`。预览发布计划：`npm run publish:github:dry`。
+只打包、不碰 GitHub：`npm run dist:win:local`（同样是"先 build 再打包"，产物输出到临时目录后拷回 `release/`，本机 IDE 占着 `release/win-unpacked` 也能跑通）。只发布 `release/` 里现成的包：`npm run publish:github:only`。预览发布计划：`npm run publish:github:dry`。
 
 ## 许可
 

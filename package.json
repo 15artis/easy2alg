@@ -17,7 +17,7 @@
     "test:watch": "vitest",
     "dist": "npm run build && electron-builder --publish never",
     "dist:win": "node scripts/publish-github.mjs --build-first",
-    "dist:win:local": "npm run build && electron-builder --win nsis portable --x64 --publish never",
+    "dist:win:local": "node scripts/publish-github.mjs --build-only",
     "dist:mac": "npm run build && electron-builder --mac dmg zip --publish never",
     "publish:github": "node scripts/publish-github.mjs",
     "publish:github:dry": "node scripts/publish-github.mjs --dry-run",
