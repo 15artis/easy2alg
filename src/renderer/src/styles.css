@@ -949,22 +949,6 @@ select:focus,
   white-space: nowrap;
 }
 
-/* 「发布页」是次要出口，用文字链接样式；.quiet-button 是 38×38 的图标按钮，放不下文字 */
-.update-card .link-button {
-  flex: 0 0 auto;
-  padding: 0 4px;
-  color: #2f6fd0;
-  font-size: 10px;
-  white-space: nowrap;
-  background: none;
-  border: 0;
-  cursor: pointer;
-}
-
-.update-card .link-button:hover {
-  text-decoration: underline;
-}
-
 .top-action.update-action {
   color: #2f6fd0;
   background: #f1f7ff;

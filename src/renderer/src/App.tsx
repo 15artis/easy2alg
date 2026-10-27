@@ -3264,16 +3264,6 @@ const UpdateCard = ({ state }: { readonly state: UpdateState | null }): ReactEle
                 {summary?.actionLabel}
               </button>
             )}
-            {state === null || state.status === "unsupported" ? null : (
-              <button
-                type="button"
-                className="link-button"
-                onClick={() => void run("open-release")}
-                data-testid="update-release-page"
-              >
-                发布页
-              </button>
-            )}
           </div>
         </div>
       </div>
