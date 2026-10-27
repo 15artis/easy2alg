@@ -60,19 +60,19 @@ export const createMockApi = (): Easy2AlgApi => {
     },
     chooseLibraryDirectory: async () => "D:\\AllegroLibrary",
     chooseAllegroExecutable: async () => ({
-      version: "16.6",
-      executablePath: "C:\\Cadence\\SPB_16.6\\tools\\pcb\\bin\\allegro.exe",
+      version: "25.1",
+      executablePath: "C:\\Cadence\\SPB_25.1\\tools\\bin\\allegro.exe",
       detected: true,
     }),
     detectAllegro: async () => [
       {
-        version: "17.2",
-        executablePath: "C:\\Cadence\\SPB_17.2\\tools\\bin\\allegro.exe",
+        version: "25.1",
+        executablePath: "C:\\Cadence\\SPB_25.1\\tools\\bin\\allegro.exe",
         detected: true,
       },
       {
-        version: "16.6",
-        executablePath: "C:\\Cadence\\SPB_16.6\\tools\\pcb\\bin\\allegro.exe",
+        version: "17.2",
+        executablePath: "C:\\Cadence\\SPB_17.2\\tools\\bin\\allegro.exe",
         detected: true,
       },
     ],

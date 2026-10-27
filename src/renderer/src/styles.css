@@ -866,6 +866,18 @@ select:focus,
   white-space: nowrap;
 }
 
+/* 「手动选择 / 重新检测」并排放，卡片本身很窄，按钮要收紧一点 */
+.detection-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.detection-card .detection-actions .secondary-button {
+  min-height: 30px;
+  padding: 0 9px;
+  font-size: 10px;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;

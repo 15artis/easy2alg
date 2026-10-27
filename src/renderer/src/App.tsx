@@ -47,7 +47,6 @@ import {
 import type { Easy2AlgApi, OlbLockState } from "../../shared/ipc";
 import type {
   AllegroInstall,
-  AllegroVersion,
   AppSettings,
   ConversionPlan,
   ConversionResult,
@@ -64,6 +63,7 @@ import type {
   ProductSearchHit,
   QueueItem,
 } from "../../shared/schemas";
+import { KNOWN_ALLEGRO_VERSIONS } from "../../shared/allegro-version";
 import { createMockApi } from "./mock-api";
 import { PanZoom, type PanZoomHandle } from "./PanZoom";
 import { SymbolGrid } from "./SymbolGrid";
@@ -180,7 +180,7 @@ const api: Easy2AlgApi =
   window.easy2alg ??
   (isBrowserPreview ? createMockApi() : createUnavailableApi());
 const emptySettings: AppSettings = {
-  allegroVersion: "23.1",
+  allegroVersion: KNOWN_ALLEGRO_VERSIONS[0],
   libraryDirectory: "",
   setupCompleted: false,
   allegroExecutablePath: null,
@@ -190,19 +190,35 @@ const emptySettings: AppSettings = {
   ui: defaultUiSettings(),
 };
 
-const AllegroVersionOptions: readonly {
-  readonly value: AllegroVersion;
-  readonly label: string;
-}[] = [
-  { value: "23.1", label: "Cadence Allegro 23.1" },
-  { value: "22.1", label: "Cadence Allegro 22.1" },
-  { value: "17.4", label: "Cadence Allegro 17.4" },
-  { value: "17.2", label: "Cadence Allegro 17.2" },
-  { value: "16.6", label: "Cadence Allegro 16.6" },
-];
+const errorMessage = (error: unknown): string => {
+  const raw = error instanceof Error ? error.message : String(error);
+  // Electron 会把主进程异常包一层 "Error invoking remote method 'x': TypeError: ..."，
+  // 原样显示给用户全是噪音，剥掉包装只留真正的原因。
+  return raw
+    .replace(/^Error invoking remote method '[^']+':\s*/, "")
+    .replace(/^(?:Type|Range|Reference|Syntax)?Error:\s*/, "");
+};
 
-const errorMessage = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error);
+/**
+ * 当前生效的 Allegro 程序 —— 与主进程 resolveInstall 保持同一套优先级：
+ * 用户手动选过的程序优先（哪怕版本号和设置里的残留值不一致），其次才是自动探测到的同版本。
+ * 两边不一致会出现"状态栏显示未检测到、点生成却能跑"的鬼故事。
+ */
+const resolveActiveInstall = (
+  settings: AppSettings,
+  installs: readonly AllegroInstall[],
+): AllegroInstall | null => {
+  if (settings.allegroExecutablePath !== null) {
+    const manual = installs.find(
+      (install) =>
+        install.executablePath.toLowerCase() === settings.allegroExecutablePath?.toLowerCase(),
+    );
+    if (manual !== undefined) {
+      return manual;
+    }
+  }
+  return installs.find((install) => install.version === settings.allegroVersion) ?? null;
+};
 
 type SymbolEntry = {
   readonly symbol: NormalizedSymbol;
@@ -518,30 +534,39 @@ const SetupDialog = ({
   initial,
   installs,
   onInstallDetected,
+  onRedetect,
   onSave,
 }: {
   readonly initial: AppSettings;
   readonly installs: readonly AllegroInstall[];
   readonly onInstallDetected: (install: AllegroInstall) => void;
+  readonly onRedetect: () => Promise<void>;
   readonly onSave: (settings: AppSettings) => Promise<void>;
 }): ReactElement => {
-  const configured = installs.find((install) => install.version === initial.allegroVersion);
-  const initialVersion = configured?.version ?? installs[0]?.version ?? initial.allegroVersion;
-  const [version, setVersion] = useState<AllegroVersion>(initialVersion);
+  /**
+   * 版本不让用户从下拉列表里挑（用户 2026-10-27）：能自动识别就用识别结果，
+   * 识别不到才让他手动指定 allegro.exe。默认优先上次用过的版本，其次是最新装的那个
+   * （探测结果已按版本从新到旧排好）。
+   */
   const [directory, setDirectory] = useState(initial.libraryDirectory);
   const [manualExecutablePath, setManualExecutablePath] = useState<string | null>(
-    initialVersion === initial.allegroVersion ? initial.allegroExecutablePath : null,
+    initial.allegroExecutablePath,
   );
+  const [detecting, setDetecting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const selectedInstall =
-    (manualExecutablePath === null
-      ? installs.find((install) => install.version === version)
-      : installs.find(
+  const manualInstall =
+    manualExecutablePath === null
+      ? null
+      : (installs.find(
           (install) =>
-            install.version === version &&
             install.executablePath.toLowerCase() === manualExecutablePath.toLowerCase(),
-        )) ?? null;
+        ) ?? null);
+  const selectedInstall =
+    manualInstall ??
+    installs.find((install) => install.version === initial.allegroVersion) ??
+    installs[0] ??
+    null;
 
   const chooseDirectory = async (): Promise<void> => {
     const selected = await api.chooseLibraryDirectory();
@@ -549,19 +574,36 @@ const SetupDialog = ({
       setDirectory(selected);
     }
   };
+  const redetect = async (): Promise<void> => {
+    setDetecting(true);
+    setError(null);
+    try {
+      await onRedetect();
+      // 手动选过的程序可能装在非标准目录，重新扫描扫不到 —— 补回列表，
+      // 否则"手动选择"完再点"重新检测"，选择就凭空消失了。
+      if (manualInstall !== null) {
+        onInstallDetected(manualInstall);
+      }
+    } catch (detectError) {
+      setError(errorMessage(detectError));
+    } finally {
+      setDetecting(false);
+    }
+  };
   const save = async (): Promise<void> => {
+    if (selectedInstall === null) {
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
       await onSave({
-        allegroVersion: version,
+        ...initial,
+        allegroVersion: selectedInstall.version,
+        // 自动识别的就不写死路径：以后换版本、换安装位置都能跟着重新识别
+        allegroExecutablePath: manualInstall === null ? null : manualInstall.executablePath,
         libraryDirectory: directory,
         setupCompleted: true,
-        allegroExecutablePath: manualExecutablePath,
-        olbLibraryPath: initial.olbLibraryPath,
-        unifiedLibraryFolder: initial.unifiedLibraryFolder,
-        fillPcbFootprint: initial.fillPcbFootprint,
-        ui: initial.ui,
       });
     } catch (saveError) {
       setError(errorMessage(saveError));
@@ -575,7 +617,6 @@ const SetupDialog = ({
       const install = await api.chooseAllegroExecutable();
       if (install !== null) {
         onInstallDetected(install);
-        setVersion(install.version);
         setManualExecutablePath(install.executablePath);
       }
     } catch (chooseError) {
@@ -588,38 +629,46 @@ const SetupDialog = ({
         <div className="setup-mark"><Zap size={25} /></div>
         <p className="eyebrow">安装检查</p>
         <h2>确认真实的 Allegro</h2>
-        <p className="muted">只有检测到实际程序后才能生成封装，不再使用默认连接状态。</p>
-        <label className="field-label" htmlFor="setup-version">Allegro 版本</label>
-        <select
-          id="setup-version"
-          value={version}
-          onChange={(event) => {
-            setVersion(event.target.value as AllegroVersion);
-            setManualExecutablePath(null);
-          }}
-        >
-          {AllegroVersionOptions.map((option) => (
-            <option value={option.value} key={option.value}>
-              {option.label}
-              {installs.some((install) => install.version === option.value) ? "（已检测）" : ""}
-            </option>
-          ))}
-        </select>
+        <p className="muted">
+          自动识别电脑上已安装的 Allegro，识别不到时再手动指定 allegro.exe。
+          只有找到实际程序后才能生成封装。
+        </p>
+        <label className="field-label">Allegro 程序</label>
         <div className={`detection-card ${selectedInstall === null ? "missing" : ""}`}>
           {selectedInstall === null ? (
             <>
               <TriangleAlert size={18} />
-              <div><strong>未检测到 Allegro {version}</strong><span>可以选择实际的 allegro.exe</span></div>
+              <div>
+                <strong>未自动识别到 Allegro</strong>
+                <span>请手动选择安装目录下的 tools\bin\allegro.exe</span>
+              </div>
             </>
           ) : (
             <>
               <Check size={18} />
-              <div><strong>已检测 Allegro {selectedInstall.version}</strong><span>{selectedInstall.executablePath}</span></div>
+              <div>
+                <strong>已识别 Allegro {selectedInstall.version}</strong>
+                <span>{selectedInstall.executablePath}</span>
+              </div>
             </>
           )}
-          <button type="button" className="secondary-button" onClick={() => void chooseExecutable()}>
-            手动选择
-          </button>
+          <div className="detection-actions">
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => void chooseExecutable()}
+            >
+              手动选择
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => void redetect()}
+              disabled={detecting}
+            >
+              {detecting ? "检测中…" : "重新检测"}
+            </button>
+          </div>
         </div>
         {error === null ? null : <p className="setup-error">{error}</p>}
         <label className="field-label" htmlFor="setup-directory">封装库目录</label>
@@ -3145,25 +3194,52 @@ const SettingsPage = ({
   settings,
   installs,
   onInstallDetected,
+  onRedetect,
   onSave,
 }: {
   readonly settings: AppSettings;
   readonly installs: readonly AllegroInstall[];
   readonly onInstallDetected: (install: AllegroInstall) => void;
+  readonly onRedetect: () => Promise<void>;
   readonly onSave: (settings: AppSettings) => Promise<void>;
 }): ReactElement => {
   const [draft, setDraft] = useState(settings);
   const [saved, setSaved] = useState(false);
+  const [detecting, setDetecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const selectedInstall =
-    (draft.allegroExecutablePath === null
-      ? installs.find((install) => install.version === draft.allegroVersion)
-      : installs.find(
+  /**
+   * 版本同样是自动识别出来的，不再给下拉列表（用户 2026-10-27）：
+   * 手动选过的程序优先，其次上次保存的版本，最后退到最新装的那个。
+   */
+  const manualInstall =
+    draft.allegroExecutablePath === null
+      ? null
+      : (installs.find(
           (install) =>
-            install.version === draft.allegroVersion &&
             install.executablePath.toLowerCase() ===
-              draft.allegroExecutablePath?.toLowerCase(),
-        )) ?? null;
+            draft.allegroExecutablePath?.toLowerCase(),
+        ) ?? null);
+  const selectedInstall =
+    manualInstall ??
+    installs.find((install) => install.version === draft.allegroVersion) ??
+    installs[0] ??
+    null;
+  const redetect = async (): Promise<void> => {
+    setDetecting(true);
+    setError(null);
+    try {
+      await onRedetect();
+      // 手动选过的程序可能装在非标准目录，重新扫描扫不到 —— 补回列表
+      if (manualInstall !== null) {
+        onInstallDetected(manualInstall);
+      }
+      setSaved(false);
+    } catch (detectError) {
+      setError(errorMessage(detectError));
+    } finally {
+      setDetecting(false);
+    }
+  };
   const choose = async (): Promise<void> => {
     const selected = await api.chooseLibraryDirectory();
     if (selected !== null) {
@@ -3210,9 +3286,18 @@ const SettingsPage = ({
     }
   };
   const save = async (): Promise<void> => {
+    if (selectedInstall === null) {
+      return;
+    }
     setError(null);
     try {
-      await onSave({ ...draft, setupCompleted: true });
+      await onSave({
+        ...draft,
+        allegroVersion: selectedInstall.version,
+        // 自动识别的就不写死路径：以后换版本、换安装位置都能跟着重新识别
+        allegroExecutablePath: manualInstall === null ? null : manualInstall.executablePath,
+        setupCompleted: true,
+      });
       setSaved(true);
       window.setTimeout(() => setSaved(false), 1800);
     } catch (saveError) {
@@ -3232,55 +3317,44 @@ const SettingsPage = ({
         <div className="setting-section">
           <div className="setting-icon"><Zap size={21} /></div>
           <div className="setting-content">
-            <label htmlFor="allegro-version">Allegro 版本</label>
-            <p>选择电脑上已经安装的版本。</p>
-            <select
-              id="allegro-version"
-              value={draft.allegroVersion}
-              onChange={(event) => {
-                setDraft({
-                  ...draft,
-                  allegroVersion: event.target.value as AllegroVersion,
-                  allegroExecutablePath: null,
-                });
-                setSaved(false);
-              }}
-            >
-              {AllegroVersionOptions.map((option) => (
-                <option value={option.value} key={option.value}>
-                  {option.label}
-                  {installs.some((install) => install.version === option.value)
-                    ? "（已检测）"
-                    : ""}
-                </option>
-              ))}
-            </select>
+            <label>Allegro 程序</label>
+            <p>自动识别电脑上已安装的 Allegro；识别不到时再手动指定 allegro.exe。</p>
             <div className={`detection-card ${selectedInstall === null ? "missing" : ""}`}>
               {selectedInstall === null ? (
                 <>
                   <TriangleAlert size={18} />
                   <div>
-                    <strong>未检测到 Allegro {draft.allegroVersion}</strong>
-                    <span>请确认版本，或选择实际的 allegro.exe</span>
+                    <strong>未自动识别到 Allegro</strong>
+                    <span>请手动选择安装目录下的 tools\bin\allegro.exe</span>
                   </div>
                 </>
               ) : (
                 <>
                   <Check size={18} />
                   <div>
-                    <strong>已检测 Allegro {selectedInstall.version}</strong>
+                    <strong>已识别 Allegro {selectedInstall.version}</strong>
                     <span>{selectedInstall.executablePath}</span>
                   </div>
                 </>
               )}
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() => void chooseExecutable()}
-                data-testid="choose-allegro-executable"
-              >
-                手动选择
-              </button>
+              <div className="detection-actions">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => void chooseExecutable()}
+                  data-testid="choose-allegro-executable"
+                >
+                  手动选择
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => void redetect()}
+                  disabled={detecting}
+                >
+                  {detecting ? "检测中…" : "重新检测"}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -3424,16 +3498,8 @@ export const App = (): ReactElement => {
     [queue],
   );
   const activeInstall = useMemo(
-    () =>
-      (settings.allegroExecutablePath === null
-        ? installs.find((install) => install.version === settings.allegroVersion)
-        : installs.find(
-            (install) =>
-              install.version === settings.allegroVersion &&
-              install.executablePath.toLowerCase() ===
-                settings.allegroExecutablePath?.toLowerCase(),
-          )) ?? null,
-    [installs, settings.allegroExecutablePath, settings.allegroVersion],
+    () => resolveActiveInstall(settings, installs),
+    [installs, settings],
   );
   const addInstall = (install: AllegroInstall): void => {
     setInstalls((current) => [
@@ -3447,6 +3513,10 @@ export const App = (): ReactElement => {
   const saveSettings = async (nextSettings: AppSettings): Promise<void> => {
     const saved = await api.saveSettings(nextSettings);
     setSettings(saved);
+    setInstalls(await api.detectAllegro());
+  };
+  /** 重新扫描一次安装（用户装完 Allegro 不用重启软件）。 */
+  const redetect = async (): Promise<void> => {
     setInstalls(await api.detectAllegro());
   };
   /**
@@ -3521,6 +3591,7 @@ export const App = (): ReactElement => {
           settings={settings}
           installs={installs}
           onInstallDetected={addInstall}
+          onRedetect={redetect}
           onSave={saveSettings}
         />
       )}
@@ -3540,6 +3611,7 @@ export const App = (): ReactElement => {
           initial={settings}
           installs={installs}
           onInstallDetected={addInstall}
+          onRedetect={redetect}
           onSave={saveSettings}
         />
       ) : null}

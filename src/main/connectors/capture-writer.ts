@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, copyFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 import { promisify } from "node:util";
@@ -119,6 +119,29 @@ export type CaptureToolchain = {
 };
 
 /**
+ * orDb 的 Tcl 桥接 DLL。
+ *
+ * 17.4 / 23.1 实测都是 `orDb_Dll_Tcl64.dll`，但 Cadence 换过 Tcl 版本号，
+ * 新版本（24.1 / 25.1 及以后）可能叫 `orDb_Dll_Tcl86.dll` 之类。先找准确名字，
+ * 找不到再退回同目录里任何 `orDb_Dll_Tcl<数字>.dll`（取版本号最大的一个），
+ * 否则新版本一装上，写 .olb 就直接报"找不到 tclsh.exe / orDb_Dll_Tcl64.dll"。
+ */
+const findOrDbTclDll = async (binDirectory: string): Promise<string | null> => {
+  const exact = join(binDirectory, "orDb_Dll_Tcl64.dll");
+  if (await fileExists(exact)) {
+    return exact;
+  }
+  try {
+    const names = (await readdir(binDirectory))
+      .filter((name) => /^orDb_Dll_Tcl\d+\.dll$/i.test(name))
+      .sort((left, right) => right.localeCompare(left));
+    return names.length === 0 ? null : join(binDirectory, names[0]);
+  } catch {
+    return null;
+  }
+};
+
+/**
  * 从 allegro.exe 反推 tclsh。
  *
  * 实测 17.4 布局：`<root>/tools/bin/{allegro.exe, tclsh.exe, orDb_Dll_Tcl64.dll}`。
@@ -144,8 +167,11 @@ export const resolveCaptureToolchain = async (
   ];
   for (const candidate of candidates) {
     const tclshPath = join(candidate, "tclsh.exe");
-    const dllPath = join(candidate, "orDb_Dll_Tcl64.dll");
-    if ((await fileExists(tclshPath)) && (await fileExists(dllPath))) {
+    if (!(await fileExists(tclshPath))) {
+      continue;
+    }
+    const dllPath = await findOrDbTclDll(candidate);
+    if (dllPath !== null) {
       return { binDirectory: candidate, tclshPath, dllPath };
     }
   }
