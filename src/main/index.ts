@@ -3,6 +3,7 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { electronApp, is } from "@electron-toolkit/utils";
 import { z } from "zod";
 import { AllegroDetector } from "./connectors/allegro-detector";
+import { resolveAllegroInstall } from "./connectors/allegro-selection";
 import { EasyEdaConnector } from "./connectors/easyeda-connector";
 import { Elibz2Connector } from "./connectors/elibz2-connector";
 import { JsonStore } from "./connectors/json-store";
@@ -16,6 +17,7 @@ import { createConversionPlan } from "./conversion/validate";
 import { configureLogging, writeLog } from "./logging";
 import { lastWindowCloseAction } from "./lifecycle";
 import { IpcChannels } from "../shared/ipc";
+import { KNOWN_ALLEGRO_VERSIONS } from "../shared/allegro-version";
 import { AllegroExecutionError } from "../shared/errors";
 import {
   AppSettingsSchema,
@@ -42,23 +44,10 @@ const OlbWriteRequestSchema = z.object({
   fillPcbFootprint: z.boolean().optional(),
 });
 
-const resolveInstall = async (
-  settings: AppSettings,
-  installs: readonly AllegroInstall[],
-  detectManual: (path: string) => Promise<AllegroInstall | null>,
-): Promise<AllegroInstall | null> => {
-  const manualInstall =
-    settings.allegroExecutablePath === null
-      ? null
-      : await detectManual(settings.allegroExecutablePath);
-  return (
-    (manualInstall?.version === settings.allegroVersion ? manualInstall : null) ??
-    installs.find((candidate) => candidate.version === settings.allegroVersion) ??
-    null
-  );
-};
 const defaultSettings = (): AppSettings => ({
-  allegroVersion: "23.1",
+  // 默认值跟着已知最新版本走（当前 25.1）；机器上实际装了哪个版本由首次启动的
+  // 检测结果覆盖，这里只是没有检测结果时的占位。
+  allegroVersion: KNOWN_ALLEGRO_VERSIONS[0],
   libraryDirectory: join(app.getPath("documents"), "AllegroLibrary"),
   setupCompleted: false,
   allegroExecutablePath: null,
@@ -131,10 +120,16 @@ const registerHandlers = (): void => {
     if (settings.allegroExecutablePath === null) {
       return detected;
     }
-    const manualInstall = await detector.inspectExecutable(
-      settings.allegroExecutablePath,
-      null,
-    );
+    // 手动选的路径可能已经被卸载 / 判不出版本：探测结果照常返回，别让整页启动失败
+    let manualInstall: AllegroInstall | null = null;
+    try {
+      manualInstall = await detector.inspectExecutable(settings.allegroExecutablePath, null);
+    } catch (error) {
+      await writeLog("warn", "allegro_manual_probe_failed", {
+        executablePath: settings.allegroExecutablePath,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
     return manualInstall === null
       ? detected
       : [
@@ -230,13 +225,13 @@ const registerHandlers = (): void => {
     const request = OlbWriteRequestSchema.parse(rawRequest);
     const settings = await settingsStore.read();
     const installs = await detector.detect();
-    const install = await resolveInstall(settings, installs, (path) =>
+    const install = await resolveAllegroInstall(settings, installs, (path) =>
       detector.inspectExecutable(path, null),
     );
     const toolchain = await resolveCaptureToolchain(install?.executablePath ?? null);
     if (toolchain === null) {
       throw new Error(
-        "未找到 Cadence 的 tclsh.exe / orDb_Dll_Tcl64.dll，请在设置中确认 Allegro 程序路径。",
+        "未找到 Cadence 的 tclsh.exe / orDb Tcl 桥接 DLL（位于 <安装目录>\\tools\\bin），请在设置中确认 Allegro 程序路径。",
       );
     }
     const libraryPath =
@@ -265,7 +260,7 @@ const registerHandlers = (): void => {
     const plan = ConversionPlanSchema.parse(rawPlan);
     const settings = await settingsStore.read();
     const installs = await detector.detect();
-    const install = await resolveInstall(settings, installs, (path) =>
+    const install = await resolveAllegroInstall(settings, installs, (path) =>
       detector.inspectExecutable(path, null),
     );
     const progressState: { last: GenerationProgress | null } = { last: null };

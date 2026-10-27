@@ -1,7 +1,9 @@
 import { z } from "zod";
+import { AllegroVersionSchema, type AllegroVersion } from "./allegro-version";
 
-export const AllegroVersionSchema = z.enum(["23.1", "22.1", "17.4", "17.2", "16.6"]);
-export type AllegroVersion = z.infer<typeof AllegroVersionSchema>;
+// 版本号不再是固定枚举（见 shared/allegro-version.ts）：Cadence 每年发新版，
+// 写死列表会让 24.1 / 25.1 既选不到、又让手动选的 allegro.exe 被判"版本未知"。
+export { AllegroVersionSchema, type AllegroVersion };
 
 /**
  * 界面偏好 —— 与转换逻辑无关，改了只重写 settings.json、不重跑 Allegro 探测。
