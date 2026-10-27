@@ -189,7 +189,13 @@ if (repo !== null) {
 const setupName = `Easy2ALG-Setup-${version}-x64.exe`;
 const portableName = `Easy2ALG-Portable-${version}-x64.exe`;
 const blockmapName = `${setupName}.blockmap`;
-const wanted = [setupName, portableName, blockmapName];
+/**
+ * electron-updater 的版本元数据（electron-builder 打包 nsis 时自动生成）。
+ * 没有它，客户端只会在 GitHub API 上找不到可比较的版本，自动更新直接失效 ——
+ * 所以它是必需产物，缺了就当发布失败处理，别悄悄发出去。
+ */
+const updateInfoName = "latest.yml";
+const wanted = [setupName, portableName, blockmapName, updateInfoName];
 const releaseDir = path.join(ROOT, "release");
 // 实际取包的目录：构建过就用构建输出，没构建就用 release/ 里的现成包。
 let assetsDir = releaseDir;
@@ -305,7 +311,12 @@ const resolveAsset = (name) => {
 const assets = wanted.map(resolveAsset).filter((file) => file !== null);
 const missing = wanted.filter((name) => resolveAsset(name) === null);
 if (missing.length > 0 && !options.dryRun) {
-  die(`缺少安装包：${missing.join(", ")}\n  目录：${assetsDir}`);
+  die(
+    `缺少发布文件：${missing.join(", ")}\n  目录：${assetsDir}\n` +
+      (missing.includes(updateInfoName)
+        ? `  ${updateInfoName} 是自动更新用的版本元数据，缺了客户端就不会提示更新。\n  请完整构建一次（npm run dist:win），不要用 --skip-build 拼旧包。`
+        : ""),
+  );
 }
 
 log("\n[2/3] 待上传");
@@ -352,8 +363,9 @@ const buildNotes = () => {
     "",
     "| 文件 | 说明 |",
     "| --- | --- |",
-    `| \`${setupName}\` | 安装版（NSIS，可选安装目录） |`,
-    `| \`${portableName}\` | 免安装便携版 |`,
+    `| \`${setupName}\` | 安装版（NSIS，可选安装目录，支持自动更新） |`,
+    `| \`${portableName}\` | 免安装便携版（不支持自动更新，需手动下载新版本） |`,
+    `| \`${updateInfoName}\` | 自动更新用的版本元数据（客户端自动读取，无需手动下载） |`,
     "",
     "**系统要求**：Windows x64。支持 Allegro 16.6 / 17.2 / 17.4 / 22.1 / 23.1 / 24.1 / 25.1 及之后的新版本。",
     "",

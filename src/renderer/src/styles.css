@@ -878,6 +878,99 @@ select:focus,
   font-size: 10px;
 }
 
+/* 自动更新卡片：左文右按钮，状态用底色区分（有新版本/出错时更显眼） */
+.update-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 10px 11px;
+  background: #f7f8fa;
+  border: 1px solid #e2e6ec;
+  border-radius: 8px;
+}
+
+.update-card.available,
+.update-card.downloaded {
+  background: #f1f7ff;
+  border-color: #cfe0f7;
+}
+
+.update-card.error {
+  background: #fff6f5;
+  border-color: #f3d2cd;
+}
+
+.update-copy {
+  min-width: 0;
+}
+
+.update-copy strong,
+.update-copy span {
+  display: block;
+}
+
+.update-copy strong {
+  color: #293642;
+  font-size: 11px;
+}
+
+.update-copy span {
+  margin-top: 3px;
+  color: #687487;
+  font-size: 9px;
+}
+
+.update-copy .update-error {
+  color: #b23c30;
+}
+
+.update-progress {
+  height: 4px;
+  margin-top: 7px;
+  overflow: hidden;
+  background: #e3e8ef;
+  border-radius: 999px;
+}
+
+.update-progress i {
+  display: block;
+  height: 100%;
+  background: #2f6fd0;
+  border-radius: inherit;
+  transition: width 0.2s ease;
+}
+
+.update-card .detection-actions .secondary-button {
+  min-height: 30px;
+  padding: 0 9px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+/* 「发布页」是次要出口，用文字链接样式；.quiet-button 是 38×38 的图标按钮，放不下文字 */
+.update-card .link-button {
+  flex: 0 0 auto;
+  padding: 0 4px;
+  color: #2f6fd0;
+  font-size: 10px;
+  white-space: nowrap;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.update-card .link-button:hover {
+  text-decoration: underline;
+}
+
+.top-action.update-action {
+  color: #2f6fd0;
+  background: #f1f7ff;
+  border-color: #cfe0f7;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;

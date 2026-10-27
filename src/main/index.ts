@@ -18,6 +18,7 @@ import {
 import { captureLockState } from "./connectors/capture-lock";
 import { PendingOlbQueueSchema, PendingOlbWrites } from "./connectors/olb-pending";
 import { createConversionPlan } from "./conversion/validate";
+import { createUpdaterController, type UpdaterController } from "./updater";
 import { configureLogging, writeLog } from "./logging";
 import { lastWindowCloseAction } from "./lifecycle";
 import { IpcChannels } from "../shared/ipc";
@@ -38,6 +39,10 @@ import {
 } from "../shared/schemas";
 
 const HistorySchema = z.array(HistoryEntrySchema);
+
+/** 自动更新控制器；窗口创建后由启动流程触发一次静默检查。 */
+let updater: UpdaterController | null = null;
+
 const OlbWriteRequestSchema = z.object({
   symbol: NormalizedSymbolSchema,
   libraryPath: z.string().min(1).nullable(),
@@ -409,12 +414,40 @@ const registerHandlers = (): void => {
       throw new Error(`Unable to open ${parsedPath}: ${errorMessage}`);
     }
   });
+
+  // 自动更新：状态由主进程统一维护，变化时广播给所有窗口（设置页据此渲染）。
+  const controller = createUpdaterController({
+    currentVersion: app.getVersion(),
+    notify: (state) => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed()) {
+          window.webContents.send(IpcChannels.updateState, state);
+        }
+      }
+    },
+  });
+  updater = controller;
+  ipcMain.handle(IpcChannels.getUpdateState, () => controller.getState());
+  ipcMain.handle(IpcChannels.checkForUpdates, () => controller.check());
+  ipcMain.handle(IpcChannels.downloadUpdate, () => controller.download());
+  ipcMain.handle(IpcChannels.installUpdate, () => {
+    controller.install();
+  });
+  ipcMain.handle(IpcChannels.openReleasePage, () => controller.openReleasePage());
 };
 
 app.whenReady().then(() => {
   electronApp.setAppUserModelId("cn.easy2alg.app");
   registerHandlers();
   createWindow();
+  /**
+   * 启动后静默查一次更新：延后 8 秒，等界面先渲染完，也不跟启动阶段的
+   * Allegro 探测抢时间。查不到只是状态栏里一句提示，不打扰用户。
+   */
+  const updateTimer = setTimeout(() => {
+    void updater?.check();
+  }, 8_000);
+  updateTimer.unref();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
@@ -433,4 +466,8 @@ app.on("window-all-closed", () => {
   } else if (action === "quit") {
     app.quit();
   }
+});
+
+app.on("before-quit", () => {
+  updater?.dispose();
 });

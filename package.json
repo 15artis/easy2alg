@@ -1,6 +1,6 @@
 {
   "name": "easy2alg",
-  "version": "0.1.62",
+  "version": "0.1.63",
   "description": "Convert EasyEDA/LCSC footprints into Cadence Allegro libraries",
   "main": "out/main/index.js",
   "type": "module",
@@ -26,6 +26,7 @@
   "dependencies": {
     "@jlcpcb/core": "0.4.0",
     "adm-zip": "0.5.16",
+    "electron-updater": "6.8.11",
     "lucide-react": "1.26.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
@@ -55,6 +56,13 @@
     "directories": {
       "output": "release"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "15artis",
+        "repo": "easy2alg"
+      }
+    ],
     "files": [
       "out/**/*",
       "package.json",

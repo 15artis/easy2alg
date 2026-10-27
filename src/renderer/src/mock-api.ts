@@ -7,9 +7,17 @@ import {
   type GenerationProgress,
   type HistoryEntry,
 } from "../../shared/schemas";
+import { RELEASE_PAGE_URL, initialUpdateState, type UpdateState } from "../../shared/update";
 
 const SettingsKey = "easy2alg.settings";
 const HistoryKey = "easy2alg.history";
+
+const mockUpdateState: UpdateState = {
+  ...initialUpdateState("0.1.0"),
+  status: "unsupported",
+  supported: false,
+  message: "网页预览不支持自动更新，请到发布页下载安装版。",
+};
 
 const readSettings = (): AppSettings => {
   const saved = window.localStorage.getItem(SettingsKey);
@@ -254,5 +262,14 @@ export const createMockApi = (): Easy2AlgApi => {
     },
     getHistory: async () => readHistory(),
     openPath: async () => undefined,
+    // 网页预览没有 electron-updater，固定报"不支持"，界面显示"打开发布页"那条分支
+    getUpdateState: async () => mockUpdateState,
+    checkForUpdates: async () => mockUpdateState,
+    downloadUpdate: async () => mockUpdateState,
+    installUpdate: async () => undefined,
+    openReleasePage: async () => {
+      window.open(RELEASE_PAGE_URL, "_blank", "noopener");
+    },
+    onUpdateState: () => () => undefined,
   };
 };

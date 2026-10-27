@@ -5,6 +5,7 @@ import {
   ChevronRight,
   CircleHelp,
   Clock3,
+  Download,
   FileCode2,
   Focus,
   Folder,
@@ -65,6 +66,7 @@ import type {
 } from "../../shared/schemas";
 import { KNOWN_ALLEGRO_VERSIONS } from "../../shared/allegro-version";
 import { createMockApi } from "./mock-api";
+import { describeUpdate, type UpdateAction, type UpdateState } from "../../shared/update";
 import { PanZoom, type PanZoomHandle } from "./PanZoom";
 import { SymbolGrid } from "./SymbolGrid";
 import { SymbolProperties } from "./SymbolProperties";
@@ -170,6 +172,12 @@ const createUnavailableApi = (): Easy2AlgApi => {
     onGenerationProgress: () => () => undefined,
     getHistory: unavailable,
     openPath: unavailable,
+    getUpdateState: unavailable,
+    checkForUpdates: unavailable,
+    downloadUpdate: unavailable,
+    installUpdate: unavailable,
+    openReleasePage: unavailable,
+    onUpdateState: () => () => undefined,
   };
 };
 
@@ -3190,15 +3198,100 @@ const HistoryPage = ({
   </main>
 );
 
+/**
+ * 自动更新卡片（设置页）。
+ *
+ * 状态全部由主进程维护、App 订阅后传下来，这里只负责点按钮和显示错误 ——
+ * 界面不再自己记一份"下载到哪了"，免得和主进程的实际状态对不上。
+ */
+const UpdateCard = ({ state }: { readonly state: UpdateState | null }): ReactElement => {
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const summary = state === null ? null : describeUpdate(state);
+  const action = summary?.action ?? null;
+  const percent = Math.max(0, Math.min(100, Math.round(state?.percent ?? 0)));
+  const run = async (next: UpdateAction): Promise<void> => {
+    setError(null);
+    setBusy(true);
+    try {
+      if (next === "check") {
+        await api.checkForUpdates();
+      } else if (next === "download") {
+        await api.downloadUpdate();
+      } else if (next === "install") {
+        await api.installUpdate();
+      } else {
+        await api.openReleasePage();
+      }
+    } catch (actionError) {
+      setError(errorMessage(actionError));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="setting-section">
+      <div className="setting-icon"><Download size={21} /></div>
+      <div className="setting-content">
+        <label>软件更新</label>
+        <p>启动时自动检查新版本，下载完成后重启软件即可安装。</p>
+        <div className={`update-card ${state?.status ?? "idle"}`}>
+          <div className="update-copy">
+            <strong>{summary?.title ?? "读取版本信息…"}</strong>
+            <span>{summary?.detail ?? ""}</span>
+            {state?.status === "downloading" ? (
+              <div
+                className="update-progress"
+                role="progressbar"
+                aria-valuenow={percent}
+                aria-valuemin={0}
+                aria-valuemax={100}
+              >
+                <i style={{ width: `${percent}%` }} />
+              </div>
+            ) : null}
+            {error === null ? null : <span className="update-error">{error}</span>}
+          </div>
+          <div className="detection-actions">
+            {action === null ? null : (
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={busy || summary?.busy === true}
+                onClick={() => void run(action)}
+                data-testid="update-action"
+              >
+                {summary?.actionLabel}
+              </button>
+            )}
+            {state === null || state.status === "unsupported" ? null : (
+              <button
+                type="button"
+                className="link-button"
+                onClick={() => void run("open-release")}
+                data-testid="update-release-page"
+              >
+                发布页
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const SettingsPage = ({
   settings,
   installs,
+  update,
   onInstallDetected,
   onRedetect,
   onSave,
 }: {
   readonly settings: AppSettings;
   readonly installs: readonly AllegroInstall[];
+  readonly update: UpdateState | null;
   readonly onInstallDetected: (install: AllegroInstall) => void;
   readonly onRedetect: () => Promise<void>;
   readonly onSave: (settings: AppSettings) => Promise<void>;
@@ -3448,6 +3541,7 @@ const SettingsPage = ({
             </label>
           </div>
         </div>
+        <UpdateCard state={update} />
         <div className="settings-actions">
           <span className={error === null ? "" : "settings-error"}>
             {error ?? (saved ? "已保存" : "")}
@@ -3478,6 +3572,8 @@ export const App = (): ReactElement => {
   const [installs, setInstalls] = useState<readonly AllegroInstall[]>([]);
   const [ready, setReady] = useState(false);
   const [fatalError, setFatalError] = useState<string | null>(null);
+  /** 自动更新状态：主进程推过来的唯一一份，设置页与顶栏共用。 */
+  const [update, setUpdate] = useState<UpdateState | null>(null);
 
   useEffect(() => {
     Promise.all([api.getSettings(), api.getHistory(), api.detectAllegro()])
@@ -3491,6 +3587,21 @@ export const App = (): ReactElement => {
         setFatalError(errorMessage(error));
         setReady(true);
       });
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    void api
+      .getUpdateState()
+      .then((state) => {
+        if (alive) setUpdate(state);
+      })
+      .catch(() => undefined);
+    const unsubscribe = api.onUpdateState((state) => setUpdate(state));
+    return () => {
+      alive = false;
+      unsubscribe();
+    };
   }, []);
 
   const selectedReady = useMemo(
@@ -3563,6 +3674,19 @@ export const App = (): ReactElement => {
           <button className="top-action" type="button" onClick={() => setPage("settings")} data-testid="nav-settings">
             <Settings size={17} />设置
           </button>
+          {update !== null &&
+          (update.status === "available" || update.status === "downloaded") ? (
+            <button
+              className="top-action update-action"
+              type="button"
+              onClick={() => setPage("settings")}
+              data-testid="nav-update"
+              title={update.status === "downloaded" ? "更新已下载，重启即可安装" : "发现新版本"}
+            >
+              <Download size={17} />
+              {update.status === "downloaded" ? "可安装更新" : `新版本 v${update.latestVersion ?? ""}`}
+            </button>
+          ) : null}
           <button className="top-action" type="button">
             <CircleHelp size={17} />帮助
           </button>
@@ -3590,6 +3714,7 @@ export const App = (): ReactElement => {
         <SettingsPage
           settings={settings}
           installs={installs}
+          update={update}
           onInstallDetected={addInstall}
           onRedetect={redetect}
           onSave={saveSettings}

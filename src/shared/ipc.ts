@@ -13,6 +13,7 @@ import type {
   ProductSearchResult,
   UiSettingsPatch,
 } from "./schemas";
+import type { UpdateState } from "./update";
 
 export type OlbWriteRequest = {
   readonly symbol: NormalizedSymbol;
@@ -83,6 +84,14 @@ export type Easy2AlgApi = {
   onGenerationProgress: (listener: (progress: GenerationProgress) => void) => () => void;
   getHistory: () => Promise<HistoryEntry[]>;
   openPath: (absolutePath: string) => Promise<void>;
+  /** 自动更新：当前状态（界面打开设置页时先拉一次） */
+  getUpdateState: () => Promise<UpdateState>;
+  checkForUpdates: () => Promise<UpdateState>;
+  downloadUpdate: () => Promise<UpdateState>;
+  installUpdate: () => Promise<void>;
+  openReleasePage: () => Promise<void>;
+  /** 订阅更新状态变化（检查中 / 有新版本 / 下载进度 / 下载完成 / 出错） */
+  onUpdateState: (listener: (state: UpdateState) => void) => () => void;
 };
 
 export const IpcChannels = {
@@ -109,4 +118,10 @@ export const IpcChannels = {
   generationProgress: "conversion:progress",
   getHistory: "history:get",
   openPath: "shell:open-path",
+  getUpdateState: "updater:get-state",
+  checkForUpdates: "updater:check",
+  downloadUpdate: "updater:download",
+  installUpdate: "updater:install",
+  openReleasePage: "updater:open-release",
+  updateState: "updater:state",
 } as const;
