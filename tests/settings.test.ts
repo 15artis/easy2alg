@@ -130,19 +130,19 @@ describe("symbol property panel position", () => {
 });
 
 /**
- * 用户 2026-10-28：封装命名风格可选（完整 / 简写），必须能在 settings.json 里存住。
- * 老配置没有这个字段 → 默认 "full"，保持原来的名字不变。
+ * 用户 2026-10-28：封装命名默认用简称（与立创商城「封装」一致），设置里可切回全称。
+ * 老配置没有这个字段 → 默认 "compact"。
  */
 describe("package name style", () => {
-  it("defaults to the full source name for older config files", () => {
-    expect(AppSettingsSchema.parse(minimal).packageNameStyle).toBe("full");
+  it("defaults to the compact (supplier footprint) style", () => {
+    expect(AppSettingsSchema.parse(minimal).packageNameStyle).toBe("compact");
   });
 
-  it("round-trips the compact style", () => {
-    const settings = AppSettingsSchema.parse({ ...minimal, packageNameStyle: "compact" });
-    expect(settings.packageNameStyle).toBe("compact");
+  it("round-trips the full style", () => {
+    const settings = AppSettingsSchema.parse({ ...minimal, packageNameStyle: "full" });
+    expect(settings.packageNameStyle).toBe("full");
     const again = AppSettingsSchema.parse(JSON.parse(JSON.stringify(settings)));
-    expect(again.packageNameStyle).toBe("compact");
+    expect(again.packageNameStyle).toBe("full");
   });
 
   it("rejects unknown styles", () => {

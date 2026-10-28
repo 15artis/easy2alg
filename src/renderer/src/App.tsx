@@ -201,7 +201,7 @@ const emptySettings: AppSettings = {
   unifiedLibraryFolder: false,
   perFootprintFolder: false,
   fillPcbFootprint: true,
-  packageNameStyle: "full",
+  packageNameStyle: "compact",
   ui: defaultUiSettings(),
 };
 
@@ -3558,32 +3558,6 @@ const SettingsPage = ({
           </div>
         </div>
         <div className="setting-section">
-          <div className="setting-icon"><Type size={21} /></div>
-          <div className="setting-content">
-            <label htmlFor="package-name-style">封装命名风格</label>
-            <p>简写用立创商城「封装」那一栏的写法（供应商封装），所有封装类型都适用。</p>
-            <select
-              id="package-name-style"
-              value={draft.packageNameStyle}
-              onChange={(event) =>
-                setDraft({
-                  ...draft,
-                  packageNameStyle: event.target.value === "compact" ? "compact" : "full",
-                })
-              }
-              data-testid="setting-package-name-style"
-            >
-              <option value="full">完整 —— 立创 EDA 封装库里的长名</option>
-              <option value="compact">简写 —— 与立创商城「封装」一致</option>
-            </select>
-            <p className="setting-hint">
-              {draft.packageNameStyle === "compact"
-                ? "例：C41415701 → SMD5032-6P ｜ C2040 → LQFN-56-7X7 ｜ C6186 → SOT-223"
-                : "例：C41415701 → OSC-SMD_6P-L5_0-W3_2-BL_OA1EL89CEIB112YLC"}
-            </p>
-          </div>
-        </div>
-        <div className="setting-section">
           <div className="setting-icon"><Layers3 size={21} /></div>
           <div className="setting-content">
             <label>输出结构与器件字段</label>
@@ -3627,6 +3601,20 @@ const SettingsPage = ({
                 data-testid="setting-fill-footprint"
               />
               <span>在 .olb 的器件里填入 PCB Footprint 字段（仅同时生成 PCB 封装时生效）</span>
+            </label>
+            <label className="toggle-row">
+              <input
+                type="checkbox"
+                checked={draft.packageNameStyle === "compact"}
+                onChange={(event) =>
+                  setDraft({
+                    ...draft,
+                    packageNameStyle: event.target.checked ? "compact" : "full",
+                  })
+                }
+                data-testid="setting-package-name-style"
+              />
+              <span>封装名用简称（如 SMD5032-6P），不勾选用全称</span>
             </label>
           </div>
         </div>

@@ -108,11 +108,12 @@ export const AppSettingsSchema = z
     /** 是否把 PCB 封装名写进 .olb 的 PCB Footprint 字段（用户 2026-10-19 要求可选） */
     fillPcbFootprint: z.boolean().optional(),
     /**
-     * 封装命名风格（用户 2026-10-28 要求可选）：
-     *  - "full"    立创源名结构，小数点换下划线
+     * 封装命名风格（用户 2026-10-28 要求可选，**默认简称**）：
+     *  - "compact" 简称 —— 立创商城的「封装」写法（供应商封装）
+     *              → `SMD5032-6P` / `LQFN-56-7X7` / `SOT-223` / `0603`
+     *  - "full"    全称 —— 立创 EDA 封装库里的长名
      *              → `OSC-SMD_6P-L5_0-W3_2-BL_OA1EL89CEIB112YLC`
-     *  - "compact" 贴片本体尺寸码 + 引脚数 → `SMD5032-6P`
-     * 只影响 `SMD_<n>P-L..-W..` 这类源名，其它族（QFN/SOIC/SOT…）两种风格结果相同。
+     * 取不到简称时（离线 / 编号查不到）自动退回全称。
      */
     packageNameStyle: z.enum(["full", "compact"]).optional(),
     ui: UiSettingsSchema,
@@ -126,7 +127,7 @@ export const AppSettingsSchema = z
       : (settings.unifiedLibraryFolder ?? false),
     perFootprintFolder: settings.perFootprintFolder ?? false,
     fillPcbFootprint: settings.fillPcbFootprint ?? true,
-    packageNameStyle: settings.packageNameStyle ?? "full",
+    packageNameStyle: settings.packageNameStyle ?? "compact",
     ui: {
       leftRailWidth: settings.ui?.leftRailWidth ?? LEFT_RAIL_DEFAULT_WIDTH,
       rightRailWidth: settings.ui?.rightRailWidth ?? RIGHT_RAIL_DEFAULT_WIDTH,

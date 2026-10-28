@@ -31,7 +31,7 @@ const readSettings = (): AppSettings => {
       unifiedLibraryFolder: false,
       perFootprintFolder: false,
       fillPcbFootprint: true,
-      packageNameStyle: "full",
+      packageNameStyle: "compact",
       ui: defaultUiSettings(),
     };
   }
@@ -42,7 +42,7 @@ const readSettings = (): AppSettings => {
     unifiedLibraryFolder: parsed.unifiedLibraryFolder ?? false,
     perFootprintFolder: parsed.perFootprintFolder ?? false,
     fillPcbFootprint: parsed.fillPcbFootprint ?? true,
-    packageNameStyle: parsed.packageNameStyle ?? "full",
+    packageNameStyle: parsed.packageNameStyle ?? "compact",
     ui: { ...defaultUiSettings(), ...parsed.ui },
   };
 };

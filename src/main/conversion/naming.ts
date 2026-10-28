@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import {
   compactPackageNameFromSource,
+  COMPACT_NAME_KEEP_FULL_MAX_LENGTH,
   friendlyPackageNameFromSource,
-  sanitizeLcscPackageName,
+  supplierFootprintName,
   type PackageNameStyle,
 } from "../../shared/naming";
 import type { NormalizedFootprint, NormalizedPad } from "../../shared/schemas";
@@ -128,11 +129,14 @@ export const applyPackageNameStyle = (
   style: PackageNameStyle,
   lcscPackage: string | null = null,
 ): NormalizedFootprint => {
+  const full = deriveTargetPackageName(footprint.info.sourcePackageName, footprint.pads, "full");
+  // 全称本身够短（≤10 字符，如 R0603 / C0402 / SOT-23）就不简称了 —— 再短反而丢信息，
+  // 电阻电容照搬立创的 `0603` 还会把两者撞成一个封装名（用户 2026-10-28）。
   const targetPackageName =
-    style === "compact"
-      ? (sanitizeLcscPackageName(lcscPackage ?? "") ??
-        deriveTargetPackageName(footprint.info.sourcePackageName, footprint.pads, "compact"))
-      : deriveTargetPackageName(footprint.info.sourcePackageName, footprint.pads, "full");
+    style === "full" || full.length <= COMPACT_NAME_KEEP_FULL_MAX_LENGTH
+      ? full
+      : (supplierFootprintName(footprint.info.sourcePackageName, lcscPackage) ??
+        deriveTargetPackageName(footprint.info.sourcePackageName, footprint.pads, "compact"));
   return targetPackageName === footprint.info.targetPackageName
     ? footprint
     : { ...footprint, info: { ...footprint.info, targetPackageName } };

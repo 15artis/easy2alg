@@ -34,6 +34,47 @@ export const sanitizeLcscPackageName = (raw: string): string | null => {
   return cleaned.length > 0 ? cleaned : null;
 };
 
+/** 片式无源件的尺寸码：0603 / 0402 / 1206 / 1608（公制）… 三到四位纯数字。 */
+const CHIP_SIZE_CODE = /^\d{3,4}$/;
+
+/**
+ * 简称模式下，**全称本身不长于这个长度就直接用全称**（用户 2026-10-28）。
+ *
+ * 目的就是别再折腾已经很短的名字：电阻电容的全称是 `R0603` / `C0402`（5 个字符），
+ * 立创给的「封装」反而只有 `0603`，照搬会丢掉 R/C 前缀、把两者撞成一个封装名。
+ * 有了这条，`R0603` 这类本来就好认的名字不会再被"简称"。
+ */
+export const COMPACT_NAME_KEEP_FULL_MAX_LENGTH = 10;
+
+/**
+ * 简称封装名：优先用立创的「供应商封装」，但片式电阻/电容要带上器件前缀。
+ *
+ * 立创商城里电阻和电容的「封装」都只写尺寸码（`0603`），光看这个名字没法区分
+ * R 和 C —— 两者在 Allegro 里会撞成同一个封装名（用户 2026-10-28：
+ * "电容电阻需要使用 R0603 / C0402 不然反倒一起无法区分"）。
+ * 好在 EDA 库里的封装名本身带前缀（`R0603` / `C0402`），所以：
+ *  - 供应商封装是纯尺寸码、且源封装名是同尺寸的 `R0603` 写法 → 用带前缀的源名
+ *  - 其它情况（`SMD5032-6P`、`LQFN-56(7x7)`、`SOT-223`…）→ 直接用供应商封装
+ *
+ * 返回 null 表示拿不到可用的名字（调用方退回本地推导）。
+ */
+export const supplierFootprintName = (
+  sourceName: string,
+  supplierFootprint: string | null | undefined,
+): string | null => {
+  const supplier = (supplierFootprint ?? "").trim();
+  if (supplier.length === 0) {
+    return null;
+  }
+  if (CHIP_SIZE_CODE.test(supplier)) {
+    const prefixed = /^([A-Za-z]{1,3})[-_ ]?(\d{3,4})(?:$|[-_])/.exec(sourceName.trim());
+    if (prefixed !== null && prefixed[2] === supplier) {
+      return sanitizeLcscPackageName(`${prefixed[1]}${supplier}`);
+    }
+  }
+  return sanitizeLcscPackageName(supplier);
+};
+
 export const friendlyPackageNameFromSource = (sourceName: string): string | null => {
   // 只处理立创那种"本体尺寸"格式（同时带 L… 与 W… 段）：
   // `LQFN-56_L7.0-W7.0-P0.4-EP`。像 `SOIC-8_3.9x4.9mm_P1.27mm` 这种描述式名字

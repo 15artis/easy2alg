@@ -65,7 +65,7 @@ const defaultSettings = (): AppSettings => ({
   unifiedLibraryFolder: false,
   perFootprintFolder: false,
   fillPcbFootprint: true,
-  packageNameStyle: "full",
+  packageNameStyle: "compact",
   ui: defaultUiSettings(),
 });
 

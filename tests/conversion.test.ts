@@ -21,7 +21,12 @@ import {
 } from "../src/main/conversion/naming";
 import { createConversionPlan } from "../src/main/conversion/validate";
 import { getDemoFootprint } from "../src/shared/demo-fixtures";
-import { compactPackageNameFromSource, normalizePackageName, sanitizeLcscPackageName } from "../src/shared/naming";
+import {
+  compactPackageNameFromSource,
+  normalizePackageName,
+  sanitizeLcscPackageName,
+  supplierFootprintName,
+} from "../src/shared/naming";
 import {
   AppSettingsSchema,
   defaultUiSettings,
@@ -528,6 +533,27 @@ describe("供应商封装（Supplier Footprint）净化，用户 2026-10-28", ()
     expect(sanitizeLcscPackageName("  ")).toBeNull();
     expect(sanitizeLcscPackageName("（）")).toBeNull();
   });
+
+  /**
+   * 用户 2026-10-28：立创给电阻和电容的「封装」都只写尺寸码（`0603`），
+   * 只用它会让 R 和 C 的封装撞成同一个名字，所以要用源名里带前缀的写法。
+   */
+  it("片式电阻 / 电容保留 R / C 前缀", () => {
+    expect(supplierFootprintName("R0603", "0603")).toBe("R0603");
+    expect(supplierFootprintName("C0402", "0402")).toBe("C0402");
+    expect(supplierFootprintName("C0603", "0603")).toBe("C0603");
+    // 源名没有前缀时只能照用尺寸码（至少比长名短）
+    expect(supplierFootprintName("0603", "0603")).toBe("0603");
+    // 尺寸对不上就不猜，仍用立创给的
+    expect(supplierFootprintName("R0805", "0603")).toBe("0603");
+  });
+
+  it("非片式件不受前缀规则影响", () => {
+    expect(supplierFootprintName("OSC-SMD_6P-L5.0-W3.2-BL", "SMD5032-6P")).toBe("SMD5032-6P");
+    expect(supplierFootprintName("LQFN-56_L7.0-W7.0-P0.4-EP", "LQFN-56(7x7)")).toBe("LQFN-56-7X7");
+    expect(supplierFootprintName("SOT-223-3_L6.5-W3.4", "SOT-223")).toBe("SOT-223");
+    expect(supplierFootprintName("R0603", null)).toBeNull();
+  });
 });
 
 describe("applyPackageNameStyle：简写优先用立创的供应商封装", () => {
@@ -553,10 +579,10 @@ describe("applyPackageNameStyle：简写优先用立创的供应商封装", () =
       applyPackageNameStyle(footprint("LQFN-56_L7.0-W7.0-P0.4-EP"), "compact", "LQFN-56(7x7)")
         .info.targetPackageName,
     ).toBe("LQFN-56-7X7");
-    // 电阻 / 二极管这类：0603 就够
+    // 电阻 / 二极管这类：0603 会撞名，带上源名的 R / C 前缀
     expect(
       applyPackageNameStyle(footprint("R0603"), "compact", "0603").info.targetPackageName,
-    ).toBe("0603");
+    ).toBe("R0603");
   });
 
   it("拿不到供应商封装时退回本地推导（SMD 能简写，其它保留完整名）", () => {
@@ -578,5 +604,23 @@ describe("applyPackageNameStyle：简写优先用立创的供应商封装", () =
       applyPackageNameStyle(footprint("LQFN-56_L7.0-W7.0-P0.4-EP"), "full", "LQFN-56(7x7)").info
         .targetPackageName,
     ).toBe("LQFN-56_L7_0-W7_0-P0_4-EP");
+  });
+
+  /**
+   * 用户 2026-10-28：全称不长于 10 个字符就直接用全称 —— 本来就好认的名字不用再简称，
+   * 电阻电容（R0603 / C0402）也就不用靠"猜前缀"来区分了。
+   */
+  it("全称不超过 10 个字符时直接用全称", () => {
+    expect(
+      applyPackageNameStyle(footprint("SOT-23"), "compact", "SOT-23-3").info.targetPackageName,
+    ).toBe("SOT-23");
+    // 10 个字符正好算短
+    expect(
+      applyPackageNameStyle(footprint("ABCDEFGHIJ"), "compact", "SHORT").info.targetPackageName,
+    ).toBe("ABCDEFGHIJ");
+    // 11 个字符就超过阈值，走简称
+    expect(
+      applyPackageNameStyle(footprint("ABCDEFGHIJK"), "compact", "SHORT").info.targetPackageName,
+    ).toBe("SHORT");
   });
 });
