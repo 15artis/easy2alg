@@ -105,7 +105,7 @@ import {
   undoOnce,
   type EditHistory,
 } from "../../shared/edit-history";
-import { compactPackageNameFromSource, normalizePackageName, sanitizeLibraryName } from "../../shared/naming";
+import { normalizePackageName, sanitizeLibraryName } from "../../shared/naming";
 import { offsetPolygon, polygonPointsAttribute } from "../../shared/pad-geometry";
 import {
   defaultVisibleLayers,
@@ -1060,19 +1060,16 @@ const ConverterPage = ({
   /**
    * 列表与标题里显示的封装名。
    *
-   * 默认显示立创源名（用户能认出这颗料）；设置里选了「简写」时改显示简写名
-   * （`OSC-SMD_6P-L5.0-W3.2-…` → `SMD5032-6P`，用户 2026-10-28 要求）。
-   * 只对能简写的源名替换，其它族（QFN/SOIC/SOT…）照旧显示源名，避免列表里
-   * 突然出现几何推导名或哈希兜底名。
+   * 默认显示立创源名（用户能认出这颗料）；设置里选了「简写」时改显示**目标名**，
+   * 也就是立创商城「封装」那一栏的写法（`SMD5032-6P`、`LQFN-56-7X7`、`SOIC-8`，
+   * 用户 2026-10-28 要求与立创一致）。目标名由主进程按当前设置算好，
+   * 这里不再自己推导，免得两处规则打架。
    */
   const displayPackageName = useCallback(
-    (footprint: NormalizedFootprint): string => {
-      const compact =
-        settings.packageNameStyle === "compact"
-          ? compactPackageNameFromSource(footprint.info.sourcePackageName, footprint.pads.length)
-          : null;
-      return compact ?? normalizePackageName(footprint.info.sourcePackageName);
-    },
+    (footprint: NormalizedFootprint): string =>
+      settings.packageNameStyle === "compact"
+        ? footprint.info.targetPackageName
+        : normalizePackageName(footprint.info.sourcePackageName),
     [settings.packageNameStyle],
   );
   // 覆盖同名器件的二次确认（promise 化，生成流程里 await 它）
@@ -3564,7 +3561,7 @@ const SettingsPage = ({
           <div className="setting-icon"><Type size={21} /></div>
           <div className="setting-content">
             <label htmlFor="package-name-style">封装命名风格</label>
-            <p>晶振、LED 这类源名里塞了厂商料号的贴片封装，可以只保留本体尺寸与引脚数。</p>
+            <p>简写用立创商城「封装」那一栏的写法（供应商封装），所有封装类型都适用。</p>
             <select
               id="package-name-style"
               value={draft.packageNameStyle}
@@ -3576,14 +3573,13 @@ const SettingsPage = ({
               }
               data-testid="setting-package-name-style"
             >
-              <option value="full">完整 —— 沿用立创源名</option>
-              <option value="compact">简写 —— 本体尺寸码 + 引脚数</option>
+              <option value="full">完整 —— 立创 EDA 封装库里的长名</option>
+              <option value="compact">简写 —— 与立创商城「封装」一致</option>
             </select>
             <p className="setting-hint">
-              例：C41415701 →{" "}
               {draft.packageNameStyle === "compact"
-                ? "SMD5032-6P"
-                : "OSC-SMD_6P-L5_0-W3_2-BL_OA1EL89CEIB112YLC"}
+                ? "例：C41415701 → SMD5032-6P ｜ C2040 → LQFN-56-7X7 ｜ C6186 → SOT-223"
+                : "例：C41415701 → OSC-SMD_6P-L5_0-W3_2-BL_OA1EL89CEIB112YLC"}
             </p>
           </div>
         </div>

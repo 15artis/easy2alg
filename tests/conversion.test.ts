@@ -14,18 +14,20 @@ import {
 } from "../src/main/connectors/allegro-runner";
 import { createAllegroSourceBundle } from "../src/main/conversion/allegro-skill";
 import {
+  applyPackageNameStyle,
   derivePadstackName,
   deriveTargetPackageName,
   friendlyPackageNameFromSource,
 } from "../src/main/conversion/naming";
 import { createConversionPlan } from "../src/main/conversion/validate";
 import { getDemoFootprint } from "../src/shared/demo-fixtures";
-import { compactPackageNameFromSource, normalizePackageName } from "../src/shared/naming";
+import { compactPackageNameFromSource, normalizePackageName, sanitizeLcscPackageName } from "../src/shared/naming";
 import {
   AppSettingsSchema,
   defaultUiSettings,
   type AllegroInstall,
   type GenerationProgress,
+  type NormalizedFootprint,
 } from "../src/shared/schemas";
 import { lastWindowCloseAction } from "../src/main/lifecycle";
 
@@ -500,5 +502,81 @@ describe("简写封装名（SMD 本体尺寸码 + 引脚数，用户 2026-10-28�
       "OSC-SMD_6P-L5_0-W3_2-BL_OA1EL89CEIB112YLC",
     );
     expect(deriveTargetPackageName(source, [], "compact")).toBe("SMD5032-6P");
+  });
+});
+
+describe("供应商封装（Supplier Footprint）净化，用户 2026-10-28", () => {
+  it("立创的括号写法转成合法名字", () => {
+    expect(sanitizeLcscPackageName("LQFN-56(7x7)")).toBe("LQFN-56-7X7");
+    expect(sanitizeLcscPackageName("LQFP-48(7x7)")).toBe("LQFP-48-7X7");
+  });
+
+  it("已经是合法短名的原样保留", () => {
+    expect(sanitizeLcscPackageName("SMD5032-6P")).toBe("SMD5032-6P");
+    expect(sanitizeLcscPackageName("SOIC-8")).toBe("SOIC-8");
+    expect(sanitizeLcscPackageName("SOT-223")).toBe("SOT-223");
+    expect(sanitizeLcscPackageName("0603")).toBe("0603");
+    expect(sanitizeLcscPackageName("0402")).toBe("0402");
+  });
+
+  it("小数点换成下划线（与工具既有约定一致）", () => {
+    expect(sanitizeLcscPackageName("SOP-8_3.9x4.9mm")).toBe("SOP-8_3_9X4_9MM");
+  });
+
+  it("净化后为空返回 null，让调用方退回本地推导", () => {
+    expect(sanitizeLcscPackageName("")).toBeNull();
+    expect(sanitizeLcscPackageName("  ")).toBeNull();
+    expect(sanitizeLcscPackageName("（）")).toBeNull();
+  });
+});
+
+describe("applyPackageNameStyle：简写优先用立创的供应商封装", () => {
+  const footprint = (sourcePackageName: string): NormalizedFootprint => {
+    const base = requiredFixture("C2040");
+    return {
+      ...base,
+      info: { ...base.info, sourcePackageName, targetPackageName: "X" },
+    };
+  };
+
+  it("有供应商封装时所有封装族都跟立创一致", () => {
+    // 晶振：与本地推导结果相同
+    expect(
+      applyPackageNameStyle(
+        footprint("OSC-SMD_6P-L5.0-W3.2-BL_OA1EL89CEIB112YLC"),
+        "compact",
+        "SMD5032-6P",
+      ).info.targetPackageName,
+    ).toBe("SMD5032-6P");
+    // QFN：本地推不出来，只能靠立创给的短名
+    expect(
+      applyPackageNameStyle(footprint("LQFN-56_L7.0-W7.0-P0.4-EP"), "compact", "LQFN-56(7x7)")
+        .info.targetPackageName,
+    ).toBe("LQFN-56-7X7");
+    // 电阻 / 二极管这类：0603 就够
+    expect(
+      applyPackageNameStyle(footprint("R0603"), "compact", "0603").info.targetPackageName,
+    ).toBe("0603");
+  });
+
+  it("拿不到供应商封装时退回本地推导（SMD 能简写，其它保留完整名）", () => {
+    expect(
+      applyPackageNameStyle(
+        footprint("OSC-SMD_6P-L5.0-W3.2-BL_OA1EL89CEIB112YLC"),
+        "compact",
+        null,
+      ).info.targetPackageName,
+    ).toBe("SMD5032-6P");
+    expect(
+      applyPackageNameStyle(footprint("LQFN-56_L7.0-W7.0-P0.4-EP"), "compact", null).info
+        .targetPackageName,
+    ).toBe("LQFN-56_L7_0-W7_0-P0_4-EP");
+  });
+
+  it("完整风格不受供应商封装影响", () => {
+    expect(
+      applyPackageNameStyle(footprint("LQFN-56_L7.0-W7.0-P0.4-EP"), "full", "LQFN-56(7x7)").info
+        .targetPackageName,
+    ).toBe("LQFN-56_L7_0-W7_0-P0_4-EP");
   });
 });

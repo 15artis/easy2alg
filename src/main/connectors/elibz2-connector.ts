@@ -26,6 +26,7 @@ import {
   roundMm,
 } from "../conversion/geometry";
 import {
+  applyPackageNameStyle,
   deriveTargetPackageName,
   refdesPrefixFrom,
   sanitizeSymbolName,
@@ -845,7 +846,7 @@ export class Elibz2Connector {
         manufacturer: String(attributes["Manufacturer"] ?? ""),
         manufacturerPartNumber: String(attributes["Manufacturer Part"] ?? ""),
         sourcePackageName,
-        targetPackageName: deriveTargetPackageName(sourcePackageName, pads, style),
+        targetPackageName: deriveTargetPackageName(sourcePackageName, pads),
         assemblyProcess:
           holes.length > 0 || pads.some((pad) => pad.holeWidth > 0) ? "THT" : "SMT",
         description: String(device.description ?? ""),
@@ -865,7 +866,13 @@ export class Elibz2Connector {
         docMeta: doc.meta,
       }),
     };
-    return NormalizedFootprintSchema.parse(footprint);
+    // 简写风格用器件属性里的「供应商封装」（`Supplier Footprint`，立创显示的那个短名，
+    // 如 `WQFN-48` / `SMD5032-6P`）—— 本地库自带，不需要联网（用户 2026-10-28）。
+    return applyPackageNameStyle(
+      NormalizedFootprintSchema.parse(footprint),
+      style,
+      String(attributes["Supplier Footprint"] ?? ""),
+    );
   }
 
   /**

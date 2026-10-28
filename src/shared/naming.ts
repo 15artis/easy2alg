@@ -19,6 +19,21 @@ export const sanitizeLibraryName = (value: string): string =>
 export const isNameEdited = (value: string, original: string): boolean =>
   value.trim().length > 0 && sanitizeLibraryName(value) !== original;
 
+/**
+ * 立创商城商品页「封装」那一栏的写法，净化成 Allegro 能接受的名字。
+ *
+ * 立创自己的写法里会有括号（`LQFN-56(7x7)`）和小数点（`SOP-8_3.9x4.9mm`），
+ * 前者 Allegro 不合法、后者与工具既有约定（`L7_0`）不一致，所以：
+ *  - 小数点先换成下划线（`3.9` → `3_9`）
+ *  - 其余交给 sanitizeLibraryName（括号等 → `-`，大写，截 31 字符）
+ * `LQFN-56(7x7)` → `LQFN-56-7X7`、`SMD5032-6P` → `SMD5032-6P`、`0603` → `0603`。
+ * 净化后为空返回 null，调用方退回本地推导。
+ */
+export const sanitizeLcscPackageName = (raw: string): string | null => {
+  const cleaned = sanitizeLibraryName(raw.trim().replace(/\./g, "_"));
+  return cleaned.length > 0 ? cleaned : null;
+};
+
 export const friendlyPackageNameFromSource = (sourceName: string): string | null => {
   // 只处理立创那种"本体尺寸"格式（同时带 L… 与 W… 段）：
   // `LQFN-56_L7.0-W7.0-P0.4-EP`。像 `SOIC-8_3.9x4.9mm_P1.27mm` 这种描述式名字

@@ -106,14 +106,18 @@ export class EasyEdaConnector {
       await writeLog("info", "easyeda_cache_hit", { lcscId });
       // 缓存里存的是「完整名」（与命名风格无关），取回时按当前设置重算一遍，
       // 这样改设置不用清缓存也不会拿到旧风格的封装名。
-      return applyPackageNameStyle(cached, style);
+      return applyPackageNameStyle(cached, style, await this.#lcscPackageFor(lcscId, style));
     }
 
     const raw = await this.#loadRaw(lcscId);
     try {
       const footprint = normalizeEasyEdaResponse(raw, lcscId);
       await this.#writeCache(lcscId, footprint);
-      return applyPackageNameStyle(footprint, style);
+      return applyPackageNameStyle(
+        footprint,
+        style,
+        await this.#lcscPackageFor(lcscId, style, raw),
+      );
     } catch (error) {
       const cause = error instanceof Error ? error : new Error(String(error));
       throw new ExternalServiceError(
@@ -127,6 +131,107 @@ export class EasyEdaConnector {
         },
         cause,
       );
+    }
+  }
+
+  /** 只有简写风格才需要去拿「供应商封装」，完整风格一次请求都不多发。 */
+  async #lcscPackageFor(
+    lcscId: string,
+    style: PackageNameStyle,
+    rawResponse?: unknown,
+  ): Promise<string | null> {
+    if (style !== "compact") {
+      return null;
+    }
+    return this.fetchLcscPackage(lcscId, rawResponse);
+  }
+
+  /**
+   * 立创商城商品页「封装」那一栏的短名（`SMD5032-6P`、`LQFN-56(7x7)`、`0603`）。
+   *
+   * 用户 2026-10-28 要求简写命名「跟立创显示一致」。这个短名在立创那边叫
+   * **供应商封装（Supplier Footprint）**，三个来源按代价从低到高依次尝试：
+   *  1. `<C编号>.pkg.json` 缓存（查过一次就不再查）
+   *  2. 已经下载的 components 响应里若带 `c_para["Supplier Footprint"]`，直接用
+   *  3. 商品搜索接口的 `package` 字段（与界面「查询」用的是同一个接口）
+   *
+   * 实测（2026-10-28）：components 接口的 c_para 一般**不带**这个字段，所以多数情况
+   * 会走到第 3 步；搜索接口对所有封装族给的都是同一个短名（QFN → `LQFN-56(7x7)`、
+   * SOIC → `SOIC-8`、0603 → `0603`），与商品页显示一致。
+   *
+   * 拿不到就返回 null（离线、编号查不到、接口改版），调用方退回本地推导 ——
+   * 命名这一步绝不能阻断一次封装转换。
+   */
+  async fetchLcscPackage(lcscIdInput: string, rawResponse?: unknown): Promise<string | null> {
+    const lcscId = LcscIdSchema.parse(lcscIdInput);
+    const cachePath = join(this.#cacheDirectory, `${lcscId}.pkg.json`);
+    try {
+      const cached = JSON.parse(await readFile(cachePath, "utf8")) as { package?: unknown };
+      if (typeof cached.package === "string" && cached.package.trim().length > 0) {
+        return cached.package;
+      }
+    } catch {
+      // 没缓存（或缓存坏了）：往下走
+    }
+
+    const fromAttributes = await this.#supplierFootprintOf(lcscId, rawResponse);
+    if (fromAttributes !== null) {
+      await this.#writePackageCache(lcscId, fromAttributes);
+      return fromAttributes;
+    }
+
+    let pkg: string | null = null;
+    try {
+      const result = await this.searchProducts(lcscId);
+      const hit = result.hits.find((item) => item.lcscId.toUpperCase() === lcscId);
+      pkg = hit !== undefined && hit.package.trim().length > 0 ? hit.package.trim() : null;
+    } catch (error) {
+      await writeLog("warn", "easyeda_lcsc_package_unavailable", {
+        lcscId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+    if (pkg === null) {
+      await writeLog("info", "easyeda_lcsc_package_absent", { lcscId });
+      return null;
+    }
+    await this.#writePackageCache(lcscId, pkg);
+    return pkg;
+  }
+
+  /** 从 components 响应（或它的缓存文件）里取 `c_para["Supplier Footprint"]`。 */
+  async #supplierFootprintOf(lcscId: string, rawResponse?: unknown): Promise<string | null> {
+    let payload = rawResponse;
+    if (payload === undefined) {
+      try {
+        payload = JSON.parse(
+          await readFile(join(this.#cacheDirectory, `${lcscId}.raw.json`), "utf8"),
+        ) as unknown;
+      } catch {
+        return null;
+      }
+    }
+    const cPara = (
+      payload as { result?: { dataStr?: { head?: { c_para?: Record<string, unknown> } } } }
+    )?.result?.dataStr?.head?.c_para;
+    const value = cPara?.["Supplier Footprint"];
+    return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  }
+
+  async #writePackageCache(lcscId: string, pkg: string): Promise<void> {
+    try {
+      await mkdir(this.#cacheDirectory, { recursive: true });
+      await writeFile(
+        join(this.#cacheDirectory, `${lcscId}.pkg.json`),
+        `${JSON.stringify({ package: pkg })}\n`,
+        "utf8",
+      );
+    } catch (error) {
+      await writeLog("warn", "easyeda_lcsc_package_cache_write_failed", {
+        lcscId,
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 

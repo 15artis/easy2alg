@@ -241,4 +241,22 @@ describe("elibz2 connector", () => {
         // 目标名沿用立创源名，尺寸段小数点换成下划线（0.1.51 起），不再用几何推导
     expect(footprint.info.targetPackageName).toBe("WQFN-48_L7_0-W7_0-P0_50-BL-EP5_1");
   });
+
+  /**
+   * 用户 2026-10-28：简写风格要「跟立创显示一致」，本地库的器件属性里就有现成的
+   * 「供应商封装」（`Supplier Footprint` = WQFN-48），不需要联网。
+   */
+  it("简写风格用 Supplier Footprint 作为封装名", async () => {
+    const connector = new Elibz2Connector();
+    const lmkPath = fileURLToPath(new URL("./fixtures/lmk00301arhst.elibz2", import.meta.url));
+    const summaries = await connector.readLibrary(lmkPath);
+    const compact = await connector.loadFootprint(lmkPath, summaries[0].deviceUuid, "compact");
+    expect(compact.info.targetPackageName).toBe("WQFN-48");
+    // 源名不变，属性面板还要靠它显示「原始封装」
+    expect(compact.info.sourcePackageName).toBe("WQFN-48_L7.0-W7.0-P0.50-BL-EP5.1");
+
+    // 完整风格不受影响
+    const full = await connector.loadFootprint(lmkPath, summaries[0].deviceUuid, "full");
+    expect(full.info.targetPackageName).toBe("WQFN-48_L7_0-W7_0-P0_50-BL-EP5_1");
+  });
 });

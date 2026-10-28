@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   compactPackageNameFromSource,
   friendlyPackageNameFromSource,
+  sanitizeLcscPackageName,
   type PackageNameStyle,
 } from "../../shared/naming";
 import type { NormalizedFootprint, NormalizedPad } from "../../shared/schemas";
@@ -117,16 +118,21 @@ export { friendlyPackageNameFromSource };
  *
  * 推导本身是纯函数，所以缓存里的封装（`targetPackageName` 是取回时算的）可以随时
  * 重算一遍换风格 —— 不需要清缓存，也不会出现"改了设置老器件还是旧名"。
+ *
+ * `lcscPackage` 是立创商城商品页「封装」那一栏的原文（`SMD5032-6P`、`LQFN-56(7x7)`）。
+ * 简写风格优先用它：用户要的就是"跟立创显示一致"；拿不到（离线 / 本地库没有 C 编号）
+ * 才退回本地推导，这样至少 SMD 晶振这类还能简写，其它族保留完整名。
  */
 export const applyPackageNameStyle = (
   footprint: NormalizedFootprint,
   style: PackageNameStyle,
+  lcscPackage: string | null = null,
 ): NormalizedFootprint => {
-  const targetPackageName = deriveTargetPackageName(
-    footprint.info.sourcePackageName,
-    footprint.pads,
-    style,
-  );
+  const targetPackageName =
+    style === "compact"
+      ? (sanitizeLcscPackageName(lcscPackage ?? "") ??
+        deriveTargetPackageName(footprint.info.sourcePackageName, footprint.pads, "compact"))
+      : deriveTargetPackageName(footprint.info.sourcePackageName, footprint.pads, "full");
   return targetPackageName === footprint.info.targetPackageName
     ? footprint
     : { ...footprint, info: { ...footprint.info, targetPackageName } };
