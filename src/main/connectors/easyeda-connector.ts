@@ -48,6 +48,37 @@ const delay = async (milliseconds: number): Promise<void> => {
 
 const responseSnippet = (body: string): string => body.slice(0, 2_000);
 
+/**
+ * 接口的业务性失败（HTTP 200 但 `success:false`）。
+ *
+ * 2026-10-28 实测：不存在的编号（用户输入的 C55586821）返回
+ * `{"success":false,"code":404,"message":"Component not found"}`，HTTP 状态却是 200。
+ * 过去直接丢给 zod 校验，界面上显示成
+ * `EasyEDA data validation failed ... expected object, received undefined` ——
+ * 用户完全看不出是「编号不存在」。这里提前识别，给一句能照做的提示，
+ * 并且标记为不可重试（重试也不会变成存在）。
+ */
+const apiFailure = (
+  payload: unknown,
+): { readonly message: string; readonly retryable: boolean } | null => {
+  if (typeof payload !== "object" || payload === null) {
+    return null;
+  }
+  const record = payload as { success?: unknown; code?: unknown; message?: unknown; result?: unknown };
+  const serverMessage = typeof record.message === "string" ? record.message.trim() : "";
+  const succeeded = record.success !== false && record.result !== null && record.result !== undefined;
+  if (succeeded) {
+    return null;
+  }
+  const detail = serverMessage.length > 0 ? serverMessage : "response has no result payload";
+  // 5xx 属于服务端临时故障，值得重试；4xx 与"没有 result"都是确定性结果。
+  const code = typeof record.code === "number" ? record.code : null;
+  return {
+    message: detail,
+    retryable: code !== null && code >= 500,
+  };
+};
+
 export class EasyEdaConnector {
   readonly #cacheDirectory: string;
 
@@ -247,6 +278,10 @@ export class EasyEdaConnector {
           throw error;
         }
         lastError = error;
+        // 确定性失败（元件不存在等）重试也不会有结果，直接抛给用户
+        if (error.details.retryable === false) {
+          throw error;
+        }
       }
     }
 
@@ -300,8 +335,29 @@ export class EasyEdaConnector {
     }
 
     try {
-      return JSON.parse(body) as unknown;
+      const payload = JSON.parse(body) as unknown;
+      const failure = apiFailure(payload);
+      if (failure !== null) {
+        throw new ExternalServiceError(
+          failure.retryable
+            ? `EasyEDA 服务暂时不可用（${lcscId}）：${failure.message}`
+            : `未找到元件 ${lcscId}：EasyEDA 返回「${failure.message}」，请核对立创编号是否正确、该器件是否已下架`,
+          {
+            operation: "fetch_component",
+            requestUrl,
+            statusCode: response.status,
+            responseBody: responseSnippet(body),
+            parameters: { lcscId },
+            retryable: failure.retryable,
+          },
+          null,
+        );
+      }
+      return payload;
     } catch (error) {
+      if (error instanceof ExternalServiceError) {
+        throw error;
+      }
       const cause = error instanceof Error ? error : new Error(String(error));
       throw new ExternalServiceError(
         `EasyEDA returned invalid JSON for ${lcscId}`,

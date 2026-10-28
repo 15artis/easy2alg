@@ -49,8 +49,25 @@ const number = (value: number): string => {
  */
 const roundToSkillPrecision = (value: number): number => Number(value.toFixed(5));
 
+/**
+ * 把 JS 字符串写成 SKILL 的 `"..."` 字面量。
+ *
+ * 顺序很重要：**先**把反斜杠折成 `/`（Windows 路径），**再**补转义 ——
+ * 否则后面补出来的 `\"`、`\n` 里的反斜杠会被前一步换成 `/`。
+ *
+ * 换行必须转义：2026-10-28 实测，字符串里放真实换行会让 SKILL reader 认为
+ * 字符串没结束，把后面整段代码吞进字符串里 —— 表现为文件末尾「'(' 未闭合」，
+ * 所有焊盘/引脚/refdes 都没创建，`create symbol` 报 `Symbol is missing a refdes`。
+ * 这个坑不会报语法错，只在 Allegro 日志里留一行 warning，所以必须在源头堵死。
+ */
 const skillString = (value: string): string =>
-  `"${value.replaceAll("\\", "/").replaceAll("\"", "\\\"")}"`;
+  `"${value
+    .replaceAll("\\", "/")
+    .replaceAll("\"", "\\\"")
+    .replaceAll("\r\n", "\\n")
+    .replaceAll("\n", "\\n")
+    .replaceAll("\r", "\\n")
+    .replaceAll("\t", "\\t")}"`;
 
 const point = (value: Point): string => `${number(value.x)}:${number(value.y)}`;
 
@@ -222,7 +239,7 @@ const padDefinition = (
           // 这里补一句怎么修 —— 2026-10-27 实测 .ssm 必须落在 PADPATH 上，
           // 而批处理下真正生效的是 cwd（Cadence 默认 padpath 含 "."）。
           `Unable to create padstack ${name} (shape symbol ${symbols.copper.name}.ssm must be in the current directory or on PADPATH)\n`,
-    )}
+    )})
   )
   ; axlPadstackToDisk 的参数是设计中的 padstack 名（P8 实测），不是文件路径；
   ; .pad 由 Allegro 写入当前作业目录且文件名强制小写，随后由 runner 复制进库目录。

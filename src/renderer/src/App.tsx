@@ -106,6 +106,7 @@ import {
   type EditHistory,
 } from "../../shared/edit-history";
 import { normalizePackageName, sanitizeLibraryName } from "../../shared/naming";
+import { offsetPolygon, polygonPointsAttribute } from "../../shared/pad-geometry";
 import {
   defaultVisibleLayers,
   footprintLayers,
@@ -324,7 +325,7 @@ const mixColor = (color: string, amount: number): string => {
   return `#${channel(16)}${channel(8)}${channel(0)}`;
 };
 
-const FootprintPreview = ({
+export const FootprintPreview = ({
   footprint,
   visible,
   maskExpansionMm,
@@ -350,29 +351,48 @@ const FootprintPreview = ({
   const strokeOf = (layer: FootprintLayerId): string =>
     layerColors[layer] ?? declared.find((item) => item.id === layer)?.color ?? "#8f9ba8";
 
+  /**
+   * 异形焊盘（`PAD~POLYGON`）必须画真实轮廓 —— 之前一律画 `<rect>`，
+   * 界面上永远是个矩形，用户会以为"没有创建异形焊盘"（2026-10-28 反馈）。
+   * 源数据里 polygon 已经是封装全局坐标（与 pad.center 同一坐标系），
+   * 所以画多边形时**不要**再套 translate/rotate。
+   */
+  const isPolygonPad = (pad: NormalizedFootprint["pads"][number]): boolean =>
+    pad.shape === "polygon" && pad.polygon.length >= 3;
+
   const padOutline = (
     pad: NormalizedFootprint["pads"][number],
     grow: number,
     key: string,
     color: string,
-  ): ReactElement => (
-    <g
-      key={key}
-      transform={`translate(${pad.center.x} ${pad.center.y}) rotate(${pad.rotation})`}
-    >
-      <rect
-        x={-pad.width / 2 - grow}
-        y={-pad.height / 2 - grow}
-        width={pad.width + grow * 2}
-        height={pad.height + grow * 2}
-        rx={pad.shape === "oval" || pad.shape === "circle" ? Math.min(pad.width, pad.height) / 2 : 0}
+  ): ReactElement =>
+    isPolygonPad(pad) ? (
+      <polygon
+        key={key}
+        points={polygonPointsAttribute(offsetPolygon(pad.polygon, grow))}
         fill="none"
         stroke={color}
         strokeWidth="0.04"
         strokeDasharray="0.18 0.12"
       />
-    </g>
-  );
+    ) : (
+      <g
+        key={key}
+        transform={`translate(${pad.center.x} ${pad.center.y}) rotate(${pad.rotation})`}
+      >
+        <rect
+          x={-pad.width / 2 - grow}
+          y={-pad.height / 2 - grow}
+          width={pad.width + grow * 2}
+          height={pad.height + grow * 2}
+          rx={pad.shape === "oval" || pad.shape === "circle" ? Math.min(pad.width, pad.height) / 2 : 0}
+          fill="none"
+          stroke={color}
+          strokeWidth="0.04"
+          strokeDasharray="0.18 0.12"
+        />
+      </g>
+    );
 
   return (
     <>
@@ -406,24 +426,34 @@ const FootprintPreview = ({
           : null}
 
         {visible.has("pads")
-          ? footprint.pads.map((pad) => (
-              <g
-                key={`${pad.number}-${pad.center.x}-${pad.center.y}`}
-                transform={`translate(${pad.center.x} ${pad.center.y}) rotate(${pad.rotation})`}
-              >
-                <rect
-                  x={-pad.width / 2}
-                  y={-pad.height / 2}
-                  width={pad.width}
-                  height={pad.height}
-                  rx={pad.shape === "roundedRectangle" ? Math.min(pad.width, pad.height) * 0.2 : pad.shape === "oval" || pad.shape === "circle" ? Math.min(pad.width, pad.height) / 2 : 0}
-                  // 1 脚提亮一点，方便一眼找到方向（颜色跟随用户自定义的「铜焊盘」色）
+          ? footprint.pads.map((pad) =>
+              isPolygonPad(pad) ? (
+                <polygon
+                  key={`${pad.number}-${pad.center.x}-${pad.center.y}`}
+                  points={polygonPointsAttribute(pad.polygon)}
                   fill={pad.number === "1" ? mixColor(strokeOf("pads"), 0.3) : strokeOf("pads")}
                   stroke={mixColor(strokeOf("pads"), -0.3)}
                   strokeWidth="0.05"
                 />
-              </g>
-            ))
+              ) : (
+                <g
+                  key={`${pad.number}-${pad.center.x}-${pad.center.y}`}
+                  transform={`translate(${pad.center.x} ${pad.center.y}) rotate(${pad.rotation})`}
+                >
+                  <rect
+                    x={-pad.width / 2}
+                    y={-pad.height / 2}
+                    width={pad.width}
+                    height={pad.height}
+                    rx={pad.shape === "roundedRectangle" ? Math.min(pad.width, pad.height) * 0.2 : pad.shape === "oval" || pad.shape === "circle" ? Math.min(pad.width, pad.height) / 2 : 0}
+                    // 1 脚提亮一点，方便一眼找到方向（颜色跟随用户自定义的「铜焊盘」色）
+                    fill={pad.number === "1" ? mixColor(strokeOf("pads"), 0.3) : strokeOf("pads")}
+                    stroke={mixColor(strokeOf("pads"), -0.3)}
+                    strokeWidth="0.05"
+                  />
+                </g>
+              ),
+            )
           : null}
 
         {visible.has("holes") ? (
