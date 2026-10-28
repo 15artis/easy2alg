@@ -758,6 +758,15 @@ nav {
   font-size: 10px;
 }
 
+/* 命名风格下面那行「例：C41415701 → …」：紧贴下拉框，等宽显示名字免得看不清下划线 */
+.setting-content p.setting-hint {
+  margin: 8px 0 0;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 10px;
+  color: #6b7a86;
+  word-break: break-all;
+}
+
 select,
 .directory-row input {
   width: 100%;

@@ -2,9 +2,11 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { ExternalServiceError } from "../../shared/errors";
+import type { PackageNameStyle } from "../../shared/naming";
 import type { NormalizedFootprint, NormalizedSymbol, ProductSearchResult } from "../../shared/schemas";
 import { NormalizedFootprintSchema } from "../../shared/schemas";
 import { parseEasyEdaSymbol } from "../conversion/easyeda-symbol";
+import { applyPackageNameStyle } from "../conversion/naming";
 import { normalizeEasyEdaResponse, RawEasyEdaResponseSchema } from "../conversion/normalize";
 import { writeLog } from "../logging";
 
@@ -94,19 +96,24 @@ export class EasyEdaConnector {
     this.#cacheDirectory = cacheDirectory;
   }
 
-  async fetchFootprint(lcscIdInput: string): Promise<NormalizedFootprint> {
+  async fetchFootprint(
+    lcscIdInput: string,
+    style: PackageNameStyle = "full",
+  ): Promise<NormalizedFootprint> {
     const lcscId = LcscIdSchema.parse(lcscIdInput);
     const cached = await this.#readCache(lcscId);
     if (cached !== null) {
       await writeLog("info", "easyeda_cache_hit", { lcscId });
-      return cached;
+      // 缓存里存的是「完整名」（与命名风格无关），取回时按当前设置重算一遍，
+      // 这样改设置不用清缓存也不会拿到旧风格的封装名。
+      return applyPackageNameStyle(cached, style);
     }
 
     const raw = await this.#loadRaw(lcscId);
     try {
       const footprint = normalizeEasyEdaResponse(raw, lcscId);
       await this.#writeCache(lcscId, footprint);
-      return footprint;
+      return applyPackageNameStyle(footprint, style);
     } catch (error) {
       const cause = error instanceof Error ? error : new Error(String(error));
       throw new ExternalServiceError(
@@ -130,7 +137,10 @@ export class EasyEdaConnector {
    * 2026-10-16 反馈"搜索的器件没出现原理图符号，实际是有符号的"。
    * 这里复用同一份原始响应缓存，不额外发请求。
    */
-  async fetchSymbol(lcscIdInput: string): Promise<NormalizedSymbol | null> {
+  async fetchSymbol(
+    lcscIdInput: string,
+    style: PackageNameStyle = "full",
+  ): Promise<NormalizedSymbol | null> {
     const lcscId = LcscIdSchema.parse(lcscIdInput);
     const raw = await this.#loadRaw(lcscId);
     const parsed = RawEasyEdaResponseSchema.safeParse(raw);
@@ -143,7 +153,7 @@ export class EasyEdaConnector {
     // 封装读不出来时退化成源封装名（不阻塞符号生成）。
     let pcbFootprint = cPara.package ?? result.packageDetail.title;
     try {
-      pcbFootprint = (await this.fetchFootprint(lcscId)).info.targetPackageName;
+      pcbFootprint = (await this.fetchFootprint(lcscId, style)).info.targetPackageName;
     } catch (error) {
       await writeLog("warn", "easyeda_symbol_footprint_link_failed", {
         lcscId,

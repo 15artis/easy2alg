@@ -20,7 +20,7 @@ import {
 } from "../src/main/conversion/naming";
 import { createConversionPlan } from "../src/main/conversion/validate";
 import { getDemoFootprint } from "../src/shared/demo-fixtures";
-import { normalizePackageName } from "../src/shared/naming";
+import { compactPackageNameFromSource, normalizePackageName } from "../src/shared/naming";
 import {
   AppSettingsSchema,
   defaultUiSettings,
@@ -210,6 +210,7 @@ describe("Allegro source generation", () => {
           unifiedLibraryFolder: false,
           perFootprintFolder: false,
           fillPcbFootprint: true,
+          packageNameStyle: "full",
           ui: defaultUiSettings(),
         },
         null,
@@ -459,5 +460,45 @@ describe("normalizePackageName (display + generation)", () => {
       "LQFN-56_L7_0-W7_0-P0_4-EP",
     );
     expect(normalizePackageName("SOIC127P600X175-8N")).toBe("SOIC127P600X175-8N");
+  });
+});
+
+describe("简写封装名（SMD 本体尺寸码 + 引脚数，用户 2026-10-28）", () => {
+  it("C41415701 这类有源晶振：OSC-SMD_6P-L5.0-W3.2 → SMD5032-6P", () => {
+    expect(
+      compactPackageNameFromSource("OSC-SMD_6P-L5.0-W3.2-BL_OA1EL89CEIB112YLC"),
+    ).toBe("SMD5032-6P");
+    // 小数点已经被规范成下划线的写法也要认（老缓存 / 预览里的名字）
+    expect(
+      compactPackageNameFromSource("OSC-SMD_6P-L5_0-W3_2-BL_OA1EL89CEIB112YLC"),
+    ).toBe("SMD5032-6P");
+  });
+
+  it("尺寸码是毫米数各取两位：3225 / 7050 / 1608 / 2016", () => {
+    expect(compactPackageNameFromSource("CRYSTAL-SMD_4P-L3.2-W2.5-BL")).toBe("SMD3225-4P");
+    expect(compactPackageNameFromSource("OSC-SMD_4P-L7.0-W5.0-BL")).toBe("SMD7050-4P");
+    expect(compactPackageNameFromSource("LED-SMD_2P-L1.6-W0.8-BL")).toBe("SMD1608-2P");
+    expect(compactPackageNameFromSource("SMD-4P-L2.0-W1.6")).toBe("SMD2016-4P");
+  });
+
+  it("源名没写引脚数时用焊盘数兜底，都没有就放弃", () => {
+    expect(compactPackageNameFromSource("OSC-SMD-L5.0-W3.2-BL", 6)).toBe("SMD5032-6P");
+    expect(compactPackageNameFromSource("OSC-SMD-L5.0-W3.2-BL")).toBeNull();
+  });
+
+  it("其它封装族不简写（源名本身就有信息量）", () => {
+    expect(compactPackageNameFromSource("VQFN-24_L5.0-W4.0-P0.50-BL-EP")).toBeNull();
+    expect(compactPackageNameFromSource("SOT-23")).toBeNull();
+    expect(deriveTargetPackageName("VQFN-24_L5.0-W4.0-P0.50-BL-EP", [], "compact")).toBe(
+      "VQFN-24_L5_0-W4_0-P0_50-BL-EP",
+    );
+  });
+
+  it("deriveTargetPackageName 按风格切换，默认仍是完整名", () => {
+    const source = "OSC-SMD_6P-L5.0-W3.2-BL_OA1EL89CEIB112YLC";
+    expect(deriveTargetPackageName(source, [])).toBe(
+      "OSC-SMD_6P-L5_0-W3_2-BL_OA1EL89CEIB112YLC",
+    );
+    expect(deriveTargetPackageName(source, [], "compact")).toBe("SMD5032-6P");
   });
 });

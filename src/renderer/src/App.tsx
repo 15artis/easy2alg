@@ -105,7 +105,7 @@ import {
   undoOnce,
   type EditHistory,
 } from "../../shared/edit-history";
-import { normalizePackageName, sanitizeLibraryName } from "../../shared/naming";
+import { compactPackageNameFromSource, normalizePackageName, sanitizeLibraryName } from "../../shared/naming";
 import { offsetPolygon, polygonPointsAttribute } from "../../shared/pad-geometry";
 import {
   defaultVisibleLayers,
@@ -201,6 +201,7 @@ const emptySettings: AppSettings = {
   unifiedLibraryFolder: false,
   perFootprintFolder: false,
   fillPcbFootprint: true,
+  packageNameStyle: "full",
   ui: defaultUiSettings(),
 };
 
@@ -1056,6 +1057,24 @@ const ConverterPage = ({
   const snapGrid = settings.ui.symbolSnapGrid;
   const gridVisible = settings.ui.symbolGridVisible;
   const snapState = useMemo(() => ({ enabled: snapEnabled, grid: snapGrid }), [snapEnabled, snapGrid]);
+  /**
+   * 列表与标题里显示的封装名。
+   *
+   * 默认显示立创源名（用户能认出这颗料）；设置里选了「简写」时改显示简写名
+   * （`OSC-SMD_6P-L5.0-W3.2-…` → `SMD5032-6P`，用户 2026-10-28 要求）。
+   * 只对能简写的源名替换，其它族（QFN/SOIC/SOT…）照旧显示源名，避免列表里
+   * 突然出现几何推导名或哈希兜底名。
+   */
+  const displayPackageName = useCallback(
+    (footprint: NormalizedFootprint): string => {
+      const compact =
+        settings.packageNameStyle === "compact"
+          ? compactPackageNameFromSource(footprint.info.sourcePackageName, footprint.pads.length)
+          : null;
+      return compact ?? normalizePackageName(footprint.info.sourcePackageName);
+    },
+    [settings.packageNameStyle],
+  );
   // 覆盖同名器件的二次确认（promise 化，生成流程里 await 它）
   const [overwriteAsk, setOverwriteAsk] = useState<{
     readonly request: Extract<OlbWriteOutcome, { status: "needsConfirm" }>;
@@ -2566,10 +2585,10 @@ const ConverterPage = ({
                     <em className="rail-error-text" title={item.message}>{item.message}</em>
                   ) : (
                     <em>
-                      {/* 列表里显示规范后的封装名（小数点→下划线），与生成用的名字一致 */}
+                      {/* 列表里显示规范后的封装名（小数点→下划线 / 简写风格），与生成用的名字一致 */}
                       {item.footprint === null || item.footprint === undefined
                         ? item.message
-                        : normalizePackageName(item.footprint.info.sourcePackageName)}
+                        : displayPackageName(item.footprint)}
                     </em>
                   )}
                 </div>
@@ -2629,7 +2648,7 @@ const ConverterPage = ({
                   {selected?.id ?? ""} ·{" "}
                   {selected?.footprint === null || selected?.footprint === undefined
                     ? "请选择器件"
-                    : normalizePackageName(selected.footprint.info.sourcePackageName)}
+                    : displayPackageName(selected.footprint)}
                 </span></div>
           <div className="stage-tabs-group">
             <div className="stage-tabs" role="tablist">
@@ -3539,6 +3558,33 @@ const SettingsPage = ({
                 <X size={18} />
               </button>
             </div>
+          </div>
+        </div>
+        <div className="setting-section">
+          <div className="setting-icon"><Type size={21} /></div>
+          <div className="setting-content">
+            <label htmlFor="package-name-style">封装命名风格</label>
+            <p>晶振、LED 这类源名里塞了厂商料号的贴片封装，可以只保留本体尺寸与引脚数。</p>
+            <select
+              id="package-name-style"
+              value={draft.packageNameStyle}
+              onChange={(event) =>
+                setDraft({
+                  ...draft,
+                  packageNameStyle: event.target.value === "compact" ? "compact" : "full",
+                })
+              }
+              data-testid="setting-package-name-style"
+            >
+              <option value="full">完整 —— 沿用立创源名</option>
+              <option value="compact">简写 —— 本体尺寸码 + 引脚数</option>
+            </select>
+            <p className="setting-hint">
+              例：C41415701 →{" "}
+              {draft.packageNameStyle === "compact"
+                ? "SMD5032-6P"
+                : "OSC-SMD_6P-L5_0-W3_2-BL_OA1EL89CEIB112YLC"}
+            </p>
           </div>
         </div>
         <div className="setting-section">

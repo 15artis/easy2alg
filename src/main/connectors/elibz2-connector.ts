@@ -30,6 +30,7 @@ import {
   refdesPrefixFrom,
   sanitizeSymbolName,
 } from "../conversion/naming";
+import type { PackageNameStyle } from "../../shared/naming";
 import {
   translateSymbolShape,
   translateSymbolPoint,
@@ -731,7 +732,11 @@ export class Elibz2Connector {
     return summaries;
   }
 
-  async loadFootprint(filePath: string, deviceUuid: string): Promise<NormalizedFootprint> {
+  async loadFootprint(
+    filePath: string,
+    deviceUuid: string,
+    style: PackageNameStyle = "full",
+  ): Promise<NormalizedFootprint> {
     const { devices, footprints, elibuText } = await readArchive(filePath);
     const device = devices[deviceUuid];
     if (device === undefined) {
@@ -840,7 +845,7 @@ export class Elibz2Connector {
         manufacturer: String(attributes["Manufacturer"] ?? ""),
         manufacturerPartNumber: String(attributes["Manufacturer Part"] ?? ""),
         sourcePackageName,
-        targetPackageName: deriveTargetPackageName(sourcePackageName, pads),
+        targetPackageName: deriveTargetPackageName(sourcePackageName, pads, style),
         assemblyProcess:
           holes.length > 0 || pads.some((pad) => pad.holeWidth > 0) ? "THT" : "SMT",
         description: String(device.description ?? ""),
@@ -867,7 +872,11 @@ export class Elibz2Connector {
    * 读取器件的原理图符号（SYMBOL 文档块）。库中没有符号数据时返回 null，
    * 调用方应跳过 OLB 生成而不是报错 —— 标准版链路（C 编号）本来就只有封装。
    */
-  async loadSymbol(filePath: string, deviceUuid: string): Promise<NormalizedSymbol | null> {
+  async loadSymbol(
+    filePath: string,
+    deviceUuid: string,
+    style: PackageNameStyle = "full",
+  ): Promise<NormalizedSymbol | null> {
     const { devices, elibuText } = await readArchive(filePath);
     const device = devices[deviceUuid];
     if (device === undefined) {
@@ -905,7 +914,8 @@ export class Elibz2Connector {
     // 实际生成的 .dra 同名；封装不可读时退化为空串（不阻塞符号生成）。
     let pcbFootprint = "";
     try {
-      pcbFootprint = (await this.loadFootprint(filePath, deviceUuid)).info.targetPackageName;
+      pcbFootprint = (await this.loadFootprint(filePath, deviceUuid, style)).info
+        .targetPackageName;
     } catch (error) {
       await writeLog("warn", "elibz2_symbol_footprint_link_failed", {
         filePath,

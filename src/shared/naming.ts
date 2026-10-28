@@ -53,3 +53,68 @@ export const friendlyPackageNameFromSource = (sourceName: string): string | null
  */
 export const normalizePackageName = (name: string): string =>
   friendlyPackageNameFromSource(name) ?? name;
+
+/**
+ * 封装命名风格（用户 2026-10-28 要求在设置里可选）：
+ *  - "full"    沿用立创源名结构，小数点换成下划线：
+ *              `OSC-SMD_6P-L5_0-W3_2-BL_OA1EL89CEIB112YLC`
+ *  - "compact" 只留「贴片 + 本体尺寸码 + 引脚数」：`SMD5032-6P`
+ *              （5.0×3.2 mm 本体、6 个焊盘，C41415701 这种有源晶振的常见写法）
+ */
+export const PACKAGE_NAME_STYLES = ["full", "compact"] as const;
+export type PackageNameStyle = (typeof PACKAGE_NAME_STYLES)[number];
+
+/**
+ * 本体尺寸 → 四位尺寸码：5.0×3.2 → `5032`、3.2×2.5 → `3225`、1.0×0.8 → `1008`。
+ * 就是业界写法（毫米数乘 10 各取两位），不是四舍五入到 0.1 mm 以外的近似。
+ */
+const smdSizeCode = (lengthMm: number, widthMm: number): string =>
+  `${String(Math.round(lengthMm * 10)).padStart(2, "0")}${String(
+    Math.round(widthMm * 10),
+  ).padStart(2, "0")}`;
+
+/** 源名里的 `L5.0` / `L5-0` / `L5_0` / `L5` 统一成数字。 */
+const toMillimeters = (raw: string): number => Number(raw.replace(/[_-]/g, "."));
+
+/** 尺寸数字允许 `.` `-` `_` 三种小数点写法（源名 / 已规范化过的名字都会遇到）。 */
+const DIMENSION = String.raw`(\d+(?:[._-]\d+)?)`;
+
+/**
+ * 简写封装名：`OSC-SMD_6P-L5.0-W3.2-BL_OA1EL89CEIB112YLC` → `SMD5032-6P`。
+ *
+ * 只认立创那种「`SMD_<n>P-L<长>-W<宽>`」的写法 —— 这类封装的源名里塞了厂商料号，
+ * 又长又没法读（Allegro 侧历史上限 31 字符，`OSC-SMD_6P-L5_0-W3_2-BL_OA1EL89CEIB112YLC`
+ * 早就超了）。其它族（QFN/SOIC/SOT…）的源名本身就有信息量，返回 null 走完整名，
+ * 别硬压成猜的。引脚数缺省时用焊盘数兜底。
+ */
+export const compactPackageNameFromSource = (
+  sourceName: string,
+  padCount?: number,
+): string | null => {
+  const withPins = new RegExp(
+    String.raw`SMD[_-]?(\d+)P[_-]L${DIMENSION}[_-]W${DIMENSION}`,
+    "i",
+  ).exec(sourceName);
+  const bodyOnly =
+    withPins === null
+      ? new RegExp(String.raw`SMD[_-]?L${DIMENSION}[_-]W${DIMENSION}`, "i").exec(sourceName)
+      : null;
+  if (withPins === null && bodyOnly === null) {
+    return null;
+  }
+  const declaredPins = withPins === null ? null : Number(withPins[1]);
+  const pins = declaredPins !== null && declaredPins > 0 ? declaredPins : (padCount ?? 0);
+  if (!Number.isFinite(pins) || pins <= 0) {
+    return null;
+  }
+  const lengthRaw = withPins === null ? bodyOnly![1] : withPins[2];
+  const widthRaw = withPins === null ? bodyOnly![2] : withPins[3];
+  const length = toMillimeters(lengthRaw);
+  const width = toMillimeters(widthRaw);
+  if (!Number.isFinite(length) || !Number.isFinite(width) || length <= 0 || width <= 0) {
+    return null;
+  }
+  // 尺寸码按源名的 L→W 顺序写（5.0×3.2 → 5032、3.2×2.5 → 3225），不做长短边重排：
+  // 名字怎么写的就怎么转，用户能自己对上号。
+  return `SMD${smdSizeCode(length, width)}-${Math.round(pins)}P`;
+};

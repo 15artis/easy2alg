@@ -107,6 +107,14 @@ export const AppSettingsSchema = z
     perFootprintFolder: z.boolean().optional(),
     /** 是否把 PCB 封装名写进 .olb 的 PCB Footprint 字段（用户 2026-10-19 要求可选） */
     fillPcbFootprint: z.boolean().optional(),
+    /**
+     * 封装命名风格（用户 2026-10-28 要求可选）：
+     *  - "full"    立创源名结构，小数点换下划线
+     *              → `OSC-SMD_6P-L5_0-W3_2-BL_OA1EL89CEIB112YLC`
+     *  - "compact" 贴片本体尺寸码 + 引脚数 → `SMD5032-6P`
+     * 只影响 `SMD_<n>P-L..-W..` 这类源名，其它族（QFN/SOIC/SOT…）两种风格结果相同。
+     */
+    packageNameStyle: z.enum(["full", "compact"]).optional(),
     ui: UiSettingsSchema,
   })
   .transform((settings) => ({
@@ -118,6 +126,7 @@ export const AppSettingsSchema = z
       : (settings.unifiedLibraryFolder ?? false),
     perFootprintFolder: settings.perFootprintFolder ?? false,
     fillPcbFootprint: settings.fillPcbFootprint ?? true,
+    packageNameStyle: settings.packageNameStyle ?? "full",
     ui: {
       leftRailWidth: settings.ui?.leftRailWidth ?? LEFT_RAIL_DEFAULT_WIDTH,
       rightRailWidth: settings.ui?.rightRailWidth ?? RIGHT_RAIL_DEFAULT_WIDTH,

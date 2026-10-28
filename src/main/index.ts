@@ -65,6 +65,7 @@ const defaultSettings = (): AppSettings => ({
   unifiedLibraryFolder: false,
   perFootprintFolder: false,
   fillPcbFootprint: true,
+  packageNameStyle: "full",
   ui: defaultUiSettings(),
 });
 
@@ -230,12 +231,19 @@ const registerHandlers = (): void => {
   ipcMain.handle(IpcChannels.searchProducts, (_event, keyword: unknown) =>
     easyEda.searchProducts(z.string().parse(keyword)),
   );
-  ipcMain.handle(IpcChannels.fetchComponent, (_event, lcscId: unknown) =>
-    easyEda.fetchFootprint(z.string().parse(lcscId)),
-  );
-  ipcMain.handle(IpcChannels.fetchSymbol, (_event, lcscId: unknown) =>
-    easyEda.fetchSymbol(z.string().parse(lcscId)),
-  );
+  // 封装名风格（完整 / 简写）跟着设置走：缓存里存的是完整名，取回时按当前风格重算，
+  // 所以改完设置再导入同一颗器件立刻就是新名字（用户 2026-10-28）。
+  ipcMain.handle(IpcChannels.fetchComponent, async (_event, lcscId: unknown) => {
+    const settings = await settingsStore.read();
+    return easyEda.fetchFootprint(
+      z.string().parse(lcscId),
+      settings.packageNameStyle,
+    );
+  });
+  ipcMain.handle(IpcChannels.fetchSymbol, async (_event, lcscId: unknown) => {
+    const settings = await settingsStore.read();
+    return easyEda.fetchSymbol(z.string().parse(lcscId), settings.packageNameStyle);
+  });
   // 界面偏好单独一条通道：拖动侧栏时不能顺手重跑 Allegro 探测（那个要扫注册表）。
   // 用 store.patch 做「读—改—写」：取色器拖动会连着打好几次，并发写会互相覆盖。
   ipcMain.handle(IpcChannels.saveUiSettings, (_event, patch: unknown) => {
@@ -261,19 +269,25 @@ const registerHandlers = (): void => {
   );
   ipcMain.handle(
     IpcChannels.fetchLocalComponent,
-    (_event, filePath: unknown, deviceUuid: unknown) =>
-      elibz2.loadFootprint(
+    async (_event, filePath: unknown, deviceUuid: unknown) => {
+      const settings = await settingsStore.read();
+      return elibz2.loadFootprint(
         z.string().min(1).parse(filePath),
         z.string().min(1).parse(deviceUuid),
-      ),
+        settings.packageNameStyle,
+      );
+    },
   );
   ipcMain.handle(
     IpcChannels.fetchLocalSymbol,
-    (_event, filePath: unknown, deviceUuid: unknown) =>
-      elibz2.loadSymbol(
+    async (_event, filePath: unknown, deviceUuid: unknown) => {
+      const settings = await settingsStore.read();
+      return elibz2.loadSymbol(
         z.string().min(1).parse(filePath),
         z.string().min(1).parse(deviceUuid),
-      ),
+        settings.packageNameStyle,
+      );
+    },
   );
   ipcMain.handle(IpcChannels.chooseOlbLibrary, async () => {
     const result = await dialog.showOpenDialog({

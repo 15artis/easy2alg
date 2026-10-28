@@ -130,6 +130,29 @@ describe("symbol property panel position", () => {
 });
 
 /**
+ * 用户 2026-10-28：封装命名风格可选（完整 / 简写），必须能在 settings.json 里存住。
+ * 老配置没有这个字段 → 默认 "full"，保持原来的名字不变。
+ */
+describe("package name style", () => {
+  it("defaults to the full source name for older config files", () => {
+    expect(AppSettingsSchema.parse(minimal).packageNameStyle).toBe("full");
+  });
+
+  it("round-trips the compact style", () => {
+    const settings = AppSettingsSchema.parse({ ...minimal, packageNameStyle: "compact" });
+    expect(settings.packageNameStyle).toBe("compact");
+    const again = AppSettingsSchema.parse(JSON.parse(JSON.stringify(settings)));
+    expect(again.packageNameStyle).toBe("compact");
+  });
+
+  it("rejects unknown styles", () => {
+    expect(AppSettingsSchema.safeParse({ ...minimal, packageNameStyle: "short" }).success).toBe(
+      false,
+    );
+  });
+});
+
+/**
  * 用户 2026-10-27：Allegro 25.1 装好了却存不进设置（旧 schema 是写死的 enum，
  * 只认到 23.1）。版本号改成"形如 25.1"即可，新版本不用改代码。
  */

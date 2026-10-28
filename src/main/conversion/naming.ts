@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
-import { friendlyPackageNameFromSource } from "../../shared/naming";
-import type { NormalizedPad } from "../../shared/schemas";
+import {
+  compactPackageNameFromSource,
+  friendlyPackageNameFromSource,
+  type PackageNameStyle,
+} from "../../shared/naming";
+import type { NormalizedFootprint, NormalizedPad } from "../../shared/schemas";
 import { uniquePositiveDeltas } from "./geometry";
 
 const IPC_MAX_NAME_LENGTH = 31;
@@ -108,17 +112,44 @@ const nominalLeadSpan = (family: "SOIC" | "SSOP" | "TSSOP", bodyWidth: number): 
  */
 export { friendlyPackageNameFromSource };
 
+/**
+ * 按设置里的命名风格重算目标封装名（用户 2026-10-28 要求「简写方式可选」）。
+ *
+ * 推导本身是纯函数，所以缓存里的封装（`targetPackageName` 是取回时算的）可以随时
+ * 重算一遍换风格 —— 不需要清缓存，也不会出现"改了设置老器件还是旧名"。
+ */
+export const applyPackageNameStyle = (
+  footprint: NormalizedFootprint,
+  style: PackageNameStyle,
+): NormalizedFootprint => {
+  const targetPackageName = deriveTargetPackageName(
+    footprint.info.sourcePackageName,
+    footprint.pads,
+    style,
+  );
+  return targetPackageName === footprint.info.targetPackageName
+    ? footprint
+    : { ...footprint, info: { ...footprint.info, targetPackageName } };
+};
+
 export const deriveTargetPackageName = (
   sourceName: string,
   pads: readonly NormalizedPad[],
+  style: PackageNameStyle = "full",
 ): string => {
+  const numberedPads = pads.filter((pad) => /^\d+$/.test(pad.number));
+  const pinCount = numberedPads.length > 0 ? numberedPads.length : pads.length;
+  if (style === "compact") {
+    const compact = compactPackageNameFromSource(sourceName, pinCount);
+    if (compact !== null) {
+      return compact;
+    }
+  }
   const friendly = friendlyPackageNameFromSource(sourceName);
   if (friendly !== null) {
     return friendly;
   }
   const upper = sourceName.toUpperCase();
-  const numberedPads = pads.filter((pad) => /^\d+$/.test(pad.number));
-  const pinCount = numberedPads.length > 0 ? numberedPads.length : pads.length;
   const pitch = minimumPitch(numberedPads);
   const bodyDimensions = bodyDimensionsFromName(sourceName);
   const span = padSpan(pads);
