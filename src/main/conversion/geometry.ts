@@ -1,4 +1,9 @@
-import type { NormalizedCircle, NormalizedPad, Point } from "../../shared/schemas";
+import type {
+  NormalizedCircle,
+  NormalizedLine,
+  NormalizedPad,
+  Point,
+} from "../../shared/schemas";
 import { normalizePolygon, roundMm } from "../../shared/pad-geometry";
 
 // 多边形几何（normalizePolygon / offsetPolygon / scalePolygon …）住在 shared，
@@ -106,28 +111,102 @@ export const PIN1_MARKER_MIN_DIAMETER_MM = 0.8;
 export const PIN1_MARKER_BODY_RATIO = 0.05;
 export const PIN1_MARKER_MAX_DIAMETER_MM = 1.5;
 
+/**
+ * 实心圆盘的判定容差。
+ *
+ * 不能取 1e-9：源数据是「半径 0.197 / 线宽 0.3937（单位 0.254mm）」这种值，
+ * 乘 0.254 再四舍五入到 6 位后，2×半径 会比线宽大 7.6e-5mm，真正的实心盘就被
+ * 判成圆环了。2026-10-28 实测：C3210600 的 1 脚圆点正是这样被漏掉，反倒是旁边
+ * 那个装饰点被放大成了大色块。
+ */
+const DISC_TOLERANCE_MM = 0.01;
+
 export const isFilledDisc = (circle: NormalizedCircle): boolean =>
-  circle.width >= circle.radius * 2 - 1e-9;
+  circle.width >= circle.radius * 2 - DISC_TOLERANCE_MM;
 
 const discOuterDiameter = (circle: NormalizedCircle): number =>
   circle.radius * 2 + circle.width;
 
+/** 本体轮廓（毫米）。判断角标"是否在本体之外"用。 */
+export type OutlineBox = {
+  readonly minX: number;
+  readonly minY: number;
+  readonly maxX: number;
+  readonly maxY: number;
+};
+
+/**
+ * 取本体轮廓：优先丝印线，其次 courtyard，两者都没有才退回焊盘包围盒。
+ *
+ * 用线条而不是焊盘包围盒，是因为 1 脚角标通常画在轮廓外的空白处（比焊盘范围还外），
+ * 拿焊盘包围盒当本体，会把角标也判成"本体之内"。
+ */
+export const outlineBoxOf = (
+  lines: readonly NormalizedLine[],
+  pads: readonly NormalizedPad[],
+): OutlineBox => {
+  const silkscreen = lines.filter((line) => line.layer === "silkscreen");
+  const courtyard = lines.filter((line) => line.layer === "courtyard");
+  const source = silkscreen.length > 0 ? silkscreen : courtyard;
+  const points = source.flatMap((line) => [line.start, line.end]);
+  if (points.length === 0) {
+    return computeBounds(pads, []);
+  }
+  return {
+    minX: Math.min(...points.map((point) => point.x)),
+    minY: Math.min(...points.map((point) => point.y)),
+    maxX: Math.max(...points.map((point) => point.x)),
+    maxY: Math.max(...points.map((point) => point.y)),
+  };
+};
+
+const isOutside = (box: OutlineBox, point: Point): boolean =>
+  point.x < box.minX || point.x > box.maxX || point.y < box.minY || point.y > box.maxY;
+
+/**
+ * 放大 1 脚角标。
+ *
+ * 只有同时满足下面三条的圆才是 1 脚角标，才会被放大：
+ *   1. 在**丝印层**（装配层的圆是每个焊盘中心的小点，放大就是灾难）；
+ *   2. 是**实心圆盘**（见 isFilledDisc 的容差说明）；
+ *   3. 位于**本体轮廓之外**。
+ *
+ * 第 3 条是 2026-10-28 补的。立创的封装常在本体角点上再放一个小圆点当装饰，
+ * 它和 1 脚角标长得一模一样，但位置正好压在轮廓角上 —— 照旧规则放大后，预览里
+ * 就出现"两个方向指示、其中一个又大又压在边框上"（C3210600 的 TFBGA-100）。
+ *
+ * 多个候选时只放大**最大**的那个：再放大第二个就又变成两个指示了。
+ */
 export const enlargePin1Markers = (
   circles: readonly NormalizedCircle[],
   pads: readonly NormalizedPad[],
+  outline?: OutlineBox,
 ): NormalizedCircle[] => {
   if (pads.length === 0 || circles.length === 0) {
     return [...circles];
   }
-  const body = computeBounds(pads, []);
+  const body = outline ?? computeBounds(pads, []);
   const bodyShortSide = Math.min(body.maxX - body.minX, body.maxY - body.minY);
   const floor = Math.min(PIN1_MARKER_MIN_DIAMETER_MM, bodyShortSide * 0.5);
   const targetOuterDiameter = Math.min(
     Math.max(bodyShortSide * PIN1_MARKER_BODY_RATIO, floor),
     PIN1_MARKER_MAX_DIAMETER_MM,
   );
+  const candidates = circles.filter(
+    (circle) =>
+      circle.layer === "silkscreen" &&
+      isFilledDisc(circle) &&
+      discOuterDiameter(circle) < targetOuterDiameter &&
+      isOutside(body, circle.center),
+  );
+  if (candidates.length === 0) {
+    return [...circles];
+  }
+  const chosen = candidates.reduce((best, current) =>
+    discOuterDiameter(current) > discOuterDiameter(best) ? current : best,
+  );
   return circles.map((circle) => {
-    if (!isFilledDisc(circle) || discOuterDiameter(circle) >= targetOuterDiameter) {
+    if (circle !== chosen) {
       return circle;
     }
     // 维持实心圆盘编码：描边外沿 = radius + width/2 = 目标外半径，因此

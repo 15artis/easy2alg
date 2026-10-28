@@ -15,6 +15,7 @@ import {
   computeBounds,
   enlargePin1Markers,
   normalizePoint,
+  outlineBoxOf,
   parseCoordinatePairs,
   roundMm,
   toMm,
@@ -300,12 +301,14 @@ export const normalizeEasyEdaResponse = (
     .flatMap((shape) => arcLines(shape, originX, originY));
   const lines = [...trackGeometry, ...rectangleGeometry, ...arcGeometry];
   // 圆点型 pin-1 角标过小不可见（用户反馈 2026-10-15）—— 只放大相对本体过小的实心盘，
-  // 小器件与正常的丝印圆环不受影响，详见 geometry.enlargePin1Markers 注释。
+  // 小器件与正常的丝印圆环不受影响。本体轮廓要用线条算（不能只算焊盘范围），
+  // 因为角标画在轮廓外的空白处；详见 geometry.enlargePin1Markers 注释。
   const circles = enlargePin1Markers(
     data.shape
       .filter((shape) => shape.startsWith("CIRCLE~"))
       .map((shape) => circleFromRaw(shape, originX, originY)),
     pads,
+    outlineBoxOf(lines, pads),
   );
   const extraPoints: Point[] = [
     ...lines.flatMap((line) => [line.start, line.end]),

@@ -19,7 +19,12 @@ import {
   NormalizedFootprintSchema,
   NormalizedSymbolSchema,
 } from "../../shared/schemas";
-import { computeBounds, enlargePin1Markers, roundMm } from "../conversion/geometry";
+import {
+  computeBounds,
+  enlargePin1Markers,
+  outlineBoxOf,
+  roundMm,
+} from "../conversion/geometry";
 import {
   deriveTargetPackageName,
   refdesPrefixFrom,
@@ -805,8 +810,9 @@ export class Elibz2Connector {
       }
     }
     // FILL 圆点在本例中就是 pin-1 角标，源尺寸 0.6mm 在大器件上不可见（见
-    // geometry.enlargePin1Markers 注释）。放大后再算 bounds，预览与实机一致。
-    const visibleCircles = enlargePin1Markers(circles, pads);
+    // geometry.enlargePin1Markers 注释）。本体轮廓由丝印线算出 —— 角标画在轮廓外，
+    // 拿焊盘包围盒当本体会把角标一起判成"本体之内"。
+    const visibleCircles = enlargePin1Markers(circles, pads, outlineBoxOf(lines, pads));
 
     const rawLcscId = String(attributes["Supplier Part"] ?? "").toUpperCase();
     const lcscId = /^C\d+$/.test(rawLcscId) ? rawLcscId : synthesizeLcscId(device.uuid);

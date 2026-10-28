@@ -19,6 +19,14 @@ const API_TEMPLATE = "https://easyeda.com/api/products/{lcsc_id}/components?vers
 const SEARCH_TEMPLATE = "https://easyeda.com/api/eda/product/search?keyword={keyword}";
 const RETRY_DELAYS_MS = [0, 450, 1_250] as const;
 
+/**
+ * 归一化结果的缓存版本。**改动 normalize / 几何推导（角标、焊盘、丝印）时必须 +1**，
+ * 否则用户升级后仍会读到旧缓存，界面和生成结果都停在旧样子 —— 2026-10-28 就踩过：
+ * 修好 1 脚角标后预览里那个大色块还在，因为 `<id>.json` 是上一版算出来的。
+ * 原始响应（`.raw.json`）不用跟着变，它只是接口返回的原文。
+ */
+const FOOTPRINT_CACHE_VERSION = 2;
+
 /** 搜索响应只取我们需要的字段，其余结构变化不让界面崩。 */
 const SearchResponseSchema = z.object({
   code: z.number().optional(),
@@ -443,7 +451,10 @@ export class EasyEdaConnector {
    * 永久钉死在"读不出来"上（旧版本写过的缓存可能不符合当前 schema）。
    */
   async #readCache(lcscId: string): Promise<NormalizedFootprint | null> {
-    const cachePath = join(this.#cacheDirectory, `${lcscId}.json`);
+    const cachePath = join(
+      this.#cacheDirectory,
+      `${lcscId}.v${FOOTPRINT_CACHE_VERSION}.json`,
+    );
     let content: string;
     try {
       content = await readFile(cachePath, "utf8");
@@ -462,7 +473,10 @@ export class EasyEdaConnector {
   }
 
   async #writeCache(lcscId: string, footprint: NormalizedFootprint): Promise<void> {
-    const cachePath = join(this.#cacheDirectory, `${lcscId}.json`);
+    const cachePath = join(
+      this.#cacheDirectory,
+      `${lcscId}.v${FOOTPRINT_CACHE_VERSION}.json`,
+    );
     const temporaryPath = `${cachePath}.tmp`;
     await mkdir(this.#cacheDirectory, { recursive: true });
     await writeFile(temporaryPath, `${JSON.stringify(footprint)}\n`, "utf8");
