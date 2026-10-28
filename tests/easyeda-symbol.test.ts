@@ -284,7 +284,40 @@ describe("easyeda standard symbol", () => {
       },
       { lcscId: "C9999", fallbackName: "X", pcbFootprint: "" },
     );
-    expect(symbol?.name).toBe("OPA2134_PA_BB_DIP");
+    // 末尾括号说明 `(DIP)` 属于供应商元数据，一并剥掉（见 cleanSymbolName）
+    expect(symbol?.name).toBe("OPA2134_PA_BB");
+  });
+
+  /**
+   * 官方库把符号命名成 `<型号>_<立创编号>` 或 `<型号>(<规格>)`，两种尾巴都是
+   * 供应商元数据，进 OrCAD 前要剥掉。
+   * 用户 2026-10-27 报 C3011202（`HT7533-1_C3011202` → 期望 `HT7533-1`）；
+   * 用户 2026-10-28 报 C49023473（`HT7533-1-TD(24V)` → 期望 `HT7533-1-TD`）。
+   */
+  it("剥掉符号名里的立创编号与括号说明", () => {
+    const build = (name: string, lcscId: string) =>
+      parseEasyEdaSymbol(
+        {
+          head: { c_para: { name, pre: "U?" } },
+          shape: ["R~0~0~~~100~50~#000000~1~0~none~g1~0~"],
+        },
+        { lcscId, fallbackName: "X", pcbFootprint: "" },
+      );
+    expect(build("HT7533-1_C3011202", "C3011202")?.name).toBe("HT7533-1");
+    // 大小写不敏感
+    expect(build("HT7533-1_c3011202", "C3011202")?.name).toBe("HT7533-1");
+    // 末尾括号说明
+    expect(build("HT7533-1-TD(24V)", "C49023473")?.name).toBe("HT7533-1-TD");
+    // 全角括号同样处理
+    expect(build("HT7533-1-TD（24V）", "C49023473")?.name).toBe("HT7533-1-TD");
+    // 两种尾巴同时出现
+    expect(build("HT7533-1(SOT23-5)_C3011202", "C3011202")?.name).toBe("HT7533-1");
+    // 后缀不是本器件编号 → 原样保留（不猜）
+    expect(build("HT7533-1_C9999999", "C3011202")?.name).toBe("HT7533-1_C9999999");
+    // 名字短到剥完会空 → 不剥（sanitize 只去掉前导下划线）
+    expect(build("_C3011202", "C3011202")?.name).toBe("C3011202");
+    // 整名都是括号 → 保留原名，不剥成空串
+    expect(build("(24V)", "C49023473")?.name).toBe("24V");
   });
 
   /**

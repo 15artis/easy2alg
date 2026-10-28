@@ -65,6 +65,7 @@ import type {
   QueueItem,
 } from "../../shared/schemas";
 import { KNOWN_ALLEGRO_VERSIONS } from "../../shared/allegro-version";
+import { OLB_REFRESH_HINT } from "../../shared/messages";
 import { createMockApi } from "./mock-api";
 import { describeUpdate, type UpdateAction, type UpdateState } from "../../shared/update";
 import { PanZoom, type PanZoomHandle } from "./PanZoom";
@@ -181,9 +182,12 @@ const createUnavailableApi = (): Easy2AlgApi => {
   };
 };
 
+// 网页预览：开发模式下跑在 http 上，或构建产物带 `?preview=1`（给文档截图 / 静态托管用）。
+// 打包后的 Electron 里 window.easy2alg 一定存在，会盖过这里，不影响真实运行。
 const isBrowserPreview =
-  import.meta.env.DEV &&
-  (window.location.protocol === "http:" || window.location.protocol === "https:");
+  (import.meta.env.DEV &&
+    (window.location.protocol === "http:" || window.location.protocol === "https:")) ||
+  new URLSearchParams(window.location.search).has("preview");
 const api: Easy2AlgApi =
   window.easy2alg ??
   (isBrowserPreview ? createMockApi() : createUnavailableApi());
@@ -2248,10 +2252,10 @@ const ConverterPage = ({
             }));
             notes.push(outcome.result.message);
             if (outcome.result.pendingWrite === true) {
-              olbPending = "已写入 .olb，但 Capture 正打开着该库：关掉该库再打开才看得到";
+              olbPending = OLB_REFRESH_HINT;
             } else if (outcome.result.captureLockPath !== null && outcome.result.captureLockPath !== undefined) {
               // 内容本来就一致、没登记补写：同样要说明"Capture 里看不到不是没写进去"
-              olbPending = "已在 .olb 里（内容未变）；Capture 需关掉该库再打开才看得到";
+              olbPending = OLB_REFRESH_HINT;
             }
           }
         } catch (error) {
@@ -2934,10 +2938,10 @@ const ConverterPage = ({
             <div
               className="footer-lock"
               data-testid="olb-lock-hint"
-              title={`${olbLock.libraryPath ?? ""} 正被 OrCAD Capture 打开。写入会成功，但 Capture 不会自动刷新已打开的库：关掉该库再重新打开即可看到。`}
+              title={`${olbLock.libraryPath ?? ""} 正被 OrCAD Capture 打开。写入会成功，但 Capture 不会自动刷新已打开的库：刷新或重新打开该库即可看到。`}
             >
               <TriangleAlert size={13} />
-              <span>Capture 正打开着库：写入后需关掉该库再重开才看得到</span>
+              <span>{OLB_REFRESH_HINT}</span>
             </div>
           )}
           <div className="generation-side">
@@ -3107,7 +3111,7 @@ const ConverterPage = ({
                     selectedOlb.result.captureLockPath != null && (
                       // 内容本来就一致，没什么可补的 —— 只是 Capture 里看不到
                       <div className="model-row">
-                        <span className="muted">库内容没有变化，无需补写；在 Capture 里关掉该库再打开即可看到。</span>
+                        <span className="muted">库内容没有变化，无需补写；{OLB_REFRESH_HINT}。</span>
                       </div>
                     )}
                 </>

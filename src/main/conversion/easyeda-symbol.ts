@@ -17,7 +17,7 @@ import {
 } from "../../shared/symbol-labels";
 import { alignPinsToGrid } from "../../shared/symbol-layout";
 import { dedupePinNames } from "../../shared/symbol-normalize";
-import { refdesPrefixFrom, sanitizeSymbolName } from "./naming";
+import { cleanSymbolName, refdesPrefixFrom, sanitizeSymbolName } from "./naming";
 
 /**
  * 立创编号（在线 EasyEDA **标准版**）链路里的原理图符号解析。
@@ -299,7 +299,11 @@ type ParsedPart = {
 /** 解析一段符号（单段器件的 dataStr，或多子部件器件的一段 subpart）。 */
 const parsePart = (
   rawDataStr: unknown,
-  options: { readonly fallbackName: string; readonly fallbackSymbol: string },
+  options: {
+    readonly fallbackName: string;
+    readonly fallbackSymbol: string;
+    readonly lcscId: string;
+  },
 ): ParsedPart | null => {
   const parsed = RawSymbolSchema.safeParse(rawDataStr);
   if (!parsed.success) {
@@ -316,7 +320,12 @@ const parsePart = (
   }
   const cPara = data.head?.c_para ?? {};
   return {
-    name: sanitizeSymbolName(cPara.name ?? options.fallbackName, options.fallbackSymbol),
+    // 官方库的 c_para.name 形如 `HT7533-1-TD(24V)` / `HT7533-1_C3011202`，
+    // 括号说明和立创编号都是供应商元数据，原理图元件名只留型号（见 cleanSymbolName）。
+    name: sanitizeSymbolName(
+      cleanSymbolName(cPara.name ?? options.fallbackName, options.lcscId),
+      options.fallbackSymbol,
+    ),
     refdesPrefix: refdesPrefixFrom(cPara.pre),
     pins,
     shapes,
@@ -425,7 +434,11 @@ export const parseEasyEdaSymbol = (
   },
 ): NormalizedSymbol | null => {
   const fallbackSymbol = `SYM_${options.lcscId}`;
-  const partOptions = { fallbackName: options.fallbackName, fallbackSymbol };
+  const partOptions = {
+    fallbackName: options.fallbackName,
+    fallbackSymbol,
+    lcscId: options.lcscId,
+  };
 
   const candidates: { readonly part: ParsedPart; readonly title: string | undefined }[] = [];
   const primary = parsePart(rawDataStr, partOptions);

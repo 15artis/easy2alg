@@ -11,6 +11,7 @@ import type {
   OlbWriteResult,
 } from "../../shared/schemas";
 import { buildCaptureLibraryXml } from "../conversion/capture-olb";
+import { OLB_REFRESH_HINT } from "../../shared/messages";
 import { writeLog } from "../logging";
 import { captureLockState } from "./capture-lock";
 
@@ -624,9 +625,9 @@ export const writeCaptureLibrary = async (
       message: lock.blocked
         ? identical
           ? `${symbol.name} 在 ${basename(libraryPath)} 里已经是这个内容（${symbol.sections.length} 段 / ${pinned} 脚），本次重写了一遍。` +
-            "Capture 正打开着这个库：关掉该库再重新打开就能看到。"
+            `${OLB_REFRESH_HINT}。`
           : `已写入 ${basename(libraryPath)}（${symbol.sections.length} 段 / ${pinned} 脚）。` +
-            "Capture 正打开着这个库：关掉该库再重新打开才能看到；之后会自动补写一次，保存也不会把它冲掉。"
+            `${OLB_REFRESH_HINT}；之后会自动补写一次，保存也不会把它冲掉。`
         : identical
           ? `${basename(libraryPath)} 里已有完全相同的内容（${symbol.sections.length} 段 / ${pinned} 脚），本次按原样重写了一遍。`
           : existedBefore
