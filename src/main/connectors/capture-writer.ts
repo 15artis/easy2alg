@@ -179,21 +179,14 @@ export const resolveCaptureToolchain = async (
   return null;
 };
 
-/** 未指定 OLB 时的落点：<封装库目录>/schlib/<源库名>.olb（多器件累加到同一个库）。 */
 /**
- * 未指定 .olb 路径时的默认位置。
- * `unified=true`（设置里选了"所有输出放同一个文件夹"）时直接落在库目录下，
- * 不再建 schlib 子目录。
+ * 未指定 .olb 路径时的默认位置（实现在 conversion/output-layout.ts，与封装输出
+ * 共用同一套布局规则）：
+ *  - split（默认）：`<库目录>/schlib/<名字>.olb`
+ *  - unified：`<库目录>/<名字>.olb`
+ *  - perFootprint：`<库目录>/<封装名>/<封装名>.olb`
  */
-export const autoLibraryPath = (
-  libraryDirectory: string,
-  libraryName: string,
-  unified = false,
-): string => {
-  const safe = libraryName.replace(/[^A-Za-z0-9_.-]+/g, "_").replace(/^_+|_+$/g, "");
-  const fileName = `${safe.length > 0 ? safe : "easy2alg"}.olb`;
-  return unified ? join(libraryDirectory, fileName) : join(libraryDirectory, "schlib", fileName);
-};
+export { autoLibraryPath } from "../conversion/output-layout";
 
 export const olbLibraryNameFrom = (sourcePath: string): string => {
   const base = basename(sourcePath);

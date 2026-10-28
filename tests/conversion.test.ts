@@ -208,6 +208,7 @@ describe("Allegro source generation", () => {
           allegroExecutablePath: null,
           olbLibraryPath: null,
           unifiedLibraryFolder: false,
+          perFootprintFolder: false,
           fillPcbFootprint: true,
           ui: defaultUiSettings(),
         },

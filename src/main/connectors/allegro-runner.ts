@@ -23,6 +23,12 @@ import type {
 } from "../../shared/schemas";
 import { ConversionResultSchema } from "../../shared/schemas";
 import { createAllegroSourceBundle } from "../conversion/allegro-skill";
+import {
+  type OutputLayout,
+  outputLayoutOf,
+  padstackDirectoryFor,
+  symbolDirectoryFor,
+} from "../conversion/output-layout";
 import { writeLog } from "../logging";
 
 const executeFile = promisify(execFile);
@@ -223,19 +229,14 @@ const writeSources = async (
 };
 
 /**
- * 输出目录布局（用户 2026-10-19 要求"可以选择使用一个文件夹"）：
- *  - 默认：库目录下分 padstacks/ 与 symbols/ 两个子目录；
- *  - unified：两个都直接放库目录，Allegro 的库路径指到库目录即可。
+ * 输出目录布局见 conversion/output-layout.ts（split / unified / perFootprint）。
+ * 这里只做转发，方便本文件内的调用点读起来短一些。
  */
-const padstackDirectoryFor = (unified: boolean, libraryDirectory: string): string =>
-  unified ? libraryDirectory : join(libraryDirectory, "padstacks");
-const symbolDirectoryFor = (unified: boolean, libraryDirectory: string): string =>
-  unified ? libraryDirectory : join(libraryDirectory, "symbols");
-
 const copyVerifiedOutputs = async (
   jobDirectory: string,
   libraryDirectory: string,
-  unifiedLibraryFolder: boolean,
+  layout: OutputLayout,
+  packageName: string,
   expectedOutputs: readonly string[],
 ): Promise<readonly GeneratedFile[]> => {
   const files: GeneratedFile[] = [];
@@ -270,8 +271,8 @@ const copyVerifiedOutputs = async (
     }
     const outputDirectory =
       relativeOutput.endsWith(".pad") || relativeOutput.endsWith(".ssm")
-        ? padstackDirectoryFor(unifiedLibraryFolder, libraryDirectory)
-        : symbolDirectoryFor(unifiedLibraryFolder, libraryDirectory);
+        ? padstackDirectoryFor(layout, libraryDirectory, packageName)
+        : symbolDirectoryFor(layout, libraryDirectory, packageName);
     const destinationPath = join(outputDirectory, basename(relativeOutput));
     await mkdir(outputDirectory, { recursive: true });
     await copyFile(sourcePath, destinationPath);
@@ -344,6 +345,7 @@ export class AllegroRunner {
       });
     };
     progress("preparing", 5, "正在准备封装数据和输出目录");
+    const layout = outputLayoutOf(settings);
     const jobDirectory = await mkdtemp(join(tmpdir(), "easy2alg-"));
     await mkdir(join(jobDirectory, "padstacks"), { recursive: true });
     const bundle = createAllegroSourceBundle(plan, jobDirectory);
@@ -371,10 +373,10 @@ export class AllegroRunner {
     }
 
     await Promise.all([
-      mkdir(padstackDirectoryFor(settings.unifiedLibraryFolder, settings.libraryDirectory), {
+      mkdir(padstackDirectoryFor(layout, settings.libraryDirectory, bundle.symbolName), {
         recursive: true,
       }),
-      mkdir(symbolDirectoryFor(settings.unifiedLibraryFolder, settings.libraryDirectory), {
+      mkdir(symbolDirectoryFor(layout, settings.libraryDirectory, bundle.symbolName), {
         recursive: true,
       }),
     ]);
@@ -456,7 +458,8 @@ export class AllegroRunner {
     const files = await copyVerifiedOutputs(
       jobDirectory,
       settings.libraryDirectory,
-      settings.unifiedLibraryFolder,
+      layout,
+      bundle.symbolName,
       bundle.expectedOutputs,
     );
     if (files.length !== bundle.expectedOutputs.length) {

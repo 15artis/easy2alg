@@ -99,15 +99,19 @@ export const computeBounds = (
 // 时圆环内径为 0，即实心圆盘 —— elibz2 的 FILL 圆点（radius=外径/2、width=外径）与
 // 立创 C 编号接口的 EasyEDA CIRCLE（width=2×radius）都满足该不变式；而真正的丝印圆环
 // 外径本就不小，会被下面的"不小于目标值则跳过"自然排除。
-// 尺寸规则（用户要求："源数据的 方向圆点标识符 需要限制最小"，2026-10-15）：
+// 尺寸规则：
 //   目标外径 = min( max(本体短边 × 5%, 下限), 1.5mm )，且仅在「源外径 < 目标」时放大
-//   下限     = min(0.8mm, 本体短边 × 50%)
+//   下限     = min(0.3mm, 本体短边 × 20%)
 //   · 只放大不缩小：源尺寸已足够大时原样保留；
-//   · 5% 项让大器件（BGA）的角标随本体一起放大；
-//   · 下限项给所有器件兜底一个可见尺寸，同时用"本体短边的一半"限制下限本身，
-//     避免 0402/0603 这类小本体被角标占满；
+//   · 5% 项让角标随本体等比缩放 —— 8mm 的 TFBGA 得到 0.41mm，和立创原图里那个
+//     圆点（0.39mm）几乎一致；27mm 的 FCBGA 得到 1.35mm，仍然醒目；
+//   · 下限项只兜底"小到看不见"，并且本身也被本体短边的 20% 限制住，避免 0402
+//     这类小本体被角标占满；
 //   · 1.5mm 上限防止超大本体上角标失控。
-export const PIN1_MARKER_MIN_DIAMETER_MM = 0.8;
+//
+// 2026-10-28 修正：下限原为 0.8mm，导致 8mm 本体上角标占到 10%（用户："这个圆过大"，
+// 对照立创原封装只有约 4.8%）。改为按本体等比 + 0.3mm 兜底后与源图一致。
+export const PIN1_MARKER_MIN_DIAMETER_MM = 0.3;
 export const PIN1_MARKER_BODY_RATIO = 0.05;
 export const PIN1_MARKER_MAX_DIAMETER_MM = 1.5;
 
@@ -187,7 +191,9 @@ export const enlargePin1Markers = (
   }
   const body = outline ?? computeBounds(pads, []);
   const bodyShortSide = Math.min(body.maxX - body.minX, body.maxY - body.minY);
-  const floor = Math.min(PIN1_MARKER_MIN_DIAMETER_MM, bodyShortSide * 0.5);
+  // 兜底下限也随本体收：0.3mm 是"看得见"的下限，但不能超过本体短边的 20%，
+  // 否则 0402 这种小本体上角标会占掉一大块。
+  const floor = Math.min(PIN1_MARKER_MIN_DIAMETER_MM, bodyShortSide * 0.2);
   const targetOuterDiameter = Math.min(
     Math.max(bodyShortSide * PIN1_MARKER_BODY_RATIO, floor),
     PIN1_MARKER_MAX_DIAMETER_MM,

@@ -29,6 +29,7 @@ const readSettings = (): AppSettings => {
       allegroExecutablePath: null,
       olbLibraryPath: null,
       unifiedLibraryFolder: false,
+      perFootprintFolder: false,
       fillPcbFootprint: true,
       ui: defaultUiSettings(),
     };
@@ -38,6 +39,7 @@ const readSettings = (): AppSettings => {
     ...parsed,
     allegroExecutablePath: parsed.allegroExecutablePath ?? null,
     unifiedLibraryFolder: parsed.unifiedLibraryFolder ?? false,
+    perFootprintFolder: parsed.perFootprintFolder ?? false,
     fillPcbFootprint: parsed.fillPcbFootprint ?? true,
     ui: { ...defaultUiSettings(), ...parsed.ui },
   };

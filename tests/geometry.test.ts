@@ -8,12 +8,15 @@ import type { NormalizedCircle, NormalizedPad, Point } from "../src/shared/schem
 
 // pin-1 角标可见性规则（用户反馈 2026-10-15："丝印方向的圆非常小不利于观看"，
 // 补充要求："源数据的方向圆点标识符需要限制最小"）。
-// 目标外径 = min( max(本体短边 × 5%, 下限), 1.5mm )，下限 = min(0.8mm, 本体短边 × 50%)；
+// 目标外径 = min( max(本体短边 × 5%, 下限), 1.5mm )，下限 = min(0.3mm, 本体短边 × 20%)；
 // 只放大不缩小；非实心盘（真正的丝印圆环）不动。
 //
 // 2026-10-28 补充：只有「丝印层 + 实心盘 + 位于本体轮廓之外」才算 1 脚角标。
 // 立创封装常在本体角点上再放一个装饰圆点，位置正好压在轮廓角，放大后就成了
 // "两个方向指示、其中一个又大又压在边框上"（C3210600 TFBGA-100）。
+//
+// 2026-10-28 二次修正：下限从 0.8mm 改成 0.3mm 且按本体等比（用户对照立创原封装
+// 反馈"这个圆过大"）。8mm 本体从 0.8mm 收到 0.41mm，与原图的 0.39mm 基本一致。
 const discAt = (outerDiameter: number, center: Point): NormalizedCircle => ({
   center,
   radius: outerDiameter / 4,
@@ -90,20 +93,21 @@ describe("pin-1 marker visibility", () => {
     expect(kept).toEqual(ring);
   });
 
-  it("enforces a 0.8mm floor on everyday parts", () => {
-    // 本体短边 7.5mm（5% = 0.375 < 下限 0.8）→ 取下限 0.8mm
-    const [enlarged] = enlargePin1Markers([outsideDisc(0.44, 7)], padsSpanning(7));
-    expect(outerDiameter(enlarged!)).toBeCloseTo(0.8, 6);
+  it("scales the marker with the body (5% of the short side)", () => {
+    // 本体短边 7.5mm（5% = 0.375 > 下限 0.3）→ 取 0.375mm
+    const [enlarged] = enlargePin1Markers([outsideDisc(0.1, 7)], padsSpanning(7));
+    expect(outerDiameter(enlarged!)).toBeCloseTo(0.375, 6);
   });
 
-  it("caps the floor at half of the body short side on tiny parts", () => {
-    // 焊盘跨度 0.3 + 焊盘 0.5 = 本体短边 0.8 → 下限 min(0.8, 0.4) = 0.4
-    const [enlarged] = enlargePin1Markers([outsideDisc(0.2, 0.3)], padsSpanning(0.3));
-    expect(outerDiameter(enlarged!)).toBeCloseTo(0.4, 6);
+  it("caps the floor at 20% of the body short side on tiny parts", () => {
+    // 焊盘跨度 0.3 + 焊盘 0.5 = 本体短边 0.8 → 下限 min(0.3, 0.16) = 0.16
+    // 源外径 0.1 < 0.16 → 放大到 0.16
+    const [enlarged] = enlargePin1Markers([outsideDisc(0.1, 0.3)], padsSpanning(0.3));
+    expect(outerDiameter(enlarged!)).toBeCloseTo(0.16, 6);
   });
 
   it("keeps small footprints (chip parts) at their source size", () => {
-    // 0603：本体短边 0.8mm，源外径 0.44 > 目标 0.4 → 原样保留
+    // 0603：本体短边 0.8mm，目标 0.16，源外径 0.44 > 0.16 → 原样保留
     const source = outsideDisc(0.44, 0.3);
     const [kept] = enlargePin1Markers([source], padsSpanning(0.3));
     expect(kept).toEqual(source);
@@ -135,22 +139,22 @@ describe("1 脚角标只认本体轮廓之外的那一个", () => {
 
   it("轮廓外的角标被放大", () => {
     const [enlarged] = enlargePin1Markers([pin1Dot], pads, body);
-    expect(outerDiameter(enlarged!)).toBeCloseTo(0.8, 6);
+    expect(outerDiameter(enlarged!)).toBeCloseTo(0.4076, 6);
     expect(enlarged!.center).toEqual(pin1Dot.center);
   });
 
   it("两个圆同时存在时只放大轮廓外的那个", () => {
     const [cornerResult, pinResult] = enlargePin1Markers([cornerDot, pin1Dot], pads, body);
     expect(cornerResult).toEqual(cornerDot);
-    expect(outerDiameter(pinResult!)).toBeCloseTo(0.8, 6);
+    expect(outerDiameter(pinResult!)).toBeCloseTo(0.4076, 6);
   });
 
   it("多个轮廓外候选时只放大最大的一个（避免出现两个指示）", () => {
     const small = discAt(0.2, { x: -5.2, y: 0 });
-    const large = discAt(0.5, { x: -6, y: 0 });
+    const large = discAt(0.3, { x: -6, y: 0 });
     const [smallResult, largeResult] = enlargePin1Markers([small, large], pads, body);
     expect(smallResult).toEqual(small);
-    expect(outerDiameter(largeResult!)).toBeCloseTo(0.8, 6);
+    expect(outerDiameter(largeResult!)).toBeCloseTo(0.4076, 6);
   });
 
   it("装配层的圆点（每个焊盘中心的小点）不参与放大", () => {

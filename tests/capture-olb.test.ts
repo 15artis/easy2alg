@@ -430,7 +430,13 @@ describe("输出可配置项", () => {
 
   it("单文件夹模式下 .olb 直接落在库目录，不再建 schlib", () => {
     expect(autoLibraryPath("D:/lib", "MyLib")).toBe("D:\\lib\\schlib\\MyLib.olb");
-    expect(autoLibraryPath("D:/lib", "MyLib", true)).toBe("D:\\lib\\MyLib.olb");
+    expect(autoLibraryPath("D:/lib", "MyLib", "unified")).toBe("D:\\lib\\MyLib.olb");
+  });
+
+  it("每封装独立文件夹：.olb 落在 <库>/<封装名>/<封装名>.olb", () => {
+    expect(autoLibraryPath("D:/lib", "QFN-32_L5.0-W5.0", "perFootprint")).toBe(
+      "D:\\lib\\QFN-32_L5.0-W5.0\\QFN-32_L5.0-W5.0.olb",
+    );
   });
 });
 

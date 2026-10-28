@@ -25,7 +25,7 @@ const RETRY_DELAYS_MS = [0, 450, 1_250] as const;
  * 修好 1 脚角标后预览里那个大色块还在，因为 `<id>.json` 是上一版算出来的。
  * 原始响应（`.raw.json`）不用跟着变，它只是接口返回的原文。
  */
-const FOOTPRINT_CACHE_VERSION = 2;
+const FOOTPRINT_CACHE_VERSION = 3;
 
 /** 搜索响应只取我们需要的字段，其余结构变化不让界面崩。 */
 const SearchResponseSchema = z.object({

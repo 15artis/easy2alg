@@ -199,6 +199,7 @@ const emptySettings: AppSettings = {
   allegroExecutablePath: null,
   olbLibraryPath: null,
   unifiedLibraryFolder: false,
+  perFootprintFolder: false,
   fillPcbFootprint: true,
   ui: defaultUiSettings(),
 };
@@ -3544,17 +3545,37 @@ const SettingsPage = ({
           <div className="setting-icon"><Layers3 size={21} /></div>
           <div className="setting-content">
             <label>输出结构与器件字段</label>
-            <p>默认把焊盘放进 padstacks、封装放进 symbols；勾选后全部放在库目录下。</p>
+            <p>默认把焊盘放进 padstacks、封装放进 symbols；也可全部放库目录，或每个封装单独一个文件夹。后两项互斥。</p>
             <label className="toggle-row">
               <input
                 type="checkbox"
                 checked={draft.unifiedLibraryFolder}
                 onChange={(event) =>
-                  setDraft({ ...draft, unifiedLibraryFolder: event.target.checked })
+                  // 与「每个封装独立文件夹」互斥：两者都开就说不清该放哪
+                  setDraft({
+                    ...draft,
+                    unifiedLibraryFolder: event.target.checked,
+                    perFootprintFolder: event.target.checked ? false : draft.perFootprintFolder,
+                  })
                 }
                 data-testid="setting-unified-folder"
               />
               <span>焊盘、封装、符号库都用同一个文件夹</span>
+            </label>
+            <label className="toggle-row">
+              <input
+                type="checkbox"
+                checked={draft.perFootprintFolder}
+                onChange={(event) =>
+                  setDraft({
+                    ...draft,
+                    perFootprintFolder: event.target.checked,
+                    unifiedLibraryFolder: event.target.checked ? false : draft.unifiedLibraryFolder,
+                  })
+                }
+                data-testid="setting-per-footprint-folder"
+              />
+              <span>每个封装使用独立文件夹（文件夹名以封装名为准）</span>
             </label>
             <label className="toggle-row">
               <input

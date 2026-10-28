@@ -18,6 +18,7 @@ import {
 import { captureLockState } from "./connectors/capture-lock";
 import { PendingOlbQueueSchema, PendingOlbWrites } from "./connectors/olb-pending";
 import { createConversionPlan } from "./conversion/validate";
+import { outputLayoutOf } from "./conversion/output-layout";
 import { createUpdaterController, type UpdaterController } from "./updater";
 import { configureLogging, writeLog } from "./logging";
 import { lastWindowCloseAction } from "./lifecycle";
@@ -62,6 +63,7 @@ const defaultSettings = (): AppSettings => ({
   allegroExecutablePath: null,
   olbLibraryPath: null,
   unifiedLibraryFolder: false,
+  perFootprintFolder: false,
   fillPcbFootprint: true,
   ui: defaultUiSettings(),
 });
@@ -286,7 +288,11 @@ const registerHandlers = (): void => {
     const name = z.string().min(1).parse(rawName);
     const result = await dialog.showSaveDialog({
       title: "新建 OrCAD Capture 符号库",
-      defaultPath: autoLibraryPath(settings.libraryDirectory, name),
+      defaultPath: autoLibraryPath(
+        settings.libraryDirectory,
+        name,
+        outputLayoutOf(settings),
+      ),
       filters: [{ name: "Capture 符号库", extensions: ["olb"] }],
     });
     return result.canceled || result.filePath === undefined ? null : result.filePath;
@@ -321,8 +327,11 @@ const registerHandlers = (): void => {
       request.libraryPath ??
       autoLibraryPath(
         settings.libraryDirectory,
-        request.libraryName,
-        settings.unifiedLibraryFolder,
+        // perFootprint 布局要求"文件夹名以封装名为准" → 用器件名而不是源库名
+        outputLayoutOf(settings) === "perFootprint"
+          ? request.symbol.name
+          : request.libraryName,
+        outputLayoutOf(settings),
       );
     const fillPcbFootprint = request.fillPcbFootprint ?? settings.fillPcbFootprint;
     const snapPins = request.snapPins ?? true;

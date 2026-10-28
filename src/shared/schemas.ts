@@ -96,6 +96,15 @@ export const AppSettingsSchema = z
      *  true  = 焊盘、封装（以及未指定 olbLibraryPath 时的 .olb）全部落在 libraryDirectory 下
      */
     unifiedLibraryFolder: z.boolean().optional(),
+    /**
+     * 每个封装用独立文件夹（用户 2026-10-28 要求）：`.dra/.psm/.pad/.ssm` 与
+     * 自动新建的 `.olb` 都落在 `<libraryDirectory>/<封装名>/` 下，文件夹名以
+     * 封装名（targetPackageName）为准。
+     *
+     * 与 unifiedLibraryFolder 互斥 —— 两者都勾等于没说清楚该放哪，这里让
+     * 独立文件夹优先（它的信息量更大），读取时把 unified 归零。
+     */
+    perFootprintFolder: z.boolean().optional(),
     /** 是否把 PCB 封装名写进 .olb 的 PCB Footprint 字段（用户 2026-10-19 要求可选） */
     fillPcbFootprint: z.boolean().optional(),
     ui: UiSettingsSchema,
@@ -104,7 +113,10 @@ export const AppSettingsSchema = z
     ...settings,
     allegroExecutablePath: settings.allegroExecutablePath ?? null,
     olbLibraryPath: settings.olbLibraryPath ?? null,
-    unifiedLibraryFolder: settings.unifiedLibraryFolder ?? false,
+    unifiedLibraryFolder: (settings.perFootprintFolder ?? false)
+      ? false
+      : (settings.unifiedLibraryFolder ?? false),
+    perFootprintFolder: settings.perFootprintFolder ?? false,
     fillPcbFootprint: settings.fillPcbFootprint ?? true,
     ui: {
       leftRailWidth: settings.ui?.leftRailWidth ?? LEFT_RAIL_DEFAULT_WIDTH,
