@@ -245,10 +245,75 @@ export class EasyEdaConnector {
     };
   }
 
-  /** 原始响应（含封装与符号两段），落盘缓存避免同一器件请求两次。 */
-  async #loadRaw(lcscId: string): Promise<unknown> {    const cachePath = join(this.#cacheDirectory, `${lcscId}.raw.json`);
+  /**
+   * components 接口报 404 时，区分「编号不存在」和「立创还没画封装」。
+   *
+   * 2026-10-28 实测：C55586821（HT7533 / SOT-89，R+O，有库存）在立创正常售卖，
+   * 但 EDA 里引脚、焊盘、3D 全部显示「暂未绘制…」，components 接口返回的却是
+   * `{"success":false,"code":404,"message":"Component not found"}` —— 与编号打错
+   * 的响应一模一样。只照这句话提示，用户会以为自己编号写错，实际是画不了。
+   * 所以回查一次商品搜索：查得到 = 器件在售但没画封装；查不到 = 编号确实不对。
+   */
+  async #describeMissingComponent(lcscId: string, serverMessage: string): Promise<string> {
+    const product = await this.#probeProduct(lcscId);
+    if (product === null) {
+      return `未找到元件 ${lcscId}：请核对立创编号是否正确（EasyEDA 返回「${serverMessage}」）`;
+    }
+    const label = [product.mpn, product.package].filter((part) => part.length > 0).join(" / ");
+    return `立创 EDA 尚未绘制 ${lcscId}${label.length > 0 ? `（${label}）` : ""} 的引脚与焊盘（立创页面显示「暂未绘制」），无法生成封装；请改用已绘制封装的型号`;
+  }
+
+  /** 商品库里查这个编号，只用于判断「器件存在但没画封装」。任何失败都退回 null。 */
+  async #probeProduct(lcscId: string): Promise<{ mpn: string; package: string } | null> {
     try {
-      return JSON.parse(await readFile(cachePath, "utf8")) as unknown;
+      const response = await fetch(
+        SEARCH_TEMPLATE.replace("{keyword}", encodeURIComponent(lcscId)),
+        {
+          headers: {
+            Accept: "application/json",
+            "Accept-Encoding": "gzip, deflate",
+            Referer: "https://easyeda.com/",
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/132.0 Easy2ALG/0.1",
+          },
+          signal: AbortSignal.timeout(10_000),
+        },
+      );
+      if (!response.ok) {
+        return null;
+      }
+      const parsed = SearchResponseSchema.safeParse(
+        JSON.parse(await response.text()) as unknown,
+      );
+      if (!parsed.success) {
+        return null;
+      }
+      const hit = parsed.data.result?.productList.find((item) => item.number === lcscId);
+      return hit === undefined ? null : { mpn: hit.mpn, package: hit.package };
+    } catch (error) {
+      await writeLog("warn", "easyeda_probe_failed", {
+        lcscId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  }
+
+  /** 原始响应（含封装与符号两段），落盘缓存避免同一器件请求两次。 */
+  async #loadRaw(lcscId: string): Promise<unknown> {
+    const cachePath = join(this.#cacheDirectory, `${lcscId}.raw.json`);
+    try {
+      const cached = JSON.parse(await readFile(cachePath, "utf8")) as unknown;
+      /**
+       * v0.2.2 及以前会把 `{success:false,code:404}` 这种失败响应也当成正常数据写进
+       * 缓存（当时没有失败判别），结果用户升级后重查同一个编号仍然读到那份坏缓存，
+       * 提示永远停在旧的「data validation failed」。这里读缓存时补一道校验：
+       * 不是有效响应就当缓存不存在，重新请求一次并覆盖它。
+       */
+      if (apiFailure(cached) === null) {
+        return cached;
+      }
+      await writeLog("warn", "easyeda_cache_invalid", { lcscId });
     } catch (error) {
       if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") {
         throw error;
@@ -341,7 +406,7 @@ export class EasyEdaConnector {
         throw new ExternalServiceError(
           failure.retryable
             ? `EasyEDA 服务暂时不可用（${lcscId}）：${failure.message}`
-            : `未找到元件 ${lcscId}：EasyEDA 返回「${failure.message}」，请核对立创编号是否正确、该器件是否已下架`,
+            : await this.#describeMissingComponent(lcscId, failure.message),
           {
             operation: "fetch_component",
             requestUrl,
@@ -373,17 +438,26 @@ export class EasyEdaConnector {
     }
   }
 
+  /**
+   * 归一化后的封装缓存。**解析失败一律当缓存未命中**，不能让一份坏缓存把器件
+   * 永久钉死在"读不出来"上（旧版本写过的缓存可能不符合当前 schema）。
+   */
   async #readCache(lcscId: string): Promise<NormalizedFootprint | null> {
     const cachePath = join(this.#cacheDirectory, `${lcscId}.json`);
+    let content: string;
     try {
-      const content = await readFile(cachePath, "utf8");
-      const parsed: unknown = JSON.parse(content);
-      return NormalizedFootprintSchema.parse(parsed);
+      content = await readFile(cachePath, "utf8");
     } catch (error) {
       if (error instanceof Error && "code" in error && error.code === "ENOENT") {
         return null;
       }
       throw error;
+    }
+    try {
+      return NormalizedFootprintSchema.parse(JSON.parse(content) as unknown);
+    } catch {
+      await writeLog("warn", "easyeda_footprint_cache_invalid", { lcscId });
+      return null;
     }
   }
 

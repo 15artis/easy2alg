@@ -207,9 +207,11 @@ const errorMessage = (error: unknown): string => {
   const raw = error instanceof Error ? error.message : String(error);
   // Electron 会把主进程异常包一层 "Error invoking remote method 'x': TypeError: ..."，
   // 原样显示给用户全是噪音，剥掉包装只留真正的原因。
+  // 自定义错误类（ExternalServiceError / AllegroExecutionError / FootprintValidationError …）
+  // 同样只是包装名，一并剥掉 —— 用户要看的是"为什么失败"，不是类名。
   return raw
     .replace(/^Error invoking remote method '[^']+':\s*/, "")
-    .replace(/^(?:Type|Range|Reference|Syntax)?Error:\s*/, "");
+    .replace(/^[A-Za-z]*Error:\s*/, "");
 };
 
 /**
