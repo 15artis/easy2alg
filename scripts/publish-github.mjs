@@ -121,20 +121,45 @@ const resolveToken = () => {
   if (fromEnv !== undefined && fromEnv.trim() !== "") {
     return fromEnv.trim();
   }
+  // 优先用 git 推代码时用的那份凭据：发布一定要连带着 git push，
+  // 两边用同一个 token 才不会出现「代码推上去了、Release 却 403」的半截状态。
+  // gh 放到最后 —— 它可能登着另一个（比如只读的）令牌，2026-10-29 就撞过。
+  const fromGitCredential = () => {
+    try {
+      const output = execFileSync("git", ["credential", "fill"], {
+        cwd: ROOT,
+        input: "protocol=https\nhost=github.com\n\n",
+        encoding: "utf8",
+        stdio: ["pipe", "pipe", "ignore"],
+        // 禁止凭据助手弹窗/等输入，否则没凭据时脚本会卡死在这里
+        env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" },
+      });
+      const match = /^password=(.+)$/m.exec(output);
+      return match !== null && match[1].trim() !== "" ? match[1].trim() : null;
+    } catch {
+      return null;
+    }
+  };
+  const gitToken = fromGitCredential();
+  if (gitToken !== null) {
+    return gitToken;
+  }
+
+  // GitHub CLI 登录过就直接用它 —— `gh auth login` 是最省事的修复方式，
+  // 用户登完不用再来配环境变量（2026-10-28 发布卡在 401 时加的）。
   try {
-    const output = execFileSync("git", ["credential", "fill"], {
-      cwd: ROOT,
-      input: "protocol=https\nhost=github.com\n\n",
+    const output = execFileSync("gh", ["auth", "token"], {
       encoding: "utf8",
-      stdio: ["pipe", "pipe", "ignore"],
+      stdio: ["ignore", "pipe", "ignore"],
     });
-    const match = /^password=(.+)$/m.exec(output);
-    if (match !== null) {
-      return match[1].trim();
+    const token = output.trim();
+    if (token.length > 0) {
+      return token;
     }
   } catch {
     // 落到下面的报错
   }
+
   throw new Error(
     "找不到 GitHub 凭据。请设置环境变量 GITHUB_TOKEN，或先执行一次 git push 让 git 记住账号。",
   );
@@ -152,6 +177,20 @@ const api = async (pathname, init = {}) => {
   });
   if (!response.ok) {
     const text = await response.text();
+    if (response.status === 401) {
+      // 401 = 凭据本身无效（多半是 git 里存的旧 token 被撤销/过期了）。
+      // 这里直接把两条修复路径写清楚，别再让用户对着 "Bad credentials" 猜。
+      throw new Error(
+        [
+          "GitHub 拒绝了凭据（401 Bad credentials）—— git 里存的 token 已失效。",
+          "修复二选一：",
+          "  1) 执行 gh auth login 重新登录（脚本会自动使用 gh 的 token）；",
+          "  2) 设置环境变量 GH_TOKEN=<新的 Personal Access Token> 后再跑。",
+          "注意 PAT 需要 repo（classic）或 Contents: Read and write（fine-grained）权限。",
+          `原始响应：${text.slice(0, 200)}`,
+        ].join("\n"),
+      );
+    }
     throw new Error(`GitHub API ${pathname} 失败：${response.status} ${text.slice(0, 400)}`);
   }
   return response.status === 204 ? null : response.json();
