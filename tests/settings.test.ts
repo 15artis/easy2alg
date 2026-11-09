@@ -130,6 +130,35 @@ describe("symbol property panel position", () => {
 });
 
 /**
+ * 用户 2026-11-09：生成目标的两个勾选框（PCB 封装 / 原理图元件）要记住上次的选择，
+ * 不再每次启动都复位成"两个都勾"。
+ */
+describe("generate targets", () => {
+  it("defaults to both targets for older config files", () => {
+    expect(AppSettingsSchema.parse(minimal).ui.generateTargets).toEqual({
+      pcb: true,
+      symbol: true,
+    });
+  });
+
+  it("round-trips a partial selection", () => {
+    const settings = AppSettingsSchema.parse({
+      ...minimal,
+      ui: { generateTargets: { pcb: false, symbol: true } },
+    });
+    expect(settings.ui.generateTargets).toEqual({ pcb: false, symbol: true });
+    const again = AppSettingsSchema.parse(JSON.parse(JSON.stringify(settings)));
+    expect(again.ui.generateTargets).toEqual({ pcb: false, symbol: true });
+  });
+
+  it("rejects a half-specified target object", () => {
+    expect(
+      AppSettingsSchema.safeParse({ ...minimal, ui: { generateTargets: { pcb: false } } }).success,
+    ).toBe(false);
+  });
+});
+
+/**
  * 用户 2026-10-28：封装命名默认用简称（与立创商城「封装」一致），设置里可切回全称。
  * 老配置没有这个字段 → 默认 "compact"。
  */

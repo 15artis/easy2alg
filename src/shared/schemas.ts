@@ -46,6 +46,14 @@ export const UiSettingsSchema = z
       .object({ x: z.number().finite(), y: z.number().finite() })
       .nullable()
       .optional(),
+    /**
+     * 生成目标的勾选状态（用户 2026-11-09 要求持久化）：
+     * 「PCB 封装」与「原理图元件」两个勾选框不再是每次启动都回到全勾，
+     * 而是记住上次的选择。两个都取消也允许（生成按钮会给出提示）。
+     */
+    generateTargets: z
+      .object({ pcb: z.boolean(), symbol: z.boolean() })
+      .optional(),
   })
   .optional();
 
@@ -69,6 +77,7 @@ export const defaultUiSettings = (): UiSettings & {
   symbolSnapGrid: 5 | 10;
   symbolGridVisible: boolean;
   symbolPropsPosition: { x: number; y: number } | null;
+  generateTargets: { pcb: boolean; symbol: boolean };
 } => ({
   leftRailWidth: LEFT_RAIL_DEFAULT_WIDTH,
   rightRailWidth: RIGHT_RAIL_DEFAULT_WIDTH,
@@ -79,6 +88,8 @@ export const defaultUiSettings = (): UiSettings & {
   symbolSnapGrid: 10,
   symbolGridVisible: true,
   symbolPropsPosition: null,
+  // 首次运行照旧两个都勾；之后按用户上次的选择（见 UiSettingsSchema.generateTargets）
+  generateTargets: { pcb: true, symbol: true },
 });
 
 export const AppSettingsSchema = z
@@ -141,6 +152,7 @@ export const AppSettingsSchema = z
       symbolSnapGrid: settings.ui?.symbolSnapGrid ?? 10,
       symbolGridVisible: settings.ui?.symbolGridVisible ?? true,
       symbolPropsPosition: settings.ui?.symbolPropsPosition ?? null,
+      generateTargets: settings.ui?.generateTargets ?? { pcb: true, symbol: true },
     },
   }));
 export type AppSettings = z.infer<typeof AppSettingsSchema>;

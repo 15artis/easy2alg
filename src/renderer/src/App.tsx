@@ -1012,10 +1012,9 @@ const ConverterPage = ({
   const [searchHits, setSearchHits] = useState<readonly ProductSearchHit[] | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
   // 生成哪些产物：PCB 封装（.dra/.psm/.pad）与原理图元件（.olb）各自独立开关。
-  const [targets, setTargets] = useState<{ pcb: boolean; symbol: boolean }>({
-    pcb: true,
-    symbol: true,
-  });
+  // 勾选状态存在 ui 设置里（用户 2026-11-09）：上次勾了什么，下次打开就还是什么，
+  // 不再每次都复位成"两个都勾"。默认值仍为全勾（见 defaultUiSettings）。
+  const targets = settings.ui.generateTargets;
   const [previewTab, setPreviewTab] = useState<"pcb" | "sch">("pcb");
   const [sectionIndex, setSectionIndex] = useState(0);
   /**
@@ -2999,7 +2998,9 @@ const ConverterPage = ({
                 <input
                   type="checkbox"
                   checked={targets.pcb}
-                  onChange={(event) => setTargets((current) => ({ ...current, pcb: event.target.checked }))}
+                  onChange={(event) =>
+                    onUiChange({ generateTargets: { ...targets, pcb: event.target.checked } })
+                  }
                   data-testid="target-pcb"
                 />
                 PCB 封装
@@ -3008,7 +3009,9 @@ const ConverterPage = ({
                 <input
                   type="checkbox"
                   checked={targets.symbol}
-                  onChange={(event) => setTargets((current) => ({ ...current, symbol: event.target.checked }))}
+                  onChange={(event) =>
+                    onUiChange({ generateTargets: { ...targets, symbol: event.target.checked } })
+                  }
                   data-testid="target-symbol"
                 />
                 原理图元件
