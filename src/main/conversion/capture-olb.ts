@@ -10,6 +10,7 @@ import {
   estimateCommentWidth,
   pinSideOf,
   symbolFontHeight,
+  symbolTextLines,
 } from "../../shared/symbol-labels";
 import { snapPinsToGrid } from "../../shared/symbol-layout";
 
@@ -145,41 +146,79 @@ const commentTextBox = (
   }
 };
 
-const commentTextCommands = (shape: Extract<NormalizedSymbolShape, { kind: "text" }>): string => {
+/**
+ * 多行注释文本的行起点（用户 2026-11-09）。
+ *
+ * Capture 的 CommentText 没有换行概念，一行就是一条独立文本对象；多行只能按行距
+ * 逐条错开摆。行距用 `round(height × 1.556)`，与 `TextFont` 的行高口径一致。
+ */
+const lineAnchor = (
+  at: { readonly x: number; readonly y: number },
+  step: number,
+  orientation: number,
+  index: number,
+): { readonly x: number; readonly y: number } => {
+  if (index === 0) {
+    return at;
+  }
+  switch (orientation) {
+    case 90:
+      return { x: at.x + step * index, y: at.y };
+    case 180:
+      return { x: at.x, y: at.y - step * index };
+    case 270:
+      return { x: at.x - step * index, y: at.y };
+    default:
+      return { x: at.x, y: at.y + step * index };
+  }
+};
+
+/** 一条注释文本 → 每行一个 `<CommentText>`（空行只占位、不产出空对象）。 */
+const commentTextCommands = (
+  shape: Extract<NormalizedSymbolShape, { kind: "text" }>,
+): readonly string[] => {
   const height = fontHeightFor(shape.height);
-  const width = estimateCommentWidth(shape.text, height);
   const boxHeight = Math.round(height * 1.556);
   const orientation = textOrientation(shape.rotation);
-  const box = commentTextBox(shape.at, width, boxHeight, orientation);
-  const lines = [
-    tag("Defn", {
-      locX: grid(Math.min(box.x1, box.x2)),
-      locY: grid(Math.min(box.y1, box.y2)),
-      name: shape.text,
-      textJustification: 0,
-      x1: grid(box.x1),
-      x2: grid(box.x2),
-      y1: grid(box.y1),
-      y2: grid(box.y2),
-    }),
-  ];
-  return [
-    "    <CommentText>",
-    ...lines,
-    "      <TextFont>",
-    tag("Defn", {
-      charset: 0,
-      escapement: textEscapement(shape.rotation),
-      height: -height,
-      italic: 0,
-      name: COMMENT_FONT_NAME,
-      orientation,
-      weight: 400,
-      width: COMMENT_FONT_WIDTH,
-    }),
-    "      </TextFont>",
-    "    </CommentText>",
-  ].join("\n");
+  return symbolTextLines(shape.text).flatMap((line, index) => {
+    if (line.length === 0) {
+      return [];
+    }
+    const at = lineAnchor(shape.at, boxHeight, orientation, index);
+    const width = estimateCommentWidth(line, height);
+    const box = commentTextBox(at, width, boxHeight, orientation);
+    const commands = [
+      tag("Defn", {
+        locX: grid(Math.min(box.x1, box.x2)),
+        locY: grid(Math.min(box.y1, box.y2)),
+        name: line,
+        textJustification: 0,
+        x1: grid(box.x1),
+        x2: grid(box.x2),
+        y1: grid(box.y1),
+        y2: grid(box.y2),
+      }),
+    ];
+    return [
+      [
+        "    <CommentText>",
+        ...commands,
+        "      <TextFont>",
+        tag("Defn", {
+          charset: 0,
+          escapement: textEscapement(shape.rotation),
+          height: -height,
+          italic: 0,
+          name: COMMENT_FONT_NAME,
+          orientation,
+          weight: 400,
+          width: COMMENT_FONT_WIDTH,
+        }),
+        "      </TextFont>",
+        "    </CommentText>",
+      ].join("\n"),
+    ];
+  });
 };
 
 const shapeCommands = (shape: NormalizedSymbolShape): readonly string[] => {
@@ -220,7 +259,7 @@ const shapeCommands = (shape: NormalizedSymbolShape): readonly string[] => {
     }
     return commands;
   }
-  return [commentTextCommands(shape)];
+  return commentTextCommands(shape);
 };
 
 const pinCommands = (pin: NormalizedSymbolPin, position: number): readonly string[] => [

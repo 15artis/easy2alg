@@ -32,10 +32,13 @@ import type { SelectionMode } from "./selection";
 import {
   bodyBoxOf,
   estimateLabelWidth,
+  estimateMultilineWidth,
   pinNameBox,
   pinNumberBox,
   pinSideOf,
   symbolFontHeight,
+  symbolTextLines,
+  SYMBOL_TEXT_LINE_STEP,
   type SymbolBox,
 } from "../../shared/symbol-labels";
 
@@ -165,10 +168,15 @@ const DRAG_SLOP_PX = 3;
  * 双击识别（用户 2026-10-22）。**不能依赖浏览器的 dblclick**：
  * 按下元素时我们调了 `setPointerCapture`，Chromium 会把随后的 click/dblclick
  * 重定向到捕捉元素，子节点（`<text>` 标签）上的 onDoubleClick 永远收不到。
- * 所以自己在 pointerdown 层按"同元素 + 400ms + 8px"判双击。
+ * 所以自己在 pointerdown 层按"同元素 + 时间窗 + 位移容差"判双击。
+ *
+ * 时间窗 600ms / 位移 16px（用户 2026-11-09 报"双击文本无法编辑了"）：
+ * 原来的 400ms / 8px 比 Windows 默认的双击速度（500ms）还紧 —— 手稍慢一点就判不上，
+ * 而这条路径是文本编辑唯一可靠的入口，于是双击彻底没反应。
+ * 位移同时放宽到 16px：符号缩到 30% 时一个汉字只有十几像素，8px 的手抖就等于整个字。
  */
-const DOUBLE_TAP_MS = 400;
-const DOUBLE_TAP_SLOP_PX = 8;
+const DOUBLE_TAP_MS = 600;
+const DOUBLE_TAP_SLOP_PX = 16;
 
 const resizeCursor = (edges: RectEdges): string => {
   const horizontal = edges.left || edges.right;
@@ -179,6 +187,44 @@ const resizeCursor = (edges: RectEdges): string => {
       : "nesw-resize";
   }
   return horizontal ? "ew-resize" : "ns-resize";
+};
+
+/**
+ * 把焦点放到行内编辑器上 —— 双击文本 / 引脚标签共用。
+ *
+ * **不能只 focus 一次**（用户 2026-11-09 报"双击文本无法编辑"）：双击是在
+ * pointerdown 层识别的，input 插入 DOM 之后浏览器才做这次按下的默认焦点处理，
+ * 目标 `<text>` 不可聚焦 → 焦点被丢给 body，同步的 focus() 随即被覆盖，
+ * 表现就是输入框画出来了、却一个字都打不进去。
+ *
+ * 三重保险：立即 focus → 下一拍 setTimeout（覆盖默认动作）→ 本次 pointerup
+ * （按下与抬起位置不同时，默认焦点处理会晚到 pointerup 之后）。
+ */
+const useInlineEditorFocus = (
+  open: boolean,
+  inputRef: RefObject<HTMLInputElement | HTMLTextAreaElement | null>,
+): void => {
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const input = inputRef.current;
+    if (input === null) {
+      return;
+    }
+    const focus = (): void => {
+      if (input.isConnected) {
+        input.focus();
+      }
+    };
+    focus();
+    const timer = window.setTimeout(focus, 0);
+    window.addEventListener("pointerup", focus, { once: true, capture: true });
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("pointerup", focus, true);
+    };
+  }, [open, inputRef]);
 };
 
 /**
@@ -243,7 +289,14 @@ const useElementDrag = (
   onResizeRect: (key: string, bounds: SymbolShapeBounds, dragged: RectEdges) => void,
   snap: SnapState,
   onMoveEnd?: (keys: readonly string[], delta: { readonly dx: number; readonly dy: number }) => void,
-  onDoubleTap?: (key: string, point: { readonly x: number; readonly y: number } | null) => void,
+  /**
+   * 双击（pointerdown 层识别）。返回 true = 已被消费（打开行内编辑器），
+   * false = 这个元素没有可编辑内容，按普通点击继续走选中/拖动。
+   */
+  onDoubleTap?: (
+    key: string,
+    point: { readonly x: number; readonly y: number } | null,
+  ) => boolean,
 ) => {
   const dragRef = useRef<DragState | null>(null);
   /** 松手回调（引脚换边重定向）走 ref：capture 监听只挂一次，不能因回调换引用重装。 */
@@ -296,14 +349,13 @@ const useElementDrag = (
       }
       // 按在元素上就是"移动元素"，别让 PanZoom 抢去框选
       event.stopPropagation();
-      // 修饰键只改选中态、不启动拖动（Ctrl=切换、Shift=追加；OrCAD 也是这个手感）
-      const mode: SelectionMode =
-        event.ctrlKey || event.metaKey ? "toggle" : event.shiftKey ? "add" : "replace";
-      if (mode !== "replace") {
-        onSelectKeys([key], mode);
-        return;
-      }
-      // 双击 = 就地改字（不动拖动状态）
+      /**
+       * 双击 = 就地改字（不动拖动状态）。
+       *
+       * **必须排在修饰键分支之前**（用户 2026-11-09 实测"只有 Ctrl/Shift + 双击能编辑"）：
+       * 原先 Ctrl/Shift 分支直接 return，双击识别根本走不到；那条路径上没设 pointer
+       * capture，浏览器原生的 dblclick 反而能落到子节点上 —— 于是只有带修饰键才改得动字。
+       */
       const now = Date.now();
       const previous = lastTapRef.current;
       const isDoubleTap =
@@ -315,7 +367,20 @@ const useElementDrag = (
         ? null
         : { key, time: now, x: event.clientX, y: event.clientY };
       if (isDoubleTap) {
-        onDoubleTapRef.current?.(key, worldPoint(event));
+        const handled = onDoubleTapRef.current?.(key, worldPoint(event)) ?? false;
+        if (handled) {
+          /* 阻止 pointerdown 的默认焦点处理：浏览器会把焦点交给 body（`<text>` 不可聚焦），
+           * 那一步紧跟在事件处理器之后执行，会把行内输入框刚拿到的焦点抢走 ——
+           * 用户看到输入框却一个字都打不进去（2026-11-09）。 */
+          event.preventDefault();
+          return;
+        }
+      }
+      // 修饰键只改选中态、不启动拖动（Ctrl=切换、Shift=追加；OrCAD 也是这个手感）
+      const mode: SelectionMode =
+        event.ctrlKey || event.metaKey ? "toggle" : event.shiftKey ? "add" : "replace";
+      if (mode !== "replace") {
+        onSelectKeys([key], mode);
         return;
       }
       // 已选中的元素 → 整组一起移动；没选中 → 只选它自己（替换选中态）
@@ -514,11 +579,11 @@ const SymbolPins = memo(
       keys: readonly string[],
       delta: { readonly dx: number; readonly dy: number },
     ) => void;
-    /** 双击（pointerdown 层识别）→ 就地改字 */
+    /** 双击（pointerdown 层识别）→ 就地改字；true = 已打开编辑器 */
     readonly onDoubleTap?: (
       key: string,
       point: { readonly x: number; readonly y: number } | null,
-    ) => void;
+    ) => boolean;
     /** 双击引脚名/脚号 → 就地改字（用户 2026-10-22） */
     readonly onEditPinLabel?: (
       pinIndex: number,
@@ -709,17 +774,17 @@ export const SymbolPreview = ({
    * 走 ref 包装保证引用稳定（SymbolPins 是 memo 的，每帧换回调会把引脚层打穿）。
    */
   const handleDoubleTapRef = useRef<
-    (key: string, point: { readonly x: number; readonly y: number } | null) => void
-  >(() => undefined);
+    (key: string, point: { readonly x: number; readonly y: number } | null) => boolean
+  >(() => false);
   handleDoubleTapRef.current = (key, point) => {
     const { index } = parseSymbolEditKey(key);
     if (isSymbolPinKey(key)) {
       if (onPinTextEdit === undefined) {
-        return;
+        return false;
       }
       const pin = section.pins[index];
       if (pin === undefined) {
-        return;
+        return false;
       }
       const body = bodyBoxOf(section);
       const centerOfBox = (box: { minX: number; minY: number; maxX: number; maxY: number }) => ({
@@ -735,16 +800,18 @@ export const SymbolPreview = ({
         kind = toNumber < toName ? "number" : "name";
       }
       setPinEdit({ pinIndex: index, kind, text: kind === "name" ? pin.name : pin.number });
-      return;
+      return true;
     }
     const shape = section.shapes[index];
     if (shape !== undefined && shape.kind === "text" && onTextEdit !== undefined && shape.hidden !== true) {
       setTextDraft(shape.text);
       setTextEditKey(key);
+      return true;
     }
+    return false;
   };
   const onDoubleTap = useCallback(
-    (key: string, point: { readonly x: number; readonly y: number } | null): void =>
+    (key: string, point: { readonly x: number; readonly y: number } | null): boolean =>
       handleDoubleTapRef.current(key, point),
     [],
   );
@@ -761,10 +828,10 @@ export const SymbolPreview = ({
     onDoubleTap,
   );
 
-  /** 双击文本的行内编辑（用户 2026-10-21）。foreignObject 里放 input，随世界坐标缩放。 */
+  /** 双击文本的行内编辑（用户 2026-10-21）。foreignObject 里放 textarea，随世界坐标缩放。 */
   const [textEditKey, setTextEditKey] = useState<string | null>(null);
   const [textDraft, setTextDraft] = useState("");
-  const textInputElement = useRef<HTMLInputElement | null>(null);
+  const textInputElement = useRef<HTMLTextAreaElement | null>(null);
   /** 双击引脚名/脚号的行内编辑（用户 2026-10-22） */
   const [pinEdit, setPinEdit] = useState<{
     readonly pinIndex: number;
@@ -775,16 +842,13 @@ export const SymbolPreview = ({
   const openPinEdit = useCallback((pinIndex: number, kind: "name" | "number", text: string): void => {
     setPinEdit({ pinIndex, kind, text });
   }, []);
-  useEffect(() => {
-    if (pinEdit !== null) {
-      pinInputElement.current?.focus();
-    }
-  }, [pinEdit]);
+  useInlineEditorFocus(pinEdit !== null, pinInputElement);
   useEffect(() => {
     if (!editing) {
       setPinEdit(null);
     }
   }, [editing]);
+  useInlineEditorFocus(textEditKey !== null, textInputElement);
   useEffect(() => {
     if (textEditKey === null) {
       return;
@@ -794,9 +858,7 @@ export const SymbolPreview = ({
     const shape = section.shapes[index];
     if (!editing || shape === undefined || shape.kind !== "text") {
       setTextEditKey(null);
-      return;
     }
-    textInputElement.current?.focus();
   }, [editing, section, textEditKey]);
 
   // 「添加文本」请求：打开对应形状的行内编辑器，草稿预填形状当前文本
@@ -824,7 +886,9 @@ export const SymbolPreview = ({
 
   const commitTextEdit = useCallback((): void => {
     if (textEditKey !== null && onTextEdit !== undefined) {
-      onTextEdit(textEditKey, textDraft.replace(/[\r\n]+/g, " "));
+      /* 换行原样保留（用户 2026-11-09）：只统一 CRLF、去掉末尾多余空行，
+       * 中间的空行是用户排版的一部分，不能折叠。 */
+      onTextEdit(textEditKey, textDraft.replace(/\r\n?/g, "\n").replace(/\n+$/, ""));
     }
     setTextEditKey(null);
   }, [onTextEdit, textDraft, textEditKey]);
@@ -942,8 +1006,14 @@ export const SymbolPreview = ({
          * 字号必须走 `symbolFontHeight` —— 写 .olb 时用的就是它，**预览按源字号画、
          * 写库按 0.75 折算**会让 Capture 里每条标注都比预览小一号（用户 2026-10-19 反馈）。 */
         const fontHeight = symbolFontHeight(shape.height);
-        const hitWidth = estimateLabelWidth(shape.text) * (fontHeight / PIN_FONT) * 1.35 + 12;
-        const hitHeight = fontHeight * 1.4 + 6;
+        /** 行距（用户 2026-11-09 支持换行）：与 `tspan` 的 dy、命中盒高度共用一份。 */
+        const lineStep = fontHeight * SYMBOL_TEXT_LINE_STEP;
+        const lines = symbolTextLines(shape.text);
+        const hitWidth = Math.max(
+          estimateMultilineWidth(shape.text) * (fontHeight / PIN_FONT) * 1.35 + 12,
+          24,
+        );
+        const hitHeight = fontHeight * 1.4 + 6 + lineStep * (lines.length - 1);
         const doubleClick =
           editing && onTextEdit !== undefined
             ? (event: ReactMouseEvent<SVGElement>): void => {
@@ -954,6 +1024,10 @@ export const SymbolPreview = ({
               }
             : undefined;
         if (textEditKey === key) {
+          /** 编辑器随草稿行数一起长高，不出现滚动条（SVG 里的滚动条会跟着缩放，很丑）。 */
+          const draftLines = symbolTextLines(textDraft);
+          const draftWidth =
+            estimateMultilineWidth(textDraft) * (fontHeight / PIN_FONT) * 1.35 + 24;
           return (
             <g key={key} transform={translate}>
               <g
@@ -966,38 +1040,55 @@ export const SymbolPreview = ({
                 <foreignObject
                   x={shape.at.x - 4}
                   y={shape.at.y - fontHeight}
-                  width={Math.max(hitWidth, 40)}
-                  height={hitHeight}
+                  width={Math.max(hitWidth, draftWidth, 80)}
+                  height={lineStep * draftLines.length + 8}
                   onPointerDown={(event) => event.stopPropagation()}
                   onDoubleClick={(event) => event.stopPropagation()}
                 >
                   <div style={{ display: "contents" }}>
-                    <input
+                    <textarea
                       ref={textInputElement}
                       value={textDraft}
+                      rows={draftLines.length}
                       onChange={(event) => setTextDraft(event.target.value)}
                       onBlur={commitTextEdit}
                       onKeyDown={(event) => {
-                        if (event.key === "Enter") {
+                        /**
+                         * **Enter = 换行**（用户 2026-11-09 要求"文本支持换行编辑"）。
+                         * 提交改成 Ctrl/⌘+Enter 或点到别处（失焦）；Esc 取消。
+                         */
+                        if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
                           event.preventDefault();
                           commitTextEdit();
                         } else if (event.key === "Escape") {
                           event.preventDefault();
                           setTextEditKey(null);
                         }
+                        // 别让全局快捷键（方向键挪元素、Delete 删元素）吃到输入
+                        event.stopPropagation();
                       }}
                       spellCheck={false}
+                      title="Enter 换行，Ctrl+Enter 确认，Esc 取消"
                       style={{
                         width: "100%",
                         height: "100%",
+                        boxSizing: "border-box",
                         fontSize: `${fontHeight}px`,
-                        lineHeight: 1,
-                        padding: "0 2px",
+                        // 行距按像素写死，和 SVG 里的 tspan 对齐
+                        lineHeight: `${lineStep}px`,
+                        padding: "2px 3px",
+                        margin: 0,
+                        resize: "none",
+                        overflow: "hidden",
+                        whiteSpace: "pre",
                         color: TEXT,
                         background: "white",
                         border: "1px solid #e0862c",
                         outline: "none",
                         fontFamily: "inherit",
+                        // .panzoom-svg 为了框选禁了文本选择，别让输入框继承（否则框里选不了字）
+                        userSelect: "text",
+                        WebkitUserSelect: "text",
                       }}
                       data-testid="text-editor"
                     />
@@ -1032,7 +1123,12 @@ export const SymbolPreview = ({
                 fontSize={fontHeight}
                 fill={active ? ACTIVE : TEXT}
               >
-                {shape.text}
+                {/* 多行：一行一个 tspan，dy 按行距递进（用户 2026-11-09） */}
+                {lines.map((line, lineIndex) => (
+                  <tspan key={lineIndex} x={shape.at.x} dy={lineIndex === 0 ? 0 : lineStep}>
+                    {line.length === 0 ? " " : line}
+                  </tspan>
+                ))}
               </text>
             </g>
           </g>
@@ -1118,6 +1214,8 @@ export const SymbolPreview = ({
                     border: "1px solid #e0862c",
                     outline: "none",
                     fontFamily: "inherit",
+                    userSelect: "text",
+                    WebkitUserSelect: "text",
                   }}
                   data-testid="pin-label-editor"
                 />

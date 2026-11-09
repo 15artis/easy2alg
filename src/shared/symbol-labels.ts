@@ -45,6 +45,27 @@ export const estimateLabelWidth = (text: string): number =>
   );
 
 /**
+ * 注释文本按行拆开（用户 2026-11-09 要求支持换行编辑）。
+ *
+ * 统一 CRLF/CR → LF；**空行保留**，行号要和用户看到的行号一致（写 OLB 时一行
+ * 一条 CommentText，空行就只是一条空文本）。
+ */
+export const symbolTextLines = (text: string): readonly string[] =>
+  text.replace(/\r\n?/g, "\n").split("\n");
+
+/** 多行文本里最长一行的宽度（单行时与 `estimateLabelWidth` 等价）。 */
+export const estimateMultilineWidth = (text: string): number =>
+  symbolTextLines(text).reduce((max, line) => Math.max(max, estimateLabelWidth(line)), 0);
+
+/**
+ * 注释文本的行距（倍数，乘字号）。
+ *
+ * 与写库用的行高 `round(height × 1.556)` 对不齐也没关系 —— 预览按字形密度取
+ * 1.25 更好看；真正影响对齐的是 `commentTextBox` 里的 1.556（Capture 的行距）。
+ */
+export const SYMBOL_TEXT_LINE_STEP = 1.25;
+
+/**
  * 源 `fontSize`（符号单位）→ Capture 的 CommentText 字号。
  *
  * **不再打折**（2026-10-19，用户第三次反馈"生成的尺寸和预览有差异"）：原先按 0.75
@@ -66,8 +87,11 @@ export const symbolFontHeight = (sourceHeight: number): number =>
  */
 const COMMENT_WIDTH_RATIO = 0.55;
 
-export const estimateCommentWidth = (text: string, height: number): number =>
-  Math.max(Math.round(text.length * height * COMMENT_WIDTH_RATIO), height);
+export const estimateCommentWidth = (text: string, height: number): number => {
+  // 多行文本按最长一行算宽度（用户 2026-11-09 起支持换行，不能把 \n 也算成字符）
+  const longest = symbolTextLines(text).reduce((max, line) => Math.max(max, line.length), 0);
+  return Math.max(Math.round(longest * height * COMMENT_WIDTH_RATIO), height);
+};
 
 export type SymbolBox = {
   readonly minX: number;
@@ -356,17 +380,24 @@ export const commentTextBox = (shape: {
   const height = symbolFontHeight(shape.height);
   const width = estimateCommentWidth(shape.text, height);
   const quarter = Math.round((shape.rotation ?? 0) / 90) % 4;
+  /**
+   * 多行文本沿"阅读方向的垂直方向"叠行（用户 2026-11-09）。Capture 里一行占
+   * `round(height × 1.556)`，与写入 OLB 时逐行下移的步长保持同一份口径。
+   */
+  const lineStep = Math.round(height * 1.556);
+  const lines = symbolTextLines(shape.text).length;
+  const depth = height + lineStep * (lines - 1);
   if (quarter === 1 || quarter === 3) {
     // 90°：文字自下而上，框向上铺；270°：自上而下，框向下铺
     return quarter === 1
-      ? { minX: shape.at.x, maxX: shape.at.x + height, minY: shape.at.y - width, maxY: shape.at.y }
-      : { minX: shape.at.x, maxX: shape.at.x + height, minY: shape.at.y, maxY: shape.at.y + width };
+      ? { minX: shape.at.x, maxX: shape.at.x + depth, minY: shape.at.y - width, maxY: shape.at.y }
+      : { minX: shape.at.x, maxX: shape.at.x + depth, minY: shape.at.y, maxY: shape.at.y + width };
   }
   return {
     minX: shape.at.x,
     minY: shape.at.y,
     maxX: shape.at.x + width,
-    maxY: shape.at.y + height,
+    maxY: shape.at.y + depth,
   };
 };
 
@@ -489,11 +520,15 @@ export const symbolElementBox = (
       }
       // 文字用**预览画出来的占位**（基线在 at.y，字形向上长），而不是写库模型的
       // commentTextBox（基线向下）—— 框选要跟着眼睛看到的走，两者差整整一个字高。
+      // 多行时按最长一行取宽、按行数往下加高（用户 2026-11-09）。
       return normalize({
         minX: shape.at.x,
         minY: shape.at.y - shape.height,
-        maxX: shape.at.x + estimateLabelWidth(shape.text) * (shape.height / 9) * 1.15,
-        maxY: shape.at.y + shape.height * 0.25,
+        maxX: shape.at.x + estimateMultilineWidth(shape.text) * (shape.height / 9) * 1.15,
+        maxY:
+          shape.at.y +
+          shape.height * 0.25 +
+          shape.height * SYMBOL_TEXT_LINE_STEP * (symbolTextLines(shape.text).length - 1),
       });
   }
 };

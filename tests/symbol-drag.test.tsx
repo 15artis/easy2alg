@@ -351,7 +351,7 @@ describe("symbol element dragging", () => {
 });
 
 describe("text double-click editing (user 2026-10-21)", () => {
-  it("双击文本进入行内编辑，Enter 提交新内容", () => {
+  it("双击文本进入行内编辑，Ctrl+Enter 提交新内容", () => {
     const onTextEdit = vi.fn();
     const view = render(
       <SymbolPreview
@@ -371,14 +371,83 @@ describe("text double-click editing (user 2026-10-21)", () => {
     expect(text.textContent).toBe("TXT");
     fireEvent.doubleClick(text);
 
-    const input = document.querySelector('[data-testid="text-editor"]') as HTMLInputElement;
+    const input = document.querySelector('[data-testid="text-editor"]') as HTMLTextAreaElement;
     expect(input).not.toBeNull();
     expect(input.value).toBe("TXT");
 
     fireEvent.change(input, { target: { value: "RENAME" } });
-    fireEvent.keyDown(input, { key: "Enter", bubbles: true });
+    // 用户 2026-11-09 起 Enter 是换行，提交改成 Ctrl+Enter
+    fireEvent.keyDown(input, { key: "Enter", ctrlKey: true, bubbles: true });
     expect(onTextEdit).toHaveBeenCalledWith("0:1", "RENAME");
     expect(document.querySelector('[data-testid="text-editor"]')).toBeNull();
+  });
+
+  /**
+   * 用户 2026-11-09 要求"文本支持换行编辑"：Enter 只换行、不提交，
+   * 提交后换行必须原样进编辑记录（写库时一行一条 CommentText）。
+   */
+  it("Enter 换行不提交，Ctrl+Enter 提交后换行原样保留", () => {
+    const onTextEdit = vi.fn();
+    const view = render(
+      <SymbolPreview
+        symbol={symbol}
+        sectionIndex={0}
+        scale={1}
+        edits={{}}
+        editing
+        selectedKeys={new Set<string>()}
+        onSelectKeys={() => {}}
+        onMoveElements={() => {}}
+        onResizeRect={() => {}}
+        onTextEdit={onTextEdit}
+      />,
+    );
+    fireEvent.doubleClick(view.container.querySelector("text")!);
+    const editor = document.querySelector('[data-testid="text-editor"]') as HTMLTextAreaElement;
+    expect(editor.tagName).toBe("TEXTAREA");
+
+    fireEvent.change(editor, { target: { value: "LINE1\nLINE2" } });
+    fireEvent.keyDown(editor, { key: "Enter", bubbles: true });
+    // Enter 只换行：编辑器还在，也没提交
+    expect(document.querySelector('[data-testid="text-editor"]')).not.toBeNull();
+    expect(onTextEdit).not.toHaveBeenCalled();
+
+    fireEvent.change(editor, { target: { value: "LINE1\nLINE2\n" } });
+    fireEvent.keyDown(editor, { key: "Enter", ctrlKey: true, bubbles: true });
+    // 末尾多敲的换行被去掉，中间换行保留
+    expect(onTextEdit).toHaveBeenCalledWith("0:1", "LINE1\nLINE2");
+  });
+
+  it("多行文本按行渲染（每行一个 tspan）", () => {
+    const multiline: NormalizedSymbol = {
+      ...symbol,
+      sections: [
+        {
+          ...symbol.sections[0],
+          shapes: symbol.sections[0].shapes.map((shape) =>
+            shape.kind === "text" ? { ...shape, text: "AA\nB" } : shape,
+          ),
+        },
+      ],
+    };
+    const view = render(
+      <SymbolPreview
+        symbol={multiline}
+        sectionIndex={0}
+        scale={1}
+        edits={{}}
+        editing
+        selectedKeys={new Set<string>()}
+        onSelectKeys={() => {}}
+        onMoveElements={() => {}}
+        onResizeRect={() => {}}
+      />,
+    );
+    const tspans = [...view.container.querySelectorAll("text tspan")];
+    expect(tspans.map((node) => node.textContent)).toEqual(["AA", "B"]);
+    // 第一行 dy=0，第二行按行距下移
+    expect(tspans[0].getAttribute("dy")).toBe("0");
+    expect(Number(tspans[1].getAttribute("dy"))).toBeGreaterThan(0);
   });
 
   it("Escape 取消编辑，不提交", () => {
@@ -444,13 +513,18 @@ describe("pin label double-click editing (user 2026-10-22)", () => {
  * click/dblclick 重定向到捕捉元素。改成 pointerdown 层判"同元素 + 400ms + 8px"。
  */
 describe("double tap on pointerdown (user 2026-10-22)", () => {
-  const tapTwice = (element: Element, x: number, y: number): void => {
+  const tapTwice = (
+    element: Element,
+    x: number,
+    y: number,
+    mods: { readonly ctrlKey?: boolean; readonly shiftKey?: boolean } = {},
+  ): void => {
     // 原生 dispatchEvent 不经过 act：状态更新不会同步 flush，查 DOM 会拿到旧树
     act(() => {
-      firePointer(element, "pointerdown", { x, y, buttons: 1 });
-      firePointer(element, "pointerup", { x, y, buttons: 0 });
-      firePointer(element, "pointerdown", { x, y, buttons: 1 });
-      firePointer(element, "pointerup", { x, y, buttons: 0 });
+      firePointer(element, "pointerdown", { x, y, buttons: 1, ...mods });
+      firePointer(element, "pointerup", { x, y, buttons: 0, ...mods });
+      firePointer(element, "pointerdown", { x, y, buttons: 1, ...mods });
+      firePointer(element, "pointerup", { x, y, buttons: 0, ...mods });
     });
   };
 
@@ -498,5 +572,102 @@ describe("double tap on pointerdown (user 2026-10-22)", () => {
     const input = document.querySelector('[data-testid="text-editor"]') as HTMLInputElement;
     expect(input).not.toBeNull();
     expect(input.value).toBe("TXT");
+  });
+
+  /**
+   * 用户 2026-11-09 报"双击文本无法编辑了"：原阈值 400ms / 8px 比 Windows 默认的
+   * 双击速度（500ms）还紧，手稍慢或抖一点都不算双击。放宽到 600ms / 16px 后
+   * 这两种输入都必须命中。
+   */
+  it("间隔 500ms 的两次点击仍算双击（Windows 默认双击速度）", () => {
+    const realNow = Date.now;
+    let clock = 1_000_000;
+    Date.now = () => clock;
+    try {
+      const { container } = render(
+        <SymbolPreview
+          symbol={symbol}
+          sectionIndex={0}
+          scale={1}
+          edits={{}}
+          editing
+          selectedKeys={new Set<string>()}
+          onSelectKeys={() => {}}
+          onMoveElements={() => {}}
+          onResizeRect={() => {}}
+          onTextEdit={() => {}}
+        />,
+      );
+      const textLabel = [...container.querySelectorAll("text")].find(
+        (node) => node.textContent === "TXT",
+      )!;
+      act(() => {
+        firePointer(textLabel, "pointerdown", { x: 120, y: 120, buttons: 1 });
+        firePointer(textLabel, "pointerup", { x: 120, y: 120, buttons: 0 });
+        clock += 500;
+        firePointer(textLabel, "pointerdown", { x: 120, y: 120, buttons: 1 });
+        firePointer(textLabel, "pointerup", { x: 120, y: 120, buttons: 0 });
+      });
+      expect(document.querySelector('[data-testid="text-editor"]')).not.toBeNull();
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  it("第二下偏离 12px 仍算双击（缩小时手抖）", () => {
+    const { container } = render(
+      <SymbolPreview
+        symbol={symbol}
+        sectionIndex={0}
+        scale={1}
+        edits={{}}
+        editing
+        selectedKeys={new Set<string>()}
+        onSelectKeys={() => {}}
+        onMoveElements={() => {}}
+        onResizeRect={() => {}}
+        onTextEdit={() => {}}
+      />,
+    );
+    const textLabel = [...container.querySelectorAll("text")].find(
+      (node) => node.textContent === "TXT",
+    )!;
+    act(() => {
+      firePointer(textLabel, "pointerdown", { x: 120, y: 120, buttons: 1 });
+      firePointer(textLabel, "pointerup", { x: 120, y: 120, buttons: 0 });
+      firePointer(textLabel, "pointerdown", { x: 129, y: 128, buttons: 1 });
+      firePointer(textLabel, "pointerup", { x: 129, y: 128, buttons: 0 });
+    });
+    expect(document.querySelector('[data-testid="text-editor"]')).not.toBeNull();
+  });
+
+  /**
+   * 用户 2026-11-09 反馈：装出来的旧版本"只有 Ctrl / Shift + 双击能编辑"。
+   * 根因是修饰键分支在双击识别之前就 return 了 —— 那条路径没设 pointer capture，
+   * 浏览器原生 dblclick 反而能落到子节点上。现在两条路都必须能改字。
+   */
+  it.each([
+    ["Ctrl", { ctrlKey: true }],
+    ["Shift", { shiftKey: true }],
+  ])("%s + 双击同样进入编辑", (_name, mods) => {
+    const { container } = render(
+      <SymbolPreview
+        symbol={symbol}
+        sectionIndex={0}
+        scale={1}
+        edits={{}}
+        editing
+        selectedKeys={new Set<string>()}
+        onSelectKeys={() => {}}
+        onMoveElements={() => {}}
+        onResizeRect={() => {}}
+        onTextEdit={() => {}}
+      />,
+    );
+    const textLabel = [...container.querySelectorAll("text")].find(
+      (node) => node.textContent === "TXT",
+    )!;
+    tapTwice(textLabel, 120, 120, mods);
+    expect(document.querySelector('[data-testid="text-editor"]')).not.toBeNull();
   });
 });

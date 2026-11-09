@@ -4,7 +4,13 @@ import { Elibz2Connector } from "../src/main/connectors/elibz2-connector";
 import { autoLibraryPath, inspectLibraryPart } from "../src/main/connectors/capture-writer";
 import { buildCaptureLibraryXml } from "../src/main/conversion/capture-olb";
 import { applySymbolEdits, setTextHidden, symbolShapeKey } from "../src/shared/symbol-edit";
-import { bodyBoxOf, estimateLabelWidth, pinIsVertical, pinSideOf } from "../src/shared/symbol-labels";
+import {
+  bodyBoxOf,
+  estimateLabelWidth,
+  pinIsVertical,
+  pinSideOf,
+  symbolFontHeight,
+} from "../src/shared/symbol-labels";
 import type { NormalizedSymbol } from "../src/shared/schemas";
 
 const fixturePath = fileURLToPath(new URL("./fixtures/pex8748.elibz2", import.meta.url));
@@ -273,6 +279,38 @@ describe("capture library XML", () => {
     const horizontal = buildCaptureLibraryXml(symbol, "C:/libs/target.OLB");
     const flat = /<CommentText>\s*<Defn locX="(-?\d+)" locY="(-?\d+)"[^>]*x1="(-?\d+)" x2="(-?\d+)" y1="(-?\d+)" y2="(-?\d+)" \/>/.exec(horizontal)!;
     expect(Number(flat[4]) - Number(flat[3])).toBeGreaterThan(Number(flat[6]) - Number(flat[5]));
+  });
+
+  /**
+   * 用户 2026-11-09 要求"文本支持换行"：Capture 的 CommentText 没有换行概念，
+   * 一行必须是一条独立文本对象 —— 写库时按行拆开、按行距逐条往下错开。
+   */
+  it("多行注释文本拆成多条 CommentText，行距 = 字高 × 1.556", () => {
+    const symbol = singleSection();
+    const section = symbol.sections[0];
+    const multiline: NormalizedSymbol = {
+      ...symbol,
+      sections: [
+        {
+          ...section,
+          shapes: section.shapes.map((shape) =>
+            shape.kind === "text" ? { ...shape, text: "AA\nBB" } : shape,
+          ),
+        },
+      ],
+    };
+    const xml = buildCaptureLibraryXml(multiline, "C:/libs/target.OLB");
+    expect(xml.match(/<CommentText>/g)).toHaveLength(2);
+    expect(xml).toContain('name="AA"');
+    expect(xml).toContain('name="BB"');
+
+    const boxes = [...xml.matchAll(/<CommentText>\s*<Defn locX="(-?\d+)" locY="(-?\d+)"/g)].map(
+      (match) => ({ x: Number(match[1]), y: Number(match[2]) }),
+    );
+    expect(boxes).toHaveLength(2);
+    const step = Math.round(symbolFontHeight(12) * 1.556);
+    expect(boxes[1].y - boxes[0].y).toBe(step);
+    expect(boxes[1].x).toBe(boxes[0].x);
   });
 
   it("keeps every attribute value XML-escaped", () => {
