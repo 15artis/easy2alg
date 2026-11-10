@@ -16,7 +16,7 @@ import {
   DEFAULT_SYMBOL_TEXT_HEIGHT,
   sectionLabelsCollide,
 } from "../../shared/symbol-labels";
-import { alignPinsToGrid } from "../../shared/symbol-layout";
+import { alignPinsToGrid, alignPinEndsToGrid } from "../../shared/symbol-layout";
 import { dedupePinNames } from "../../shared/symbol-normalize";
 import { transformSymbolPrimitive } from "../../shared/symbol-edit";
 import { cleanSymbolName, refdesPrefixFrom, sanitizeSymbolName } from "./naming";
@@ -405,7 +405,16 @@ const parseShapes = (shape: readonly string[]): ParsedSymbolShapes => {
           min: { x, y },
           max: { x: x + width, y: y + height },
           cornerRadius: Math.max(numberOr(fields[3], 0), 0),
-          filled: (fields[9] ?? "none") !== "none",
+          /**
+           * `R~x~y~rx~ry~w~h~stroke~strokeWidth~fillFlag~fillColor~id~locked`
+           * —— 填充是**第 9 个字段的开关**（0/1），第 10 个才是颜色。
+           *
+           * 这里原先写的是 `(fields[9] ?? "none") !== "none"`，而该字段永远是 "0"/"1"，
+           * 于是**所有本体都被当成实心**：预览给矩形铺了一层不透明底色，把它前面画好的
+           * 圆、短线全盖住了（用户 2026-11-10 的 SMA-KWE：本体中间的圆和水平线不见了，
+           * 看着像解析漏了）。本机缓存 54 个器件、48 个 R 全是 fillFlag=0（空心）。
+           */
+          filled: (fields[9] ?? "0") === "1",
         });
         break;
       }
@@ -681,27 +690,30 @@ const buildSection = (part: ParsedPart, name: string): NormalizedSymbolSection =
       return { ...shape, at: movePoint(shape.at) };
     };
 
-    // ① 引脚名去重（Cadence 不接受重复引脚文本）→ ② 引脚标签避让。
+    // ① 引脚名去重（Cadence 不接受重复引脚文本）→ ② 引脚标签避让
+    // ③ 引脚两端落到 10 单位格点（Capture 的硬约定，最后做，确保标签锚点算在最终几何上）。
     // 顺序不能反：避让按引脚名的字宽算竖带深度，必须用**最终名字**（GND_18 比 GND 宽）。
     // 都在解析阶段做，预览与写库看到的是同一份结果。
     return attachPinLabelAnchors(
-      avoidLabelOverlapInSection(
-        alignPinsToGrid(
-          dedupePinNames({
-            name,
-            bounds: {
-              minX: (bounds.minX + dx) * scale,
-              minY: (bounds.minY + dy) * scale,
-              maxX: (bounds.maxX + dx) * scale,
-              maxY: (bounds.maxY + dy) * scale,
-            },
-            pins: pins.map((pin) => ({
-              ...pin,
-              connection: movePoint(pin.connection),
-              body: movePoint(pin.body),
-            })),
-            shapes: shapes.map(moveShape),
-          }),
+      alignPinEndsToGrid(
+        avoidLabelOverlapInSection(
+          alignPinsToGrid(
+            dedupePinNames({
+              name,
+              bounds: {
+                minX: (bounds.minX + dx) * scale,
+                minY: (bounds.minY + dy) * scale,
+                maxX: (bounds.maxX + dx) * scale,
+                maxY: (bounds.maxY + dy) * scale,
+              },
+              pins: pins.map((pin) => ({
+                ...pin,
+                connection: movePoint(pin.connection),
+                body: movePoint(pin.body),
+              })),
+              shapes: shapes.map(moveShape),
+            }),
+          ),
         ),
       ),
     );

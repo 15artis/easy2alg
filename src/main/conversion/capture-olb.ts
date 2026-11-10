@@ -14,7 +14,7 @@ import {
   symbolFontHeight,
   symbolTextLines,
 } from "../../shared/symbol-labels";
-import { snapPinsToGrid } from "../../shared/symbol-layout";
+import { alignPinEndsToGrid, snapPinsToGrid } from "../../shared/symbol-layout";
 
 /**
  * OrCAD Capture 库 XML（.olb 交换格式）生成器。
@@ -519,8 +519,12 @@ export const buildCaptureLibraryXml = (
   // 写库出口统一吸附：解析阶段已对齐过一次，但用户可能在预览里手动拖过元素
   // （offset 是任意小数）。不吸附的话生成出来的引脚在 Capture 里接不上线。
   // 用户 2026-10-20 定：**跟随界面吸附开关** —— 关掉后按实际坐标写（仍取整）。
+  // 先按格点规整引脚长度与本体端，再由 snapPinsToGrid 兜底把连接端钉在格点上
+  // （用户在预览里拖动后坐标是小数，最后一步必须落在写库出口）。
   const sections =
-    options.snapPins === false ? symbol.sections : symbol.sections.map(snapPinsToGrid);
+    options.snapPins === false
+      ? symbol.sections
+      : symbol.sections.map((section) => snapPinsToGrid(alignPinEndsToGrid(section)));
   const multiSection = sections.length > 1;
   const now = Math.floor(Date.now() / 1000);
   const lines: string[] = [

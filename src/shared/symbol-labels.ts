@@ -17,6 +17,9 @@ import {
  *  1. **引脚名在**本体**内侧**、沿引脚方向排：左右引脚横排，上下引脚竖排。
  *     名字首端离本体边缘约 5 单位（`SYMBOL_LABEL_OFFSET`）。
  *  2. **引脚号在本体外侧**、紧贴本体边缘，同样沿引脚方向排。
+ *  3. 两者都**以引脚轴线为中线**：名字压在线上（实测 OrCAD 字心与轴线差 0.5 单位），
+ *     脚号让到轴线一侧 4 单位（`SYMBOL_LABEL_AXIS_GAP`）。SVG 的字形从基线单向长，
+ *     所以「居中」要把基线整体挪半个字高 —— 详见 `pinLabelAxisShift`。
  *  3. 字宽实测 ≈ 4.9 单位/字符（height=-9 的 Arial），下行取 5；
  *     窄字符（i/l/1/./:）约 2。字高约 7~8 单位，故文字半宽取 4。
  *
@@ -284,22 +287,54 @@ export const pinNumberBox = (pin: NormalizedSymbolPin, body: SymbolBox): SymbolB
 export const SYMBOL_PIN_FONT = 9;
 
 /**
- * 这个标签要不要画。
+ * 引脚名**基线**与引脚轴线的距离 —— 把字形摆回轴线正中。
  *
- * EasyEDA 的符号里 name 与 number 常常就是同一个值（DSUB、排针、端子几乎都是
- * "1~9" 对 "1~9"）。Capture 会把 name 画在本体内侧、number 画在引脚上方，
- * 于是每个脚看上去写了两遍同样的数字，本体窄的时候内侧的 name 还会撞上隔壁
- * 引脚（DMR-9S 的 MH1 压在 7 上）。
+ * SVG 的 `<text>` 是从基线往**上**（旋转后往左）长字形；基线压在引脚轴上，整个字
+ * 就挂到轴的一侧去了。用户 2026-11-10 报「引脚没有出现在三角形中间位置和出现空白」：
+ * 二极管符号里那颗 "1" 整个跑到三角形左边缘外，三角形中间空着。
  *
- * 约定：两者相同时只留 **name**。理由是从 OLB 侧倒推出来的 ——
- * `SymbolPinScalar` 只有一个 `name` 字符串，没有独立脚号字段；name 写空会被
- * Capture 换成 `$PIN0`。真正能逐脚关掉的只有 `IsNumberVisible`。
+ * 实测 OrCAD（同一颗 C3699281，3.53 px/单位）：三角中轴 x=104，名字 bbox 94..113、
+ * 字心 103.5 —— Capture 是**压着轴线居中**画的。半个字高（≈3，字高 9）正好补回来。
  */
-export const pinLabelVisible = (pin: NormalizedSymbolPin, kind: PinLabelKind): boolean => {
-  if (pin.name.trim() === "") {
-    return kind === "number";
-  }
-  return kind === "name" || pin.name.trim() !== pin.number.trim();
+export const SYMBOL_LABEL_AXIS_CENTER = 3;
+
+/**
+ * 引脚号离轴线的间隙：Capture 把脚号贴在轴线**一侧**（竖排脚在左侧、横排脚在上方），
+ * 实测字形离轴线约 4 单位（同样来自 2026-11-10 的 OrCAD 截图：脚号 bbox x70..90，
+ * 引脚线 x=100）。
+ */
+export const SYMBOL_LABEL_AXIS_GAP = 4;
+
+/**
+ * 这个标签要不要画 —— **以 Capture 实际画出来的为准**。
+ *
+ * 两份文字来自两个不同字段，各画各的：`name` 画在本体内侧（沿引脚方向往本体里长），
+ * `number` 画在本体外侧（贴着引脚）。名字和脚号在源数据里常常就是同一个值
+ * （DSUB、排针、端子几乎都是 "1~9" 对 "1~9"），于是 Capture 里一个脚上会出现
+ * **两遍同样的字** —— 用户 2026-11-10 拿 OrCAD 截图对照预览，指出的就是这个。
+ *
+ * 曾经为了"看着干净"约定成两者相同时只留 name，并顺手把 OLB 的
+ * `IsNumberVisible` 置 0。实测那个开关在用户的 Capture 里不生效（0.2.13 起的遗留项），
+ * 结果只有预览少画一条，实机照旧两份 —— 预览反而变成了假的。
+ *
+ * 现在按**所见即所得**走：文本非空就画。name 为空时只画 number（name 写空会被
+ * Capture 换成 `$PIN0`，那种脚只能靠 number 标识）。
+ */
+export const pinLabelVisible = (pin: NormalizedSymbolPin, kind: PinLabelKind): boolean =>
+  (kind === "name" ? pin.name : pin.number).trim() !== "";
+
+/**
+ * 引脚文字基线相对轴线的偏移：name 以轴线为中线，number 贴在轴线一侧。
+ *
+ * 竖排（上下引脚）时字形往基线**左侧**长，所以居中要把基线右移；横排时字形往基线
+ * **上方**长，基线要下移。脚号反过来 —— 往轴线外侧再让开 `SYMBOL_LABEL_AXIS_GAP`。
+ */
+const pinLabelAxisShift = (
+  pin: NormalizedSymbolPin,
+  kind: PinLabelKind,
+): { readonly dx: number; readonly dy: number } => {
+  const amount = kind === "name" ? SYMBOL_LABEL_AXIS_CENTER : -SYMBOL_LABEL_AXIS_GAP;
+  return pinIsVertical(pin) ? { dx: amount, dy: 0 } : { dx: 0, dy: amount };
 };
 
 /**
@@ -307,7 +342,7 @@ export const pinLabelVisible = (pin: NormalizedSymbolPin, kind: PinLabelKind): b
  *
  * 与 `SymbolPreview` 里的 `placeLabel` 完全一致（原来各写一份，加独立标签后
  * 命中盒必须跟着锚点走，否则挪过的标签点不到）。
- * 上下引脚竖排（rotate -90、从锚点向上长）。
+ * 上下引脚竖排（rotate -90、从锚点向上长），并且名字压着引脚轴线居中。
  */
 export const pinLabelPlacement = (
   pin: NormalizedSymbolPin,
@@ -316,14 +351,31 @@ export const pinLabelPlacement = (
 ): { readonly x: number; readonly y: number; readonly rotate: number; readonly anchor: "start" | "end" } => {
   const anchor = pin.labelAnchor?.[kind];
   const box = kind === "name" ? pinNameBox(pin, body) : pinNumberBox(pin, body);
-  switch (pinSideOf(pin)) {
-    case "left":
-      return { x: anchor?.x ?? box.minX, y: anchor?.y ?? pin.body.y, rotate: 0, anchor: "start" };
-    case "right":
-      return { x: anchor?.x ?? box.maxX, y: anchor?.y ?? pin.body.y, rotate: 0, anchor: "end" };
-    default:
-      return { x: anchor?.x ?? pin.body.x, y: anchor?.y ?? box.maxY, rotate: -90, anchor: "start" };
-  }
+  const shift = pinLabelAxisShift(pin, kind);
+  const side = pinSideOf(pin);
+  const fallback = ((): {
+    readonly x: number;
+    readonly y: number;
+    readonly rotate: number;
+    readonly anchor: "start" | "end";
+  } => {
+    if (side === "top" || side === "bottom") {
+      return { x: pin.body.x + shift.dx, y: box.maxY, rotate: -90, anchor: "start" };
+    }
+    /**
+     * 横排：名字在本体内侧、从本体边往里长；脚号在本体外侧、从本体边往外长。
+     * 两者的书写方向相反，锚点不能按引脚统一 —— 否则脚号会朝本体里长、压在图形上
+     * （以前脚号一直没画出来，这个反向错误没暴露）。
+     */
+    const endAnchored = side === "left" ? kind === "number" : kind === "name";
+    return {
+      x: endAnchored ? box.maxX : box.minX,
+      y: pin.body.y + shift.dy,
+      rotate: 0,
+      anchor: endAnchored ? "end" : "start",
+    };
+  })();
+  return anchor === undefined ? fallback : { ...fallback, x: anchor.x, y: anchor.y };
 };
 
 /**
@@ -395,21 +447,23 @@ export type PinLabelAnchor = {
 export const pinLabelAnchors = (pin: NormalizedSymbolPin, body: SymbolBox): PinLabelAnchor => {
   const nameBox = pinNameBox(pin, body);
   const numberBox = pinNumberBox(pin, body);
+  const nameShift = pinLabelAxisShift(pin, "name");
+  const numberShift = pinLabelAxisShift(pin, "number");
   switch (pinSideOf(pin)) {
     case "left":
       return {
-        name: { x: nameBox.minX, y: pin.body.y },
-        number: { x: numberBox.maxX, y: pin.body.y },
+        name: { x: nameBox.minX, y: pin.body.y + nameShift.dy },
+        number: { x: numberBox.maxX, y: pin.body.y + numberShift.dy },
       };
     case "right":
       return {
-        name: { x: nameBox.maxX, y: pin.body.y },
-        number: { x: numberBox.minX, y: pin.body.y },
+        name: { x: nameBox.maxX, y: pin.body.y + nameShift.dy },
+        number: { x: numberBox.minX, y: pin.body.y + numberShift.dy },
       };
     default:
       return {
-        name: { x: pin.body.x, y: nameBox.maxY },
-        number: { x: pin.body.x, y: numberBox.maxY },
+        name: { x: pin.body.x + nameShift.dx, y: nameBox.maxY },
+        number: { x: pin.body.x + numberShift.dx, y: numberBox.maxY },
       };
   }
 };

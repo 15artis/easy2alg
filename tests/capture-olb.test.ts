@@ -127,10 +127,12 @@ describe("capture library XML", () => {
 
   it("writes pin geometry as hotpt=connection and start=body with the Capture type code", () => {
     const xml = buildCaptureLibraryXml(singleSection(), "C:/libs/target.OLB");
-    // name 与 number 同为 "1" → 关掉脚号，只由 Capture 画一次 name（否则同一个字出现两遍）
+    // name 与 number 同为 "1" 也照常打开脚号：Capture 里两者分属 SymbolPinScalar.name
+    // 与 PhysicalPart.PinNumber，本来就各画一份；IsNumberVisible=0 在实机不生效，
+    // 写 0 只会让预览跟实机对不上（用户 2026-11-10 的 OrCAD 对照截图）。
     expect(xml).toContain('<Defn hotptX="30" hotptY="10" name="1" position="0" startX="20" startY="10" type="4" visible="1" />');
     expect(xml).toMatch(
-      /<IsNumberVisible>\s*<Defn val="0" \/>\s*<\/IsNumberVisible>/,
+      /<IsNumberVisible>\s*<Defn val="1" \/>\s*<\/IsNumberVisible>/,
     );
     // power(7) 与 passive(4) 不同码；name≠number 的脚保留脚号
     expect(xml).toContain(
