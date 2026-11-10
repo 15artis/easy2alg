@@ -218,13 +218,15 @@ describe("easyeda standard symbol", () => {
         "AGM609MNA.1",
         "AGM609MNA.2",
       ]);
+      // 段内按脚号排序（源数据 6,1,2 / 5,3,4）：position 要跟脚号一致，
+      // 否则 Capture 里名字与编号整体错位（用户 2026-11-10 的 SMA-KWE 报障）。
       expect(symbol!.sections.map((section) => section.pins.map((pin) => pin.number))).toEqual([
-        ["6", "1", "2"],
-        ["5", "3", "4"],
+        ["1", "2", "6"],
+        ["3", "4", "5"],
       ]);
       expect(symbol!.sections.map((section) => section.pins.map((pin) => pin.name))).toEqual([
-        ["D1", "S1", "G1"],
-        ["D2", "S2", "G2"],
+        ["S1", "G1", "D1"],
+        ["S2", "G2", "D2"],
       ]);
       for (const section of symbol!.sections) {
         expect(section.pins).toHaveLength(3);

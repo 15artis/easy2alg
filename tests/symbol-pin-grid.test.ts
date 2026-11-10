@@ -164,6 +164,16 @@ describe("真实器件：引脚两端都落在 100 mil 网格", () => {
     if (body?.kind !== "rect") {
       throw new Error("缺少本体矩形");
     }
-    expect(section.pins[0].body.x).toBe(body.max.x);
+    // 5 号脚从本体右边缘水平引出（排序后不再固定是数组第 0 个）
+    const right = section.pins.find((pin) => pin.number === "5");
+    expect(right?.body.x).toBe(body.max.x);
+  });
+
+  it("引脚按脚号排序：立创数组顺序不按号排（SMA-KWE 是 5,4,3,2,1）", () => {
+    const [section] = parse("C7498154").sections;
+    expect(section.pins.map((pin) => pin.number)).toEqual(["1", "2", "3", "4", "5"]);
+    // 排序后 position（数组下标）与脚号一致，Capture 才不会把名字和编号错开画
+    expect(section.pins.map((pin) => pin.name)).toEqual(["1", "2", "3", "4", "5"]);
+    expect(section.pins[0].body).toEqual({ x: 10, y: 0 });
   });
 });

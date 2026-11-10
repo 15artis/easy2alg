@@ -518,3 +518,23 @@ export const alignPinEndsToGrid = (section: NormalizedSymbolSection): Normalized
 
   return changed ? { ...aligned, pins } : aligned;
 };
+
+/**
+ * 按引脚号自然序重排（1、2、3…9、10）。
+ *
+ * 立创的 `shape` 数组不按焊盘号排列 —— SMA-KWE 是 5、4、3、2、1。OLB 的
+ * `position` 是数组下标，Capture 用它对齐名字与脚号，照原顺序写就整体错位：
+ * 每个脚内侧一个名字、外侧一个编号，数值还不同（用户 2026-11-10 报的
+ * "41 / 32 / 35" 就是这个）。手动在 Capture 里画的同类器件都是 1..N 顺序，
+ * 这里对齐它：排序后 position 与脚号一致，两个标签落在同一处、同一个数字。
+ */
+export const sortPinsByNumber = (
+  section: NormalizedSymbolSection,
+): NormalizedSymbolSection => {
+  // 纯数字按数值比，其他（A1、GND_2）退回自然序；两侧等价时保持原顺序（稳定排序）。
+  const sorted = [...section.pins].sort((a, b) =>
+    a.number.localeCompare(b.number, "en", { numeric: true, sensitivity: "base" }),
+  );
+  const same = sorted.every((pin, index) => pin === section.pins[index]);
+  return same ? section : { ...section, pins: sorted };
+};
