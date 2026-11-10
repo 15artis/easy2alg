@@ -10,6 +10,7 @@ import {
   bodyBoxOf,
   estimateCommentWidth,
   pinLabelShown,
+  pinLabelWidth,
   pinNamesSuppressed,
   pinSideOf,
   symbolFontHeight,
@@ -368,6 +369,80 @@ const shapeCommands = (shape: NormalizedSymbolShape): readonly string[] => {
   return commentTextCommands(shape);
 };
 
+/** 引脚名离引脚轴线的横向偏移（复刻 Capture 自己保存下来的坐标）。 */
+const PIN_NAME_AXIS_GAP = 5;
+/** 引脚名与本体边缘之间的留白。 */
+const PIN_NAME_EDGE_GAP = 2;
+/** 引脚名的字高（Capture 符号默认字号）。 */
+const PIN_NAME_FONT_HEIGHT = -9;
+
+/**
+ * 引脚名在 Capture 里的落点 —— 显式写 `<PinDisplayProp name="Name">`。
+ *
+ * 不写这一条时 Capture 会自己"估价"每个脚的名字位置：在本体只有 20 单位高的
+ * 小符号里，上、下两排引脚名会被摆到本体正中叠成一团（用户 2026-11-10 报的
+ * "41 / 32 / 35" 就是这个）。坐标复刻用户手绘、Capture 自己保存的
+ * `LIBRARY1.OLB` 里的 `RF` 单元：
+ *   上边脚 = (脚 x − 5, 本体上边 + 1)，竖排从锚点往下生长；
+ *   下边脚 = (脚 x − 5, 本体下边 − 2 − 文字长)，同样竖排往下生长。
+ * 左右脚不写 —— 实测 Capture 默认就摆在本体内侧，位置正常。
+ *
+ * 名字被 `pinLabelShown` 关掉时写 `val=0`：整段的 `<IsPinNamesVisible>` 在部分
+ * Capture 上不生效，逐脚这一条是第二道保险（tclsh 往返确认 val 会被原样保留）。
+ */
+const pinNamePropCommands = (
+  section: NormalizedSymbolSection,
+  pin: NormalizedSymbolPin,
+  position: number,
+): readonly string[] => {
+  const name = pin.name.trim();
+  if (name === "") {
+    return [];
+  }
+  const side = pinSideOf(pin);
+  if (side !== "top" && side !== "bottom") {
+    return [];
+  }
+  const body = bodyBoxOf(section);
+  const length = pinLabelWidth(name);
+  const locY =
+    side === "top"
+      ? body.minY + 1
+      : Math.max(body.minY + 1, body.maxY - PIN_NAME_EDGE_GAP - length);
+  return [
+    "      <PinDisplayProp>",
+    tag("Defn", {
+      locX: grid(pin.body.x - PIN_NAME_AXIS_GAP),
+      locY: grid(locY),
+      name: "Name",
+      rotation: 1,
+      textJustification: 0,
+    }),
+    "        <PropFont>",
+    tag("Defn", {
+      charset: 0,
+      escapement: 0,
+      height: PIN_NAME_FONT_HEIGHT,
+      italic: 0,
+      name: "",
+      orientation: 0,
+      weight: 400,
+      width: 4,
+    }),
+    "        </PropFont>",
+    "        <PropColor>",
+    '          <Defn val="48" />',
+    "        </PropColor>",
+    "        <PropDispType>",
+    tag("Defn", {
+      ValueIfValueExist: 0,
+      val: pinLabelShown(section, position, "name") ? 1 : 0,
+    }),
+    "        </PropDispType>",
+    "      </PinDisplayProp>",
+  ];
+};
+
 const pinCommands = (
   section: NormalizedSymbolSection,
   pin: NormalizedSymbolPin,
@@ -403,6 +478,7 @@ const pinCommands = (
     `        <Defn val="${value}" />`,
     `      </${name}>`,
   ]),
+  ...pinNamePropCommands(section, pin, position),
   "    </SymbolPinScalar>",
 ];
 

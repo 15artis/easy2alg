@@ -200,19 +200,34 @@ describe("capture library XML", () => {
     expect(xml.match(/<PinNumber>/g)).toHaveLength(676);
   });
 
-  it("rotates pin names per pin direction and never emits PinDisplayProp", async () => {
+  it("rotates pin names per pin direction and pins every name to an explicit spot", async () => {
     // 回归防护（用户 2026-10-16 截图）：Capture 默认把上下引脚名竖着画进本体，
-    // 与左右引脚的横排名字在四角重叠。**逐脚 PinDisplayProp 这条路已被证伪**：
-    // 把现网库里 Cadence 自己导出的 PinDisplayProp 原样喂给 XMATIC_XML2OLB，
-    // 导入后再导出，元素数为 0（静默丢弃）。所以只留全局的 IsPinNamesRotated，
-    // 重叠改由几何避让解决（shared/symbol-layout.ts）。
+    // 与左右引脚的横排名字在四角重叠。
+    //
+    // 曾经以为「逐脚 PinDisplayProp 会被 XMATIC_XML2OLB 静默丢弃」，据此只留全局的
+    // IsPinNamesRotated、靠几何避让硬撑。2026-11-10 复测推翻了这个结论：把带
+    // PinDisplayProp 的 XML 导入再导出，元素与 locX/locY/rotation/val 逐字保留
+    // （`build/olbtest/PROP0_back.xml`）。所以上下引脚现在都写死落点 ——
+    // 小本体里 Capture 自己"估价"会把两排名字摆到本体正中叠成一团。
     const connector = new Elibz2Connector();
     const symbol = await connector.loadSymbol(fixturePath, deviceUuid);
     const xml = buildCaptureLibraryXml(symbol!, "C:/libs/target.OLB");
     // 六段都有上下边引脚 → 六段都置 1
     expect(xml.match(/<IsPinNamesRotated>\s*<Defn val="1" \/>/g)).toHaveLength(6);
     expect(xml).not.toMatch(/<IsPinNamesRotated>\s*<Defn val="0" \/>/);
-    expect(xml).not.toContain("<PinDisplayProp>");
+
+    // 竖排引脚名逐个给坐标：水平方向退到引脚轴线左侧 5，竖直方向贴本体上/下边
+    const names = [...xml.matchAll(
+      /<PinDisplayProp>\s*<Defn locX="(-?\d+)" locY="(-?\d+)" name="Name" rotation="1" textJustification="0" \/>/g,
+    )];
+    const verticalPins = symbol!.sections
+      .flatMap((section) => section.pins)
+      .filter((pin) => pin.name.trim() !== "" && (pinSideOf(pin) === "top" || pinSideOf(pin) === "bottom"));
+    expect(names.length).toBe(verticalPins.length);
+    // 写库出口会按脚号重排，位置集合一致即可：locX = 引脚本体端 x − 5
+    const expectedX = verticalPins.map((pin) => Math.round(pin.body.x) - 5).sort((a, b) => a - b);
+    const actualX = names.map((match) => Number(match[1])).sort((a, b) => a - b);
+    expect(actualX).toEqual(expectedX);
   });
 
   it("writes the de-collided geometry, not the raw source positions", async () => {
