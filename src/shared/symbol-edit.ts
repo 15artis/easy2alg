@@ -1,4 +1,9 @@
-import type { NormalizedSymbol, NormalizedSymbolShape, Point } from "./schemas";
+import type {
+  NormalizedSymbol,
+  NormalizedSymbolShape,
+  Point,
+  SymbolShapePrimitive,
+} from "./schemas";
 
 /**
  * 原理图符号的**手工编辑**模型（用户 2026-10-16 要求"所有元素可手动编辑"）。
@@ -25,6 +30,25 @@ export const translateSymbolPoint = (point: Point, dx: number, dy: number): Poin
   y: point.y + dy,
 });
 
+/**
+ * 平移（可选等比缩放）折线背后的原生曲线图元。
+ *
+ * 折线同时带着 `points` 与 `primitive`，任何移动都必须**两边一起动** ——
+ * 只改 points 的话，写库时仍按旧参数的椭圆出图，位置就对不上了。
+ * 缩放只来自解析阶段"整段放大"（比例是均匀的正整数），角度不变。
+ */
+export const transformSymbolPrimitive = (
+  primitive: SymbolShapePrimitive,
+  dx: number,
+  dy: number,
+  scale = 1,
+): SymbolShapePrimitive => ({
+  ...primitive,
+  center: { x: (primitive.center.x + dx) * scale, y: (primitive.center.y + dy) * scale },
+  rx: primitive.rx * scale,
+  ry: primitive.ry * scale,
+});
+
 export const translateSymbolShape = (
   shape: NormalizedSymbolShape,
   dx: number,
@@ -41,6 +65,10 @@ export const translateSymbolShape = (
       return {
         ...shape,
         points: shape.points.map((point) => translateSymbolPoint(point, dx, dy)),
+        primitive:
+          shape.primitive === undefined
+            ? undefined
+            : transformSymbolPrimitive(shape.primitive, dx, dy),
       };
     default:
       return { ...shape, at: translateSymbolPoint(shape.at, dx, dy) };
@@ -71,8 +99,46 @@ export const symbolPinKey = (sectionIndex: number, pinIndex: number): string =>
 
 export const isSymbolPinKey = (key: string): boolean => key.startsWith("p");
 
-/** 把编辑键拆回 (段序号, 元素序号)。 */
+/**
+ * 引脚标签（名 / 脚号）的**独立**编辑键：`t<段序号>:<引脚序号>:<name|number>`。
+ *
+ * 用户 2026-11-10 要求「单击引脚标签时不要和引脚一起激活，文本要能单独移动」。
+ * 标签不再只是引脚的附属高亮项 —— 它有独立的选中态与位移，拖动它不会带动引脚线。
+ * 前缀用 `t` 是为了不落进 `isSymbolPinKey`（`p`）的判定，否则会被当成整条引脚。
+ */
+export type PinLabelKind = "name" | "number";
+
+export const symbolPinLabelKey = (
+  sectionIndex: number,
+  pinIndex: number,
+  kind: PinLabelKind,
+): string => `t${sectionIndex}:${pinIndex}:${kind}`;
+
+export const isSymbolPinLabelKey = (key: string): boolean => key.startsWith("t");
+
+export const parseSymbolPinLabelKey = (
+  key: string,
+): { readonly section: number; readonly pinIndex: number; readonly kind: PinLabelKind } | null => {
+  if (!isSymbolPinLabelKey(key)) {
+    return null;
+  }
+  const [section, pinIndex, kind] = key.slice(1).split(":");
+  const kindValue = kind === "name" || kind === "number" ? kind : null;
+  if (kindValue === null) {
+    return null;
+  }
+  return { section: Number(section), pinIndex: Number(pinIndex), kind: kindValue };
+};
+
+/**
+ * 把编辑键拆回 (段序号, 元素序号)。
+ * 标签键的"元素序号"就是**它所属引脚**的序号 —— 属性面板、命中盒都按引脚取。
+ */
 export const parseSymbolEditKey = (key: string): { readonly section: number; readonly index: number } => {
+  const label = parseSymbolPinLabelKey(key);
+  if (label !== null) {
+    return { section: label.section, index: label.pinIndex };
+  }
   const body = isSymbolPinKey(key) ? key.slice(1) : key;
   const [section, index] = body.split(":");
   return { section: Number(section), index: Number(index) };
@@ -186,8 +252,22 @@ export const applySymbolEdits = (
   }
   const shapeEdits = new Map<string, SymbolEdit>();
   const pinEdits = new Map<string, SymbolEdit>();
+  /** `段:引脚` → 该引脚两个标签各自的独立位移（用户 2026-11-10） */
+  const labelEdits = new Map<string, { name?: SymbolShapeOffset; number?: SymbolShapeOffset }>();
   for (const key of keys) {
-    (isSymbolPinKey(key) ? pinEdits : shapeEdits).set(key, edits[key]);
+    const edit = edits[key];
+    if (isSymbolPinLabelKey(key)) {
+      const parsed = parseSymbolPinLabelKey(key);
+      const offset = edit.offset;
+      if (parsed === null || offset === undefined || (offset.dx === 0 && offset.dy === 0)) {
+        continue;
+      }
+      const bucketKey = `${parsed.section}:${parsed.pinIndex}`;
+      const bucket = labelEdits.get(bucketKey) ?? {};
+      labelEdits.set(bucketKey, { ...bucket, [parsed.kind]: offset });
+      continue;
+    }
+    (isSymbolPinKey(key) ? pinEdits : shapeEdits).set(key, edit);
   }
 
   return {
@@ -275,6 +355,27 @@ export const applySymbolEdits = (
             labelAnchor: {
               name: translateSymbolPoint(anchor.name, edit.labelShift.dx, edit.labelShift.dy),
               number: translateSymbolPoint(anchor.number, edit.labelShift.dx, edit.labelShift.dy),
+            },
+          };
+        }
+        // ⑤ 单个标签的独立位移（用户 2026-11-10）：名字与脚号各挪各的，引脚线不动。
+        //    放在 labelShift 之后 —— "整条引脚对齐"与"某个标签微调"可以叠加。
+        const labelOffset = labelEdits.get(`${sectionIndex}:${pinIndex}`);
+        if (labelOffset !== undefined && next.labelAnchor !== undefined) {
+          const anchor = next.labelAnchor;
+          const nameShift = labelOffset.name;
+          const numberShift = labelOffset.number;
+          next = {
+            ...next,
+            labelAnchor: {
+              name:
+                nameShift === undefined
+                  ? anchor.name
+                  : translateSymbolPoint(anchor.name, nameShift.dx, nameShift.dy),
+              number:
+                numberShift === undefined
+                  ? anchor.number
+                  : translateSymbolPoint(anchor.number, numberShift.dx, numberShift.dy),
             },
           };
         }

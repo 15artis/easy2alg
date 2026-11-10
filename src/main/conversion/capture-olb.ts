@@ -4,10 +4,12 @@ import type {
   NormalizedSymbolSection,
   NormalizedSymbolShape,
   SymbolPinType,
+  SymbolShapePrimitive,
 } from "../../shared/schemas";
 import {
   bodyBoxOf,
   estimateCommentWidth,
+  pinLabelVisible,
   pinSideOf,
   symbolFontHeight,
   symbolTextLines,
@@ -48,6 +50,12 @@ const SHAPE_FILL_STYLE = "1";
 const SHAPE_HATCH_STYLE = "-1";
 const SHAPE_LINE_STYLE = "0";
 const SHAPE_LINE_WIDTH = "0";
+
+/**
+ * 椭圆/圆弧的填充样式取自**真实库**（Gate.olb 里 305 处椭圆全是 `fillStyle=1 hatchStyle=0`，
+ * 导出回来看都是空心轮廓）。矩形沿用历史上的 -1（同样画成空心，不动它以免改变现有出图）。
+ */
+const CURVE_HATCH_STYLE = "0";
 
 /** 真实库中 CommentText 的通用字体（本机导出件里 685/697 处均为该值）。 */
 const COMMENT_FONT_NAME = "Arial";
@@ -221,6 +229,96 @@ const commentTextCommands = (
   });
 };
 
+/**
+ * 原生曲线图元 → `<Ellipse>` / `<Arc>`。
+ *
+ * 用户 2026-11-10：「预览与实际生成有差异，这个圆生成有问题」—— DSUB 的 9 个装饰圆在源里
+ * 是半径 3 的 `E` 椭圆，以前按 24 边形逐点写 `<Line>`，而 XML 坐标只收整数：
+ * r=3 的 24 个顶点取整后大量重合，出图成了"带台阶的八边形"。四角圆弧同理，
+ * 取整后变成斜面。Capture 本身有椭圆与圆弧图元，直接写就能保持曲线。
+ *
+ * `<Arc>` 的语义（用 Gate.olb 的与门本体核对）：`x1..y2` 是**整条椭圆**的包围盒，
+ * `startX/startY → endX/endY` 是弧的两个端点，没有 large-arc 标志 —— Capture 固定
+ * 从 start 沿"屏幕上逆时针"画到 end。所以：
+ *  - 我们的 `deltaAngle` 为负（屏幕上逆时针）时首尾原样用，为正时交换首尾；
+ *  - 超过 180° 的弧无论怎么排序都会被画成补角，必须拆成两段（每段 ≤ 180°）。
+ */
+const arcPointOf = (
+  arc: Extract<SymbolShapePrimitive, { type: "arc" }>,
+  angle: number,
+): { readonly x: number; readonly y: number } => ({
+  x: arc.center.x + arc.rx * Math.cos(angle),
+  y: arc.center.y + arc.ry * Math.sin(angle),
+});
+
+const arcCommands = (
+  arc: Extract<SymbolShapePrimitive, { type: "arc" }>,
+): readonly string[] | null => {
+  const x1 = Math.round(arc.center.x - arc.rx);
+  const x2 = Math.round(arc.center.x + arc.rx);
+  const y1 = Math.round(arc.center.y - arc.ry);
+  const y2 = Math.round(arc.center.y + arc.ry);
+  // 半径不到半格时取整会把包围盒压成一条线 —— 那种退化图元宁可不写，退回折线
+  if (x1 === x2 || y1 === y2) {
+    return null;
+  }
+  const pieces = Math.max(1, Math.ceil(Math.abs(arc.deltaAngle) / Math.PI - 1e-9));
+  const commands: string[] = [];
+  for (let index = 0; index < pieces; index += 1) {
+    const from = arc.startAngle + (arc.deltaAngle * index) / pieces;
+    const delta = arc.deltaAngle / pieces;
+    const head = arcPointOf(arc, from);
+    const tail = arcPointOf(arc, from + delta);
+    // delta > 0 = 屏幕顺时针，与 Capture 的固定画向相反 → 首尾互换
+    const start = delta > 0 ? tail : head;
+    const end = delta > 0 ? head : tail;
+    commands.push(
+      "    <Arc>",
+      tag("Defn", {
+        endX: grid(end.x),
+        endY: grid(end.y),
+        lineStyle: SHAPE_LINE_STYLE,
+        lineWidth: SHAPE_LINE_WIDTH,
+        startX: grid(start.x),
+        startY: grid(start.y),
+        x1: grid(x1),
+        x2: grid(x2),
+        y1: grid(y1),
+        y2: grid(y2),
+      }),
+      "    </Arc>",
+    );
+  }
+  return commands;
+};
+
+const primitiveCommands = (primitive: SymbolShapePrimitive): readonly string[] | null => {
+  if (primitive.type === "arc") {
+    return arcCommands(primitive);
+  }
+  const x1 = Math.round(primitive.center.x - primitive.rx);
+  const x2 = Math.round(primitive.center.x + primitive.rx);
+  const y1 = Math.round(primitive.center.y - primitive.ry);
+  const y2 = Math.round(primitive.center.y + primitive.ry);
+  if (x1 === x2 || y1 === y2) {
+    return null;
+  }
+  return [
+    "    <Ellipse>",
+    tag("Defn", {
+      fillStyle: SHAPE_FILL_STYLE,
+      hatchStyle: CURVE_HATCH_STYLE,
+      lineStyle: SHAPE_LINE_STYLE,
+      lineWidth: SHAPE_LINE_WIDTH,
+      x1: grid(x1),
+      x2: grid(x2),
+      y1: grid(y1),
+      y2: grid(y2),
+    }),
+    "    </Ellipse>",
+  ];
+};
+
 const shapeCommands = (shape: NormalizedSymbolShape): readonly string[] => {
   if (shape.kind === "rect") {
     return [
@@ -239,6 +337,13 @@ const shapeCommands = (shape: NormalizedSymbolShape): readonly string[] => {
     ];
   }
   if (shape.kind === "polyline") {
+    // 折线只是椭圆/圆弧的采样近似 → 有原生参数就写真曲线，避免整数取整把圆画成多边形
+    if (shape.primitive !== undefined) {
+      const native = primitiveCommands(shape.primitive);
+      if (native !== null) {
+        return native;
+      }
+    }
     const points = shape.closed ? [...shape.points, shape.points[0]] : shape.points;
     const commands: string[] = [];
     for (let index = 0; index + 1 < points.length; index += 1) {
@@ -284,7 +389,9 @@ const pinCommands = (pin: NormalizedSymbolPin, position: number): readonly strin
       ["IsNetStyle", 0],
       ["IsNoConnect", 0],
       ["IsGlobal", 0],
-      ["IsNumberVisible", 1],
+      // name 与 number 相同时只留 name（Capture 画在本体内侧）。OLB 没有独立脚号
+      // 字段、name 写空又会被换成 $PIN0，能逐脚关的只有这个开关。
+      ["IsNumberVisible", pinLabelVisible(pin, "number") ? 1 : 0],
     ] as const
   ).flatMap(([name, value]) => [
     `      <${name}>`,

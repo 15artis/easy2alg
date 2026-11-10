@@ -5,6 +5,8 @@ node_modules/
 out/
 release/
 release-out*/
+# 调试中间产物（截图裁切、OLB 导入验证等）
+build/
 
 # 测试与缓存
 coverage/

@@ -14,7 +14,9 @@ import {
   dragDelta,
   isSymbolPinKey,
   parseSymbolEditKey,
+  parseSymbolPinLabelKey,
   symbolPinKey,
+  symbolPinLabelKey,
   symbolShapeKey,
   type SymbolPinPoints,
   type RectEdges,
@@ -33,8 +35,10 @@ import {
   bodyBoxOf,
   estimateLabelWidth,
   estimateMultilineWidth,
-  pinNameBox,
-  pinNumberBox,
+  pinLabelBoxOf,
+  pinLabelPlacement,
+  pinLabelVisible,
+  pinLabelWidth,
   pinSideOf,
   symbolFontHeight,
   symbolTextLines,
@@ -79,21 +83,6 @@ type LabelPlacement = {
   readonly anchor: "start" | "end";
 };
 
-const placeLabel = (
-  pin: NormalizedSymbolPin,
-  box: SymbolBox,
-  anchor: { readonly x: number; readonly y: number } | undefined,
-): LabelPlacement => {
-  switch (pinSideOf(pin)) {
-    case "left":
-      return { x: anchor?.x ?? box.minX, y: anchor?.y ?? pin.body.y, rotate: 0, anchor: "start" };
-    case "right":
-      return { x: anchor?.x ?? box.maxX, y: anchor?.y ?? pin.body.y, rotate: 0, anchor: "end" };
-    default:
-      return { x: anchor?.x ?? pin.body.x, y: anchor?.y ?? box.maxY, rotate: -90, anchor: "start" };
-  }
-};
-
 const Label = ({
   text,
   placement,
@@ -105,13 +94,17 @@ const Label = ({
   readonly color: string;
   readonly onDoubleClick?: () => void;
 }): ReactElement => (
-  /* 不设 dominant-baseline：默认基线正好落在引脚线上，与 Capture 的画法一致。 */
+  /* 不设 dominant-baseline：默认基线正好落在引脚线上，与 Capture 的画法一致。
+   * textLength 把字宽钉死成盒模型用的等宽值 —— 浏览器字体比 Capture 的 stroke
+   * 字体宽，不钉的话 "MH1" 会向左伸出去压住隔壁引脚的 name。 */
   <text
     x={placement.x}
     y={placement.y}
     fontSize={PIN_FONT}
     fill={color}
     textAnchor={placement.anchor}
+    textLength={pinLabelWidth(text)}
+    lengthAdjust="spacingAndGlyphs"
     transform={
       placement.rotate === 0
         ? undefined
@@ -603,11 +596,33 @@ const SymbolPins = memo(
       onDoubleTap,
     );
 
+    /**
+     * 标签的交互 props（用户 2026-11-10）。
+     *
+     * 标签是**独立元素**：点它只激活它自己、拖动只挪它自己，引脚线保持不动。
+     * 必须渲染成引脚 `<g>` 的**兄弟节点**而不是子节点 —— 子节点的 pointerdown 会
+     * 冒泡到引脚，表现就是"点标签 = 整条引脚被选中"，这正是要修掉的行为。
+     */
+    const labelProps = (labelKey: string): Record<string, unknown> =>
+      editing
+        ? {
+            "data-draggable": "true",
+            onPointerDown: drag.startMove(labelKey),
+            onPointerMove: drag.move,
+            onPointerUp: drag.end,
+            onPointerCancel: drag.end,
+            onLostPointerCapture: drag.end,
+            style: { cursor: "default" },
+          }
+        : {};
+
     return (
       <>
         {pins.map((pin, pinIndex) => {
           const key = symbolPinKey(sectionIndex, pinIndex);
           const active = selectedKeys.has(key);
+          const nameKey = symbolPinLabelKey(sectionIndex, pinIndex, "name");
+          const numberKey = symbolPinLabelKey(sectionIndex, pinIndex, "number");
           return (
             <g
               /* key 只用"段:脚"这个稳定键。以前把 connection 坐标也拼进 key，
@@ -615,63 +630,99 @@ const SymbolPins = memo(
                * 松手时收不到 pointerup，dragRef 一直挂着，之后不按键移动鼠标
                * 元素也会跟着跑（用户 2026-10-19 报的正是这个）。 */
               key={key}
-              data-pin="true"
-              data-draggable={editing ? "true" : undefined}
-              onPointerDown={editing ? drag.startMove(key) : undefined}
-              onPointerMove={editing ? drag.move : undefined}
-              onPointerUp={editing ? drag.end : undefined}
-              onPointerCancel={editing ? drag.end : undefined}
-              onLostPointerCapture={editing ? drag.end : undefined}
             >
-              <line
-                x1={pin.connection.x}
-                y1={pin.connection.y}
-                x2={pin.body.x}
-                y2={pin.body.y}
-                stroke={active ? ACTIVE : PIN}
-                strokeWidth={active ? 3 : 2}
-                vectorEffect="non-scaling-stroke"
-              />
-              <circle
-                cx={pin.connection.x}
-                cy={pin.connection.y}
-                r={active ? 2.6 : 1.6}
-                fill={active ? ACTIVE : PIN}
-              />
-              {showText ? (
-                <>
-                  <Label
-                    text={pin.number}
-                    placement={placeLabel(pin, pinNumberBox(pin, body), pin.labelAnchor?.number)}
-                    color={active ? ACTIVE : PIN_NUMBER}
-                    onDoubleClick={
-                      onEditPinLabel === undefined
-                        ? undefined
-                        : () => onEditPinLabel(pinIndex, "number", pin.number)
-                    }
-                  />
-                  <Label
-                    text={pin.name}
-                    placement={placeLabel(pin, pinNameBox(pin, body), pin.labelAnchor?.name)}
-                    color={active ? ACTIVE : PIN_NAME}
-                    onDoubleClick={
-                      onEditPinLabel === undefined
-                        ? undefined
-                        : () => onEditPinLabel(pinIndex, "name", pin.name)
-                    }
-                  />
-                </>
-              ) : null}
-              {/* 命中区：引脚线太细不好点，垫一条透明的粗线 */}
-              {editing ? (
+              <g
+                data-pin="true"
+                data-draggable={editing ? "true" : undefined}
+                onPointerDown={editing ? drag.startMove(key) : undefined}
+                onPointerMove={editing ? drag.move : undefined}
+                onPointerUp={editing ? drag.end : undefined}
+                onPointerCancel={editing ? drag.end : undefined}
+                onLostPointerCapture={editing ? drag.end : undefined}
+              >
                 <line
                   x1={pin.connection.x}
                   y1={pin.connection.y}
                   x2={pin.body.x}
                   y2={pin.body.y}
-                  stroke="transparent"
-                  strokeWidth={10}
+                  stroke={active ? ACTIVE : PIN}
+                  strokeWidth={active ? 3 : 2}
+                  vectorEffect="non-scaling-stroke"
                 />
+                <circle
+                  cx={pin.connection.x}
+                  cy={pin.connection.y}
+                  r={active ? 2.6 : 1.6}
+                  fill={active ? ACTIVE : PIN}
+                />
+                {/* 命中区：引脚线太细不好点，垫一条透明的粗线 */}
+                {editing ? (
+                  <line
+                    x1={pin.connection.x}
+                    y1={pin.connection.y}
+                    x2={pin.body.x}
+                    y2={pin.body.y}
+                    stroke="transparent"
+                    strokeWidth={10}
+                  />
+                ) : null}
+              </g>
+              {/* 标签：画在引脚命中线之后（上层），点文字优先命中文字 */}
+              {showText ? (
+                <>
+                  {pinLabelVisible(pin, "number")
+                    ? (() => {
+                        const box = pinLabelBoxOf(pin, "number", body);
+                        return (
+                          <g key={numberKey} {...labelProps(numberKey)}>
+                            <rect
+                              x={box.minX}
+                              y={box.minY}
+                              width={box.maxX - box.minX}
+                              height={box.maxY - box.minY}
+                              fill="transparent"
+                            />
+                            <Label
+                              text={pin.number}
+                              placement={pinLabelPlacement(pin, "number", body)}
+                              color={selectedKeys.has(numberKey) ? ACTIVE : PIN_NUMBER}
+                              onDoubleClick={
+                                onEditPinLabel === undefined
+                                  ? undefined
+                                  : () => onEditPinLabel(pinIndex, "number", pin.number)
+                              }
+                            />
+                          </g>
+                        );
+                      })()
+                    : null}
+                  {pinLabelVisible(pin, "name")
+                    ? (() => {
+                        const box = pinLabelBoxOf(pin, "name", body);
+                        return (
+                          <g key={nameKey} {...labelProps(nameKey)}>
+                            <rect
+                              x={box.minX}
+                              y={box.minY}
+                              width={box.maxX - box.minX}
+                              height={box.maxY - box.minY}
+                              fill="transparent"
+                            />
+                            <Label
+                              text={pin.name}
+                              placement={pinLabelPlacement(pin, "name", body)}
+                              color={selectedKeys.has(nameKey) ? ACTIVE : PIN_NAME}
+                              onDoubleClick={
+                                onEditPinLabel === undefined
+                                  ? undefined
+                                  : () => onEditPinLabel(pinIndex, "name", pin.name)
+                              }
+                            />
+                          </g>
+                        );
+                      })()
+                    : null}
+                </>
               ) : null}
             </g>
           );
@@ -777,6 +828,20 @@ export const SymbolPreview = ({
     (key: string, point: { readonly x: number; readonly y: number } | null) => boolean
   >(() => false);
   handleDoubleTapRef.current = (key, point) => {
+    // 直接点在某一个标签上：双击就是要改这个标签，不用再按落点猜是名还是号
+    const labelKey = parseSymbolPinLabelKey(key);
+    if (labelKey !== null) {
+      const labelPin = section.pins[labelKey.pinIndex];
+      if (onPinTextEdit === undefined || labelPin === undefined) {
+        return false;
+      }
+      setPinEdit({
+        pinIndex: labelKey.pinIndex,
+        kind: labelKey.kind,
+        text: labelKey.kind === "name" ? labelPin.name : labelPin.number,
+      });
+      return true;
+    }
     const { index } = parseSymbolEditKey(key);
     if (isSymbolPinKey(key)) {
       if (onPinTextEdit === undefined) {
@@ -791,8 +856,9 @@ export const SymbolPreview = ({
         x: (box.minX + box.maxX) / 2,
         y: (box.minY + box.maxY) / 2,
       });
-      const nameCenter = centerOfBox(pinNameBox(pin, body));
-      const numberCenter = centerOfBox(pinNumberBox(pin, body));
+      // 用**标签实际绘制的盒**（含锚点位移）判近，与命中区一致
+      const nameCenter = centerOfBox(pinLabelBoxOf(pin, "name", body));
+      const numberCenter = centerOfBox(pinLabelBoxOf(pin, "number", body));
       let kind: "name" | "number" = "name";
       if (point !== null) {
         const toNumber = Math.hypot(point.x - numberCenter.x, point.y - numberCenter.y);
@@ -1159,11 +1225,7 @@ export const SymbolPreview = ({
             if (pin === undefined) {
               return null;
             }
-            const placement = placeLabel(
-              pin,
-              pinEdit.kind === "name" ? pinNameBox(pin, body) : pinNumberBox(pin, body),
-              pin.labelAnchor?.[pinEdit.kind],
-            );
+            const placement = pinLabelPlacement(pin, pinEdit.kind, body);
             const width = Math.max(40, estimateLabelWidth(pinEdit.text) * 1.4 + 16);
             const commitPinEdit = (): void => {
               if (onPinTextEdit !== undefined) {

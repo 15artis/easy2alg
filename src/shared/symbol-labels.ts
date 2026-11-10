@@ -1,5 +1,13 @@
 import type { NormalizedSymbolPin, NormalizedSymbolSection } from "./schemas";
-import { isSymbolPinKey, parseSymbolEditKey, symbolPinKey, symbolShapeKey } from "./symbol-edit";
+import {
+  isSymbolPinKey,
+  isSymbolPinLabelKey,
+  parseSymbolEditKey,
+  parseSymbolPinLabelKey,
+  symbolPinKey,
+  symbolShapeKey,
+  type PinLabelKind,
+} from "./symbol-edit";
 
 /**
  * Capture 画引脚名/引脚号的规则 —— 预览、避让计算、写 OLB、验收测试共用同一份。
@@ -43,6 +51,19 @@ export const estimateLabelWidth = (text: string): number =>
     (total, character) => total + (NARROW_CHARACTERS.includes(character) ? NARROW_WIDTH : NORMAL_WIDTH),
     0,
   );
+
+/**
+ * 引脚标签的**等宽**字宽（符号单位）。
+ *
+ * Capture 画引脚名/脚号用的是内部 stroke 字体，数字与字母同宽，实测 height=9 时
+ * 每字符约 4.5 单位。不能复用 `estimateLabelWidth`：那里把 "1" 当窄字符（宽 2），
+ * 而 Capture 里 "1" 和 "7" 一样宽 —— 预览直接按浏览器字体排，一个 "MH1" 就比估算
+ * 宽出 4 单位，向左压到隔壁 7 号脚的 name 上（用户 2026-11-10 报的 "7MH1" 叠字）。
+ */
+export const SYMBOL_PIN_CHAR_WIDTH = 4.5;
+
+export const pinLabelWidth = (text: string): number =>
+  [...text].length * SYMBOL_PIN_CHAR_WIDTH;
 
 /**
  * 注释文本按行拆开（用户 2026-11-09 要求支持换行编辑）。
@@ -189,7 +210,7 @@ export const pinIsVertical = (pin: NormalizedSymbolPin): boolean => {
 /** 引脚名占位（本体内侧）。 */
 export const pinNameBox = (pin: NormalizedSymbolPin, body: SymbolBox): SymbolBox => {
   const box = normalize(body);
-  const width = estimateLabelWidth(pin.name);
+  const width = pinLabelWidth(pin.name);
   switch (pinSideOf(pin)) {
     case "left":
       return {
@@ -226,7 +247,7 @@ export const pinNameBox = (pin: NormalizedSymbolPin, body: SymbolBox): SymbolBox
 
 /** 引脚号占位（本体外侧，紧贴本体边缘）。 */
 export const pinNumberBox = (pin: NormalizedSymbolPin, body: SymbolBox): SymbolBox => {  const box = normalize(body);
-  const width = estimateLabelWidth(pin.number);
+  const width = pinLabelWidth(pin.number);
   switch (pinSideOf(pin)) {
     case "left":
       return {
@@ -263,6 +284,80 @@ export const pinNumberBox = (pin: NormalizedSymbolPin, body: SymbolBox): SymbolB
 export const SYMBOL_PIN_FONT = 9;
 
 /**
+ * 这个标签要不要画。
+ *
+ * EasyEDA 的符号里 name 与 number 常常就是同一个值（DSUB、排针、端子几乎都是
+ * "1~9" 对 "1~9"）。Capture 会把 name 画在本体内侧、number 画在引脚上方，
+ * 于是每个脚看上去写了两遍同样的数字，本体窄的时候内侧的 name 还会撞上隔壁
+ * 引脚（DMR-9S 的 MH1 压在 7 上）。
+ *
+ * 约定：两者相同时只留 **name**。理由是从 OLB 侧倒推出来的 ——
+ * `SymbolPinScalar` 只有一个 `name` 字符串，没有独立脚号字段；name 写空会被
+ * Capture 换成 `$PIN0`。真正能逐脚关掉的只有 `IsNumberVisible`。
+ */
+export const pinLabelVisible = (pin: NormalizedSymbolPin, kind: PinLabelKind): boolean => {
+  if (pin.name.trim() === "") {
+    return kind === "number";
+  }
+  return kind === "name" || pin.name.trim() !== pin.number.trim();
+};
+
+/**
+ * 引脚标签的绘制锚点 / 书写方向 —— **预览与命中盒的唯一来源**。
+ *
+ * 与 `SymbolPreview` 里的 `placeLabel` 完全一致（原来各写一份，加独立标签后
+ * 命中盒必须跟着锚点走，否则挪过的标签点不到）。
+ * 上下引脚竖排（rotate -90、从锚点向上长）。
+ */
+export const pinLabelPlacement = (
+  pin: NormalizedSymbolPin,
+  kind: PinLabelKind,
+  body: SymbolBox,
+): { readonly x: number; readonly y: number; readonly rotate: number; readonly anchor: "start" | "end" } => {
+  const anchor = pin.labelAnchor?.[kind];
+  const box = kind === "name" ? pinNameBox(pin, body) : pinNumberBox(pin, body);
+  switch (pinSideOf(pin)) {
+    case "left":
+      return { x: anchor?.x ?? box.minX, y: anchor?.y ?? pin.body.y, rotate: 0, anchor: "start" };
+    case "right":
+      return { x: anchor?.x ?? box.maxX, y: anchor?.y ?? pin.body.y, rotate: 0, anchor: "end" };
+    default:
+      return { x: anchor?.x ?? pin.body.x, y: anchor?.y ?? box.maxY, rotate: -90, anchor: "start" };
+  }
+};
+
+/**
+ * 引脚标签的占位盒（命中区 / 框选 / 属性面板共用）。
+ *
+ * 基线在 `y`、字形向上长（与 `<text>` 不设 dominant-baseline 的默认行为一致），
+ * 所以纵向范围取 `y - 0.75·字号 … y + 0.25·字号`；竖排时宽高互换、沿 y 负方向铺开。
+ */
+export const pinLabelBoxOf = (
+  pin: NormalizedSymbolPin,
+  kind: PinLabelKind,
+  body: SymbolBox,
+): SymbolBox => {
+  const placement = pinLabelPlacement(pin, kind, body);
+  const width = pinLabelWidth(kind === "name" ? pin.name : pin.number);
+  if (placement.rotate === 0) {
+    const baseline = SYMBOL_PIN_FONT * 0.25;
+    return {
+      minX: placement.anchor === "end" ? placement.x - width : placement.x,
+      maxX: placement.anchor === "end" ? placement.x : placement.x + width,
+      minY: placement.y - (SYMBOL_PIN_FONT - baseline),
+      maxY: placement.y + baseline,
+    };
+  }
+  const half = SYMBOL_PIN_FONT / 2;
+  return {
+    minX: placement.x - half,
+    maxX: placement.x + half,
+    minY: placement.y - width,
+    maxY: placement.y,
+  };
+};
+
+/**
  * 段内引脚标签（名字 / 脚号）是否互相压住。
  *
  * 用途：Capture 的引脚字号固定 9 单位、不随符号大小变；本体只有 20 单位高的
@@ -271,7 +366,10 @@ export const SYMBOL_PIN_FONT = 9;
  */
 export const sectionLabelsCollide = (section: NormalizedSymbolSection): boolean => {
   const body = bodyBoxOf(section);
-  const boxes = section.pins.flatMap((pin) => [pinNameBox(pin, body), pinNumberBox(pin, body)]);
+  const boxes = section.pins.flatMap((pin) => [
+    ...(pinLabelVisible(pin, "name") ? [pinNameBox(pin, body)] : []),
+    ...(pinLabelVisible(pin, "number") ? [pinNumberBox(pin, body)] : []),
+  ]);
   for (let i = 0; i < boxes.length; i += 1) {
     for (let j = i + 1; j < boxes.length; j += 1) {
       if (boxesOverlap(boxes[i], boxes[j])) {
@@ -334,7 +432,7 @@ export const attachPinLabelAnchors = (
  * 文字锚点 → 占位盒（框选命中用）。
  *
  * `endAnchored` = 文字从锚点往左延伸（右侧引脚的名字、左侧引脚的脚号），
- * 竖排（rotated）= 往上方延伸。宽度按 `estimateLabelWidth`、高度按 `SYMBOL_PIN_FONT`。
+ * 竖排（rotated）= 往上方延伸。宽度按 `pinLabelWidth`、高度按 `SYMBOL_PIN_FONT`。
  * 与预览画出来的东西对齐，不要求像素级精确 —— 框选碰到就算选中。
  */
 export const anchorLabelBox = (
@@ -343,7 +441,7 @@ export const anchorLabelBox = (
   rotated: boolean,
   endAnchored: boolean,
 ): SymbolBox => {
-  const width = estimateLabelWidth(text);
+  const width = pinLabelWidth(text);
   const half = SYMBOL_PIN_FONT / 2;
   if (rotated) {
     return { minX: anchor.x - half, maxX: anchor.x + half, minY: anchor.y - width, maxY: anchor.y };
@@ -476,6 +574,15 @@ export const symbolElementBox = (
   section: NormalizedSymbolSection,
   key: string,
 ): SymbolBox | null => {
+  // 单个引脚标签（用户 2026-11-10）：盒跟着锚点走，挪到哪就命中到哪
+  if (isSymbolPinLabelKey(key)) {
+    const parsed = parseSymbolPinLabelKey(key);
+    const labelPin = parsed === null ? undefined : section.pins[parsed.pinIndex];
+    if (parsed === null || labelPin === undefined || !pinLabelVisible(labelPin, parsed.kind)) {
+      return null;
+    }
+    return pinLabelBoxOf(labelPin, parsed.kind, bodyBoxOf(section));
+  }
   const { index } = parseSymbolEditKey(key);
   if (isSymbolPinKey(key)) {
     const pin = section.pins[index];
@@ -484,17 +591,22 @@ export const symbolElementBox = (
     }
     const side = pinSideOf(pin);
     const rotated = side === "top" || side === "bottom";
-    // 有冻结锚点就按锚点算（跟屏幕上看到的一致）；老数据退化到本体盒推导
-    const labelBoxes =
-      pin.labelAnchor === undefined
-        ? (() => {
-            const body = bodyBoxOf(section);
-            return [pinNameBox(pin, body), pinNumberBox(pin, body)];
-          })()
-        : [
-            anchorLabelBox(pin.labelAnchor.name, pin.name, rotated, side === "right"),
-            anchorLabelBox(pin.labelAnchor.number, pin.number, rotated, side === "left"),
-          ];
+    const anchored = pin.labelAnchor;
+    const boxOf = (kind: PinLabelKind): SymbolBox => {
+      if (anchored !== undefined) {
+        // 有冻结锚点就按锚点算（跟屏幕上看到的一致）
+        return kind === "name"
+          ? anchorLabelBox(anchored.name, pin.name, rotated, side === "right")
+          : anchorLabelBox(anchored.number, pin.number, rotated, side === "left");
+      }
+      // 老数据没有锚点：退化到本体盒推导
+      const body = bodyBoxOf(section);
+      return kind === "name" ? pinNameBox(pin, body) : pinNumberBox(pin, body);
+    };
+    // 不画的标签不进盒 —— 否则点本体内部空白会选中看不见的引脚名。
+    const labelBoxes = (["name", "number"] as const)
+      .filter((kind) => pinLabelVisible(pin, kind))
+      .map(boxOf);
     return [...labelBoxes, boxOfPoints([pin.connection, pin.body])].reduce(
       (acc, box) => ({
         minX: Math.min(acc.minX, box.minX),

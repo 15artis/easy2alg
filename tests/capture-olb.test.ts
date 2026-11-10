@@ -127,12 +127,17 @@ describe("capture library XML", () => {
 
   it("writes pin geometry as hotpt=connection and start=body with the Capture type code", () => {
     const xml = buildCaptureLibraryXml(singleSection(), "C:/libs/target.OLB");
-    expect(xml).toContain(
-      '<Defn hotptX="30" hotptY="10" name="1" position="0" startX="20" startY="10" type="4" visible="1" />',
+    // name 与 number 同为 "1" → 关掉脚号，只由 Capture 画一次 name（否则同一个字出现两遍）
+    expect(xml).toContain('<Defn hotptX="30" hotptY="10" name="1" position="0" startX="20" startY="10" type="4" visible="1" />');
+    expect(xml).toMatch(
+      /<IsNumberVisible>\s*<Defn val="0" \/>\s*<\/IsNumberVisible>/,
     );
-    // power(7) 与 passive(4) 不同码，且每脚都带 PinNumber 序号
+    // power(7) 与 passive(4) 不同码；name≠number 的脚保留脚号
     expect(xml).toContain(
       '<Defn hotptX="-10" hotptY="10" name="GND" position="1" startX="0" startY="10" type="7" visible="1" />',
+    );
+    expect(xml).toMatch(
+      /<IsNumberVisible>\s*<Defn val="1" \/>\s*<\/IsNumberVisible>/,
     );
     expect(xml).toContain('<Defn number="1" position="0" />');
     expect(xml).toContain('<Defn number="2" position="1" />');
@@ -489,5 +494,137 @@ describe("deleted comment text", () => {
     expect(after).not.toContain(">TEST<");
     // 引脚与本体还在
     expect(after).toContain("hotptX");
+  });
+});
+
+/**
+ * 用户 2026-11-10：「预览与实际生成有差异，这个圆生成有问题」。
+ *
+ * 立创的圆/椭圆是 `E` 图元、圆角是 `A` 圆弧，而 OLB XML 的坐标只收整数
+ * （`xs:long`）。半径 3 的圆按 24 边形采样再逐点取整，顶点大量重合 →
+ * Capture 里画出来是"带台阶的八边形"，四角圆弧则变成斜面。
+ *
+ * 真实库（Gate.olb）证明 Capture 有 `<Ellipse>` / `<Arc>` 原生图元：
+ *   与门本体右侧半圆 = 两段 90° `<Arc>`，`x1..y2` 是**整条椭圆**的包围盒，
+ *   start→end 没有 large-arc 标志（固定按屏幕上逆时针画）。
+ */
+describe("原生曲线图元（Ellipse / Arc）", () => {
+  const withShapes = (shapes: NormalizedSymbol["sections"][number]["shapes"]): string =>
+    buildCaptureLibraryXml(
+      {
+        ...singleSection(),
+        sections: [{ ...singleSection().sections[0], shapes }],
+      },
+      "C:/libs/curve.OLB",
+    );
+
+  it("椭圆写成一个 <Ellipse>，不再拆成 24 条 <Line>", () => {
+    const xml = withShapes([
+      {
+        kind: "polyline",
+        points: [
+          { x: 13, y: 10 },
+          { x: 10, y: 13 },
+          { x: 7, y: 10 },
+          { x: 10, y: 7 },
+        ],
+        closed: true,
+        primitive: { type: "ellipse", center: { x: 10, y: 10 }, rx: 3, ry: 3 },
+      },
+    ]);
+    expect(xml).toContain("<Ellipse>");
+    expect(xml).not.toContain("<Line>");
+    // 包围盒 = 圆心 ± 半径，且必须是整数（半径 1.5 这类小数会被 XSD 拒掉）
+    expect(xml).toMatch(/<Defn [^/]*x1="7" x2="13" y1="7" y2="13" \/>/);
+    // 空心：与真实库的椭圆一致（fillStyle=1 hatchStyle=0）
+    expect(xml).toContain('fillStyle="1" hatchStyle="0"');
+  });
+
+  it("逆时针弧（delta<0）首尾原样写入", () => {
+    // y 轴向下：角度增大 = 屏幕上顺时针，所以 delta<0 是从 (15,10) 往上弧到 (10,5)
+    const xml = withShapes([
+      {
+        kind: "polyline",
+        points: [
+          { x: 15, y: 10 },
+          { x: 10, y: 5 },
+        ],
+        closed: false,
+        primitive: {
+          type: "arc",
+          center: { x: 10, y: 10 },
+          rx: 5,
+          ry: 5,
+          startAngle: 0,
+          deltaAngle: -Math.PI / 2,
+        },
+      },
+    ]);
+    expect(xml).toContain("<Arc>");
+    expect(xml).not.toContain("<Line>");
+    expect(xml).toMatch(/startX="15" startY="10"/);
+    expect(xml).toMatch(/endX="10" endY="5"/);
+    expect(xml).toMatch(/x1="5" x2="15" y1="5" y2="15"/);
+  });
+
+  it("顺时针弧（delta>0）要交换首尾：Capture 只会逆时针画", () => {
+    const xml = withShapes([
+      {
+        kind: "polyline",
+        points: [
+          { x: 15, y: 10 },
+          { x: 10, y: 15 },
+        ],
+        closed: false,
+        primitive: {
+          type: "arc",
+          center: { x: 10, y: 10 },
+          rx: 5,
+          ry: 5,
+          startAngle: 0,
+          deltaAngle: Math.PI / 2,
+        },
+      },
+    ]);
+    expect(xml).toMatch(/startX="10" startY="15"/);
+    expect(xml).toMatch(/endX="15" endY="10"/);
+  });
+
+  it("超过 180° 的弧拆成两段（一段表达不了）", () => {
+    const xml = withShapes([
+      {
+        kind: "polyline",
+        points: [
+          { x: 15, y: 10 },
+          { x: 10, y: 15 },
+        ],
+        closed: false,
+        primitive: {
+          type: "arc",
+          center: { x: 10, y: 10 },
+          rx: 5,
+          ry: 5,
+          startAngle: 0,
+          deltaAngle: -1.5 * Math.PI,
+        },
+      },
+    ]);
+    expect(xml.match(/<Arc>/g)?.length).toBe(2);
+  });
+
+  it("没有原生参数的折线仍然逐段写 <Line>", () => {
+    const xml = withShapes([
+      {
+        kind: "polyline",
+        points: [
+          { x: 0, y: 5 },
+          { x: 10, y: 5 },
+          { x: 10, y: 15 },
+        ],
+        closed: false,
+      },
+    ]);
+    expect(xml.match(/<Line>/g)?.length).toBe(2);
+    expect(xml).not.toContain("<Arc>");
   });
 });

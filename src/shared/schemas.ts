@@ -305,6 +305,37 @@ export const NormalizedSymbolPinSchema = z.object({
 });
 export type NormalizedSymbolPin = z.infer<typeof NormalizedSymbolPinSchema>;
 
+/**
+ * 折线背后的**原生曲线图元**（用户 2026-11-10 反馈"预览与实际生成有差异，这个圆生成有问题"）。
+ *
+ * Capture 的符号里有真正的椭圆与圆弧图元（`<Ellipse>` / `<Arc>`），而 OLB XML 的坐标
+ * 只收整数（`xs:long`）。半径 3 的圆近似成 24 边形后每个顶点都被取整，落在整数格点的
+ * 不同位置 → 生成出来是"带台阶的八边形"，和预览里的圆完全不是一回事。
+ *
+ * 所以解析时保留原始曲线参数：预览仍用 `points` 画（屏幕上看不出多边形），
+ * 写库时优先用这些参数生成原生图元，两边就一致了。
+ * 只描述**轴对齐**的曲线（源 rotation = 0）；带旋转的曲线不写 primitive，退回折线。
+ */
+export const SymbolShapePrimitiveSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("ellipse"),
+    center: PointSchema,
+    rx: z.number().positive(),
+    ry: z.number().positive(),
+  }),
+  z.object({
+    type: z.literal("arc"),
+    center: PointSchema,
+    rx: z.number().positive(),
+    ry: z.number().positive(),
+    /** 起始极角（弧度）。坐标系 y 向下，与源 SVG 路径一致 */
+    startAngle: z.number(),
+    /** 扫掠角（弧度）。正数 = 屏幕上顺时针，负数 = 逆时针 */
+    deltaAngle: z.number(),
+  }),
+]);
+export type SymbolShapePrimitive = z.infer<typeof SymbolShapePrimitiveSchema>;
+
 export const NormalizedSymbolShapeSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("rect"),
@@ -317,6 +348,8 @@ export const NormalizedSymbolShapeSchema = z.discriminatedUnion("kind", [
     kind: z.literal("polyline"),
     points: z.array(PointSchema).min(2),
     closed: z.boolean(),
+    /** 这条折线是不是某条椭圆/圆弧的采样结果（见 SymbolShapePrimitiveSchema） */
+    primitive: SymbolShapePrimitiveSchema.optional(),
   }),
   z.object({
     kind: z.literal("text"),

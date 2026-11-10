@@ -10,13 +10,16 @@ import {
   EMPTY_SYMBOL_EDITS,
   hasSymbolEdits,
   isSymbolPinKey,
+  isSymbolPinLabelKey,
   parseSymbolEditKey,
+  parseSymbolPinLabelKey,
   appendAddedTexts,
   setPinText,
   setRectBounds,
   setTextHidden,
   setTextContent,
   symbolPinKey,
+  symbolPinLabelKey,
   symbolShapeKey,
   translateSymbolShape,
 } from "../src/shared/symbol-edit";
@@ -433,5 +436,58 @@ describe("label-only shift", () => {
     const once = accumulateLabelShift({}, key, 3, 0);
     const twice = accumulateLabelShift(once, key, 2, 1);
     expect(twice[key]?.labelShift).toEqual({ dx: 5, dy: 1 });
+  });
+});
+
+/**
+ * 用户 2026-11-10：单击引脚标签不能把整条引脚一起激活，标签文本要能单独移动。
+ * 标签键 `t<段>:<脚>:<name|number>` 与引脚键 `p<段>:<脚>` 完全独立。
+ */
+describe("independent pin label move", () => {
+  const withAnchor = (): NormalizedSymbol => {
+    const base = symbol();
+    const pin = base.sections[0].pins[0];
+    return {
+      ...base,
+      sections: [
+        {
+          ...base.sections[0],
+          pins: [
+            { ...pin, labelAnchor: { name: { x: 5, y: 20 }, number: { x: -5, y: 20 } } },
+          ],
+        },
+      ],
+    };
+  };
+
+  it("只挪被点到的那个标签，引脚两端与另一个标签不动", () => {
+    const applied = applySymbolEdits(
+      withAnchor(),
+      accumulateOffset({}, symbolPinLabelKey(0, 0, "name"), 7, -3),
+    );
+    const pin = applied.sections[0].pins[0];
+    expect(pin.connection).toEqual({ x: -10, y: 20 });
+    expect(pin.body).toEqual({ x: 0, y: 20 });
+    expect(pin.labelAnchor).toEqual({ name: { x: 12, y: 17 }, number: { x: -5, y: 20 } });
+  });
+
+  it("名字与脚号各走各的键", () => {
+    const edits = accumulateOffset(
+      accumulateOffset({}, symbolPinLabelKey(0, 0, "name"), 4, 0),
+      symbolPinLabelKey(0, 0, "number"),
+      -2,
+      6,
+    );
+    const pin = applySymbolEdits(withAnchor(), edits).sections[0].pins[0];
+    expect(pin.labelAnchor).toEqual({ name: { x: 9, y: 20 }, number: { x: -7, y: 26 } });
+  });
+
+  it("标签键不会被当成整条引脚", () => {
+    const labelKey = symbolPinLabelKey(2, 5, "number");
+    expect(isSymbolPinKey(labelKey)).toBe(false);
+    expect(isSymbolPinLabelKey(labelKey)).toBe(true);
+    expect(parseSymbolPinLabelKey(labelKey)).toEqual({ section: 2, pinIndex: 5, kind: "number" });
+    // 属性面板/命中盒按引脚取元素：标签键解出的 index 就是引脚序号
+    expect(parseSymbolEditKey(labelKey)).toEqual({ section: 2, index: 5 });
   });
 });

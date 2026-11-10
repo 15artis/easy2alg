@@ -2,7 +2,9 @@ import type { NormalizedSymbolSection } from "./schemas";
 import {
   MIN_RECT_SIDE,
   isSymbolPinKey,
+  isSymbolPinLabelKey,
   parseSymbolEditKey,
+  parseSymbolPinLabelKey,
   setFontSize,
   setOffset,
   setRectBounds,
@@ -10,6 +12,7 @@ import {
   type SymbolEdits,
   type SymbolShapeBounds,
 } from "./symbol-edit";
+import { bodyBoxOf, pinLabelBoxOf } from "./symbol-labels";
 
 /**
  * 属性面板的读 / 写换算（纯函数，用户 2026-10-20）。
@@ -55,6 +58,17 @@ const sourceAnchor = (
   section: NormalizedSymbolSection,
   key: string,
 ): { readonly x: number; readonly y: number } | null => {
+  // 单个引脚标签（用户 2026-11-10）：锚点取它**当前占位盒的左上角**，
+  // 属性面板显示的 X/Y 即盒角；写回时 offset 增量与盒位移一致，自洽。
+  const label = parseSymbolPinLabelKey(key);
+  if (label !== null) {
+    const pin = section.pins[label.pinIndex];
+    if (pin === undefined) {
+      return null;
+    }
+    const box = pinLabelBoxOf(pin, label.kind, bodyBoxOf(section));
+    return { x: box.minX, y: box.minY };
+  }
   const { index } = parseSymbolEditKey(key);
   if (isSymbolPinKey(key)) {
     const pin = section.pins[index];
@@ -108,6 +122,19 @@ export const readElementProps = (
   const edit = edits[key];
   const offset = edit?.offset ?? { dx: 0, dy: 0 };
   const { index } = parseSymbolEditKey(key);
+
+  // 单个引脚标签：面板只给位置（文本内容走双击行内编辑）
+  if (isSymbolPinLabelKey(key)) {
+    const anchor = sourceAnchor(section, key);
+    return anchor === null
+      ? null
+      : {
+          kind: "other",
+          key,
+          x: round2(anchor.x + offset.dx),
+          y: round2(anchor.y + offset.dy),
+        };
+  }
 
   if (isSymbolPinKey(key)) {
     const pin = section.pins[index];

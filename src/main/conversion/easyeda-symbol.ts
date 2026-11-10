@@ -6,6 +6,7 @@ import type {
   NormalizedSymbolShape,
   Point,
   SymbolPinType,
+  SymbolShapePrimitive,
 } from "../../shared/schemas";
 import { NormalizedSymbolSchema } from "../../shared/schemas";
 import { avoidLabelOverlapInSection } from "../../shared/symbol-layout";
@@ -17,6 +18,7 @@ import {
 } from "../../shared/symbol-labels";
 import { alignPinsToGrid } from "../../shared/symbol-layout";
 import { dedupePinNames } from "../../shared/symbol-normalize";
+import { transformSymbolPrimitive } from "../../shared/symbol-edit";
 import { cleanSymbolName, refdesPrefixFrom, sanitizeSymbolName } from "./naming";
 
 /**
@@ -84,9 +86,11 @@ const numberOr = (value: string | undefined, fallback: number): number => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const ELLIPSE_STEPS = 24;
+
 const ellipsePoints = (cx: number, cy: number, rx: number, ry: number): Point[] =>
-  Array.from({ length: 24 }, (_, index) => {
-    const angle = (index / 24) * Math.PI * 2;
+  Array.from({ length: ELLIPSE_STEPS }, (_, index) => {
+    const angle = (index / ELLIPSE_STEPS) * Math.PI * 2;
     return { x: cx + rx * Math.cos(angle), y: cy + ry * Math.sin(angle) };
   });
 
@@ -106,6 +110,98 @@ const polylinePoints = (raw: string): Point[] =>
       }
       return points;
     }, []) ?? [];
+
+/**
+ * 圆弧 `A~M x0 y0 A rx ry rot large sweep x1 y1~…` → 折线采样。
+ *
+ * 用户 2026-11-10 反馈「生成的原理符号四周没有合拢，应该半圆有问题」：
+ * DSUB 这类符号的本体四角就是 4 条 `A` 弧（源数据 C141882 实测），
+ * 而解析器原先只认 P/R/E/C/PL/T —— 圆弧整条被丢掉，于是四角全部缺口。
+ *
+ * 语义与 SVG 的 `A` 命令完全一致（EasyEDA 符号坐标 y 向下，与 SVG 同向，
+ * sweep 不需要取反）。Capture 符号只有 Line/Rect/CommentText，没有圆弧图元，
+ * 所以按弧长采样成折线（90° 圆角 6~8 段，肉眼看不出折线）。
+ */
+const ARC_PATTERN =
+  /M\s*(-?[\d.]+)[\s,]+(-?[\d.]+)\s*A\s*(-?[\d.]+)[\s,]+(-?[\d.]+)[\s,]+(-?[\d.]+)[\s,]+([01])[\s,]+([01])[\s,]+(-?[\d.]+)[\s,]+(-?[\d.]+)/i;
+
+/** 一条 `A` 弧：折线采样点（预览用）+ 原生弧参数（写库用）。 */
+type ArcGeometry = {
+  readonly points: readonly Point[];
+  readonly primitive: SymbolShapePrimitive | undefined;
+};
+
+const arcGeometry = (raw: string): ArcGeometry | null => {
+  const match = ARC_PATTERN.exec(raw);
+  if (match === null) {
+    return null;
+  }
+  const start: Point = { x: Number(match[1]), y: Number(match[2]) };
+  const end: Point = { x: Number(match[8]), y: Number(match[9]) };
+  let rx = Math.abs(Number(match[3]));
+  let ry = Math.abs(Number(match[4]));
+  const rotation = (Number(match[5]) * Math.PI) / 180;
+  const largeArc = match[6] === "1";
+  const sweep = match[7] === "1";
+  if (!Number.isFinite(rx) || !Number.isFinite(ry) || rx === 0 || ry === 0) {
+    return { points: [start, end], primitive: undefined };
+  }
+  const cos = Math.cos(rotation);
+  const sin = Math.sin(rotation);
+  const halfDx = (start.x - end.x) / 2;
+  const halfDy = (start.y - end.y) / 2;
+  const x1p = cos * halfDx + sin * halfDy;
+  const y1p = -sin * halfDx + cos * halfDy;
+  // 半径不够容纳两端点：按 SVG 规范等比放大
+  const lambda = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
+  if (lambda > 1) {
+    const grow = Math.sqrt(lambda);
+    rx *= grow;
+    ry *= grow;
+  }
+  const sign = largeArc === sweep ? -1 : 1;
+  const numerator = rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p;
+  const denominator = rx * rx * y1p * y1p + ry * ry * x1p * x1p;
+  const coefficient =
+    denominator === 0 ? 0 : sign * Math.sqrt(Math.max(0, numerator / denominator));
+  const centerXp = (coefficient * rx * y1p) / ry;
+  const centerYp = (-coefficient * ry * x1p) / rx;
+  const centerX = cos * centerXp - sin * centerYp + (start.x + end.x) / 2;
+  const centerY = sin * centerXp + cos * centerYp + (start.y + end.y) / 2;
+  /** 从 u 到 v 的有向夹角 */
+  const angleOf = (ux: number, uy: number, vx: number, vy: number): number =>
+    Math.atan2(ux * vy - uy * vx, ux * vx + uy * vy);
+  const startAngle = angleOf(1, 0, (x1p - centerXp) / rx, (y1p - centerYp) / ry);
+  let deltaAngle = angleOf(
+    (x1p - centerXp) / rx,
+    (y1p - centerYp) / ry,
+    (-x1p - centerXp) / rx,
+    (-y1p - centerYp) / ry,
+  );
+  if (!sweep && deltaAngle > 0) {
+    deltaAngle -= Math.PI * 2;
+  }
+  if (sweep && deltaAngle < 0) {
+    deltaAngle += Math.PI * 2;
+  }
+  const steps = Math.max(6, Math.min(24, Math.ceil(Math.abs(deltaAngle) / (Math.PI / 12))));
+  const points: Point[] = [start];
+  for (let index = 1; index <= steps; index += 1) {
+    const theta = startAngle + (deltaAngle * index) / steps;
+    points.push({
+      x: centerX + rx * Math.cos(theta) * cos - ry * Math.sin(theta) * sin,
+      y: centerY + rx * Math.cos(theta) * sin + ry * Math.sin(theta) * cos,
+    });
+  }
+  // 末点强制吸附到源端点：下一段 PL 从这一点起笔，浮点误差会留出肉眼可见的缝
+  points[points.length - 1] = end;
+  // 写库用的原生圆弧只支持轴对齐椭圆（Capture 的 <Arc> 只有一个包围盒）
+  const primitive: SymbolShapePrimitive | undefined =
+    Math.abs(rotation) < 1e-9 && Number.isFinite(deltaAngle)
+      ? { type: "arc", center: { x: centerX, y: centerY }, rx, ry, startAngle, deltaAngle }
+      : undefined;
+  return { points, primitive };
+};
 
 type ParsedSymbolShapes = {
   readonly pins: NormalizedSymbolPin[];
@@ -177,14 +273,33 @@ const parseShapes = (shape: readonly string[]): ParsedSymbolShapes => {
         if (rx <= 0 || ry <= 0) {
           break;
         }
-        // 符号图元只支持矩形/折线/文本 → 圆与椭圆用 24 边形近似。
-        shapes.push({ kind: "polyline", points: ellipsePoints(cx, cy, rx, ry), closed: true });
+        // 符号图元只支持矩形/折线/文本 → 圆与椭圆用 24 边形近似；
+        // 同时留下原生椭圆参数，写库时用 <Ellipse> 才不会退化成"带台阶的八边形"。
+        shapes.push({
+          kind: "polyline",
+          points: ellipsePoints(cx, cy, rx, ry),
+          closed: true,
+          primitive: { type: "ellipse", center: { x: cx, y: cy }, rx, ry },
+        });
         break;
       }
       case "PL": {
         const points = polylinePoints(head);
         if (points.length >= 2) {
           shapes.push({ kind: "polyline", points, closed: false });
+        }
+        break;
+      }
+      case "A": {
+        // 圆弧（用户 2026-11-10）：以前落到 default 被静默丢弃，符号四角全部缺口
+        const arc = arcGeometry(head);
+        if (arc !== null && arc.points.length >= 2) {
+          shapes.push({
+            kind: "polyline",
+            points: [...arc.points],
+            closed: false,
+            primitive: arc.primitive,
+          });
         }
         break;
       }
@@ -338,15 +453,56 @@ const MAX_LABEL_FIT_SCALE = 4;
 /** 只有小于这个尺寸（单位 = 10 mil）的本体才考虑放大：9 单位字高塞不下 40 单位见方的本体。 */
 const LABEL_FIT_MIN_BODY = 40;
 
+/** 图形（不含引脚）的包围盒；没有图元时返回 null。 */
+const shapeBoxOf = (
+  shapes: readonly NormalizedSymbolShape[],
+): { minX: number; minY: number; maxX: number; maxY: number } | null => {
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (const shape of shapes) {
+    if (shape.kind === "rect") {
+      xs.push(shape.min.x, shape.max.x);
+      ys.push(shape.min.y, shape.max.y);
+    } else if (shape.kind === "polyline") {
+      for (const point of shape.points) {
+        xs.push(point.x);
+        ys.push(point.y);
+      }
+    }
+  }
+  if (xs.length === 0) {
+    return null;
+  }
+  return { minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) };
+};
+
 /** 单段几何 → NormalizedSymbolSection（锚点归零 + 去重 + 吸附 + 标签避让）。 */
 const buildSection = (part: ParsedPart, name: string): NormalizedSymbolSection => {
   const { pins, shapes, bounds } = part;
-  // 本体锚点归零：取本体 RECT 的 min 角（不是整体 bounds —— 左右引脚伸到 x<0 是正常的）。
+  /**
+   * 本体锚点归零：**本体左下角必须落在 (0,0)**。
+   *
+   * 用户 2026-11-10 第三次报 "生成的引脚还是有偏差"：DMR-9S 这种没有矩形本体的符号
+   * （DSUB 由直线 + 圆弧拼成）以前退回用整体 bounds 归零，而 bounds 含引脚与源数据
+   * 的 BBox 边距，本体因此落在 (22,0)。Capture 里本体按原点摆、引脚按绝对坐标画，
+   * 于是引脚整体比本体偏出一整根引脚的长度（截图里左边引脚凭空短了 20 单位）。
+   *
+   * 依据：Cadence 自带 Gate.olb 的 **581 个符号，SymbolBBox 全部以 (0,0) 起算**，
+   * 引脚参数是负 x（左侧）/ 超出本体（右侧），从不靠本体偏移表达。
+   */
   const bodyRect = shapes.find((shape) => shape.kind === "rect");
-  const anchorX = bodyRect === undefined ? bounds.minX : Math.min(bodyRect.min.x, bodyRect.max.x);
-  const anchorY = bodyRect === undefined ? bounds.minY : Math.min(bodyRect.min.y, bodyRect.max.y);
-  const dx = -anchorX;
-  const dy = -anchorY;
+  const drawingBox = shapeBoxOf(shapes);
+  const anchorX =
+    bodyRect === undefined
+      ? (drawingBox?.minX ?? bounds.minX)
+      : Math.min(bodyRect.min.x, bodyRect.max.x);
+  const anchorY =
+    bodyRect === undefined
+      ? (drawingBox?.minY ?? bounds.minY)
+      : Math.min(bodyRect.min.y, bodyRect.max.y);
+  // 归零位移。别让 0 变成 -0：坐标里出现 -0 会污染后续取模/相等判断。
+  const dx = anchorX === 0 ? 0 : -anchorX;
+  const dy = anchorY === 0 ? 0 : -anchorY;
 
   const assemble = (scale: number): NormalizedSymbolSection => {
     const movePoint = (point: Point): Point => ({
@@ -358,7 +514,15 @@ const buildSection = (part: ParsedPart, name: string): NormalizedSymbolSection =
         return { ...shape, min: movePoint(shape.min), max: movePoint(shape.max) };
       }
       if (shape.kind === "polyline") {
-        return { ...shape, points: shape.points.map(movePoint) };
+        return {
+          ...shape,
+          points: shape.points.map(movePoint),
+          // 原生椭圆/圆弧参数必须跟着一起平移放大，否则写库时图形会跑到原位置
+          primitive:
+            shape.primitive === undefined
+              ? undefined
+              : transformSymbolPrimitive(shape.primitive, dx, dy, scale),
+        };
       }
       return { ...shape, at: movePoint(shape.at) };
     };

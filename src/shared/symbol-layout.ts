@@ -18,6 +18,7 @@ import {
   pinSideOf,
   type SymbolBox,
 } from "./symbol-labels";
+import { transformSymbolPrimitive } from "./symbol-edit";
 
 /**
  * 引脚标签避让 —— 用几何手段消除标签重叠（用户 2026-10-16 反馈"标签叠到一起"）。
@@ -109,6 +110,8 @@ const pushRightEdge = (
       points: shape.points.map((point) =>
         Math.abs(point.x - bodyMaxX) <= EDGE_TOLERANCE ? { ...point, x: point.x + widen } : point,
       ),
+      // 端点被逐个挪动后已经不再是同一条椭圆/圆弧，原生图元必须丢掉（退回折线）
+      primitive: undefined,
     };
   }
   return shape;
@@ -343,7 +346,14 @@ const shiftShape = (
     };
   }
   if (shape.kind === "polyline") {
-    return { ...shape, points: shape.points.map((point) => ({ x: point.x + dx, y: point.y + dy })) };
+    return {
+      ...shape,
+      points: shape.points.map((point) => ({ x: point.x + dx, y: point.y + dy })),
+      primitive:
+        shape.primitive === undefined
+          ? undefined
+          : transformSymbolPrimitive(shape.primitive, dx, dy),
+    };
   }
   return { ...shape, at: { x: shape.at.x + dx, y: shape.at.y + dy } };
 };

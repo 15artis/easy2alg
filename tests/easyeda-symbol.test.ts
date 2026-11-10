@@ -136,6 +136,61 @@ describe("easyeda standard symbol", () => {
   });
 
   /**
+   * 用户 2026-11-10（第三次）：「生成的引脚还是有偏差」。
+   *
+   * DSUB/D 型连接器这类符号**没有矩形本体**（DMR-9S 的本体是 8 段直线 + 4 段圆弧），
+   * 以前退回用「整体 bounds」归零，而 bounds 含引脚与源数据 BBox 的边距，本体因此
+   * 落在 x=22 —— Capture 里本体按原点摆、引脚按绝对坐标画，整排引脚就比本体偏出
+   * 一整根引脚长度。Cadence 自带 Gate.olb 的 581 个符号全部以 (0,0) 起算本体，
+   * 所以归零基准必须是**图形包围盒**，不是 bounds。
+   */
+  describe("本体归零（没有 RECT 的符号）", () => {
+    const outline = {
+      shape: [
+        // 本体：只有直线，没有 RECT（pin 连接端在 80 / 150，本体 100..130）
+        "PL~130 20 100 20~#880000~1~0~none~gge1~0",
+        "PL~100 20 100 100~#880000~1~0~none~gge2~0",
+        "PL~100 100 130 100~#880000~1~0~none~gge3~0",
+        "PL~130 100 130 20~#880000~1~0~none~gge4~0",
+        // 左引脚：本体端 100、连接端 80（长度 20，方向 180°）
+        "P~show~1~1~80~60~180~gge5~0^^80~60^^M 80 60 h -20~#000000^^0~55~63~0~A~end~~~#000000^^1~65~59~0~1~start~~~#000000^^0~63~60^^0~M 60 57 L 57 60 L 60 63",
+        // 右引脚：连接端 150、本体端 130（方向 0°）
+        "P~show~1~2~150~60~0~gge6~0^^150~60^^M 150 60 h -20~#000000^^0~175~63~0~B~start~~~#000000^^1~165~59~0~2~start~~~#000000^^0~167~60^^0~M 170 57 L 173 60 L 170 63",
+      ],
+      BBox: { x: 78, y: 18, width: 74, height: 84 },
+    };
+
+    it("本体左下角落在 (0,0)，引脚端点仍贴本体边缘", () => {
+      const symbol = parseEasyEdaSymbol(outline, {
+        lcscId: "C999",
+        fallbackName: "DSUB9",
+        pcbFootprint: "",
+      })!;
+      const section = symbol.sections[0];
+      expect(bodyBoxOf(section)).toEqual({ minX: 0, minY: 0, maxX: 30, maxY: 80 });
+
+      const [left, right] = section.pins;
+      expect(left.connection.x).toBe(-20);
+      expect(left.body.x).toBe(0);
+      expect(right.connection.x).toBe(50);
+      expect(right.body.x).toBe(30);
+    });
+
+    it("写库时 SymbolBBox 从 0 起算（Capture 靠它摆本体）", () => {
+      const symbol = parseEasyEdaSymbol(outline, {
+        lcscId: "C999",
+        fallbackName: "DSUB9",
+        pcbFootprint: "",
+      })!;
+      const xml = buildCaptureLibraryXml(symbol, "C:/libs/target.OLB");
+      expect(xml).toContain('<Defn x1="0" x2="30" y1="0" y2="80" />');
+      // 引脚：hotpt = 连接端（负 x），start = 本体端 0
+      expect(xml).toMatch(/hotptX="-20"[^/]*startX="0"/);
+      expect(xml).toMatch(/hotptX="50"[^/]*startX="30"/);
+    });
+  });
+
+  /**
    * 多子部件器件（用户 2026-10-23 报的 C18221391 = AGM609MNA 双 MOSFET）：
    * `result.dataStr.shape` 是空数组，真实图形逐段放在 `result.subparts[].dataStr`。
    * 旧逻辑只读 dataStr → 解析成 null → 界面连预览都没有。
@@ -231,8 +286,9 @@ describe("easyeda standard symbol", () => {
       expect(body.maxY - body.minY).toBe(40);
       expect(body.maxX - body.minX).toBe(68);
       for (const pin of section.pins) {
-        expect(pin.connection.x % 10).toBe(0);
-        expect(pin.connection.y % 10).toBe(0);
+        // 本体归零后引脚可以是负坐标（Cadence 自带库就这样），% 会给出 -0，取绝对值再比
+        expect(Math.abs(pin.connection.x % 10)).toBe(0);
+        expect(Math.abs(pin.connection.y % 10)).toBe(0);
       }
     });
 
@@ -349,6 +405,125 @@ describe("easyeda standard symbol", () => {
 
     it("缺字段时仍用 12 这个样例一致的缺省值", () => {
       expect(withText("")).toBe(12);
+    });
+  });
+
+  /**
+   * 用户 2026-11-10：「生成的原理符号四周没有合拢，应该半圆有问题」。
+   *
+   * 真实数据 C141882（DMR-9S / DSUB-9）的本体四角是 4 条 `A` 圆弧图元 + 6 条 `PL`
+   * 直段。旧解析器只认 P/R/E/C/PL/T，圆弧整条被丢 → 四角全断。这里锁死：
+   * 圆弧必须变成折线，且整圈首尾相接。
+   */
+  describe("圆弧图元（A）", () => {
+    const outline = [
+      "PL~406 345 385 350~#880000~1~0~none~gge185~0",
+      "A~M 380.0269 346.6524 A 4 3 0 0 0 385.4817 349.7866~~#880000~1~0~none~gge186~0",
+      "PL~380 347 380 340~#880000~1~0~none~gge187~0",
+      "A~M 406.2941 344.8296 A 5 5 0 0 0 410 340~~#880000~1~0~none~gge188~0",
+      "PL~406 255 385 250~#880000~1~0~none~gge189~0",
+      "A~M 385.4817 250.2134 A 4 3 0 0 0 380.0269 253.3476~~#880000~1~0~none~gge190~0",
+      "PL~380 253 380 260~#880000~1~0~none~gge191~0",
+      "A~M 410 260 A 5 5 0 0 0 406.3782 255.1937~~#880000~1~0~none~gge192~0",
+      "PL~410 340 410 260~#880000~1~0~none~gge193~0",
+      "PL~380 340 380 260~#880000~1~0~none~gge208~0",
+    ];
+    const pin =
+      "P~show~1~10~430~290~0~gge194~0^^430~290^^M 430 290 h -20~#000000^^0~405~293~0~MH1~end~~~#000000^^1~415~289~0~10~start~~~#000000^^0~413~290^^0~M 410 287 L 407 290 L 410 293";
+    const parseOutline = (): NormalizedSymbol =>
+      parseEasyEdaSymbol(
+        {
+          head: { c_para: { name: "DMR-9S", pre: "J?" } },
+          shape: [...outline, pin],
+          BBox: { x: 358, y: 249.5, width: 74, height: 100.5 },
+        },
+        { lcscId: "C141882", fallbackName: "DMR-9S", pcbFootprint: "DSUB-TH_DMR-9S" },
+      )!;
+
+    it("圆弧被展开成折线，不再是 6 条直段", () => {
+      const section = parseOutline().sections[0];
+      const open = section.shapes.filter(
+        (shape) => shape.kind === "polyline" && !shape.closed,
+      );
+      // 6 条 PL + 4 条 A
+      expect(open.length).toBe(10);
+      const arcPointsCount = open.map((shape) => (shape.kind === "polyline" ? shape.points.length : 0));
+      // 4 条弧各自至少 6 个采样点（直段只有 2 个）
+      expect(arcPointsCount.filter((count) => count >= 6).length).toBe(4);
+    });
+
+    it("整圈首尾相接：每个端点都能找到另一个端点（容差 1 单位）", () => {
+      const section = parseOutline().sections[0];
+      const ends: { x: number; y: number }[] = [];
+      for (const shape of section.shapes) {
+        if (shape.kind !== "polyline" || shape.closed) {
+          continue;
+        }
+        ends.push(shape.points[0], shape.points[shape.points.length - 1]);
+      }
+      const orphans = ends.filter(
+        (point, index) =>
+          !ends.some(
+            (other, otherIndex) =>
+              otherIndex !== index &&
+              Math.hypot(other.x - point.x, other.y - point.y) <= 1,
+          ),
+      );
+      expect(orphans).toEqual([]);
+    });
+
+    /**
+     * 用户 2026-11-10（同一天的第二个问题）：「预览与实际生成有差异，这个圆生成有问题」。
+     * 折线只是预览用的采样，写库必须拿原始弧参数画 `<Arc>` —— 否则整数取整会把
+     * 90° 圆角压成一条斜面。这里锁死"采样点 = 参数曲线端点"，防止两边漂移。
+     */
+    it("保留原生弧参数，且参数算出的端点就是折线的首尾点", () => {
+      const section = parseOutline().sections[0];
+      const arcs = section.shapes.filter(
+        (shape) => shape.kind === "polyline" && shape.primitive?.type === "arc",
+      );
+      expect(arcs.length).toBe(4);
+      for (const shape of arcs) {
+        if (shape.kind !== "polyline" || shape.primitive?.type !== "arc") {
+          throw new Error("unreachable");
+        }
+        const arc = shape.primitive;
+        const at = (angle: number) => ({
+          x: arc.center.x + arc.rx * Math.cos(angle),
+          y: arc.center.y + arc.ry * Math.sin(angle),
+        });
+        const head = at(arc.startAngle);
+        const tail = at(arc.startAngle + arc.deltaAngle);
+        expect(head.x).toBeCloseTo(shape.points[0].x, 6);
+        expect(head.y).toBeCloseTo(shape.points[0].y, 6);
+        expect(tail.x).toBeCloseTo(shape.points[shape.points.length - 1].x, 6);
+        expect(tail.y).toBeCloseTo(shape.points[shape.points.length - 1].y, 6);
+        // 圆角都是钝一点的小弧，不会超过半圆
+        expect(Math.abs(arc.deltaAngle)).toBeLessThanOrEqual(Math.PI);
+      }
+    });
+
+    it("圆（E）留下原生椭圆参数，写库时不必再逐点近似", () => {
+      const symbol = parseEasyEdaSymbol(
+        {
+          head: { c_para: { name: "DOT", pre: "U?" } },
+          shape: ["E~390~260~3~3~#880000~1~0~none~g9~0"],
+        },
+        { lcscId: "C000001", fallbackName: "DOT", pcbFootprint: "DOT" },
+      )!;
+      const shape = symbol.sections[0].shapes[0];
+      if (shape.kind !== "polyline") {
+        throw new Error("圆应解析成闭合折线");
+      }
+      expect(shape.closed).toBe(true);
+      expect(shape.points.length).toBe(24);
+      // 锚点归零：单图元的包围盒左下角平移到 (0,0)，圆心因此落在 (3,3)
+      expect(shape.primitive).toEqual({
+        type: "ellipse",
+        center: { x: 3, y: 3 },
+        rx: 3,
+        ry: 3,
+      });
     });
   });
 });
