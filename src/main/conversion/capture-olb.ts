@@ -15,7 +15,7 @@ import {
   symbolFontHeight,
   symbolTextLines,
 } from "../../shared/symbol-labels";
-import { snapPinsToGrid } from "../../shared/symbol-layout";
+import { alignPinEndsToGrid } from "../../shared/symbol-layout";
 
 /**
  * OrCAD Capture 库 XML（.olb 交换格式）生成器。
@@ -527,8 +527,10 @@ export const buildCaptureLibraryXml = (
   // 写库出口统一吸附：解析阶段已对齐过一次，但用户可能在预览里手动拖过元素
   // （offset 是任意小数）。不吸附的话生成出来的引脚在 Capture 里接不上线。
   // 用户 2026-10-20 定：**跟随界面吸附开关** —— 关掉后按实际坐标写（仍取整）。
+  // 用 alignPinEndsToGrid 而不是只钉连接端：要求是**两端**都在 100 mil 格点上，
+  // 只钉连接端会留下 15 这种非整数倍长度（用户 2026-11-10 报"实物不正常"）。
   const sections =
-    options.snapPins === false ? symbol.sections : symbol.sections.map(snapPinsToGrid);
+    options.snapPins === false ? symbol.sections : symbol.sections.map(alignPinEndsToGrid);
   const multiSection = sections.length > 1;
   const now = Math.floor(Date.now() / 1000);
   const lines: string[] = [

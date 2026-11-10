@@ -16,7 +16,7 @@ import {
   DEFAULT_SYMBOL_TEXT_HEIGHT,
   sectionLabelsCollide,
 } from "../../shared/symbol-labels";
-import { alignPinsToGrid } from "../../shared/symbol-layout";
+import { alignPinEndsToGrid, alignPinsToGrid } from "../../shared/symbol-layout";
 import { dedupePinNames } from "../../shared/symbol-normalize";
 import { transformSymbolPrimitive } from "../../shared/symbol-edit";
 import { cleanSymbolName, refdesPrefixFrom, sanitizeSymbolName } from "./naming";
@@ -690,30 +690,28 @@ const buildSection = (part: ParsedPart, name: string): NormalizedSymbolSection =
       return { ...shape, at: movePoint(shape.at) };
     };
 
-    // ① 引脚名去重（Cadence 不接受重复引脚文本）→ ② 引脚标签避让。
-    // 顺序不能反：避让按引脚名的字宽算竖带深度，必须用**最终名字**（GND_18 比 GND 宽）。
-    // 都在解析阶段做，预览与写库看到的是同一份结果。
-    return attachPinLabelAnchors(
-      avoidLabelOverlapInSection(
-        alignPinsToGrid(
-          dedupePinNames({
-            name,
-            bounds: {
-              minX: (bounds.minX + dx) * scale,
-              minY: (bounds.minY + dy) * scale,
-              maxX: (bounds.maxX + dx) * scale,
-              maxY: (bounds.maxY + dy) * scale,
-            },
-            pins: pins.map((pin) => ({
-              ...pin,
-              connection: movePoint(pin.connection),
-              body: movePoint(pin.body),
-            })),
-            shapes: shapes.map(moveShape),
-          }),
-        ),
-      ),
-    );
+    // ① 引脚名去重（Cadence 不接受重复引脚文本）→ ② 引脚标签避让
+    // ③ 引脚两端落到 100 mil 网格（Capture 的硬约定，用户 2026-11-10 明确要求）
+    // 顺序不能反：避让按引脚名的字宽算竖带深度，必须用**最终名字**（GND_18 比 GND 宽）；
+    // 落格放在最后，标签锚点才会冻结在最终几何上（预览与写库看到的是同一份结果）。
+    const deduped = dedupePinNames({
+      name,
+      bounds: {
+        minX: (bounds.minX + dx) * scale,
+        minY: (bounds.minY + dy) * scale,
+        maxX: (bounds.maxX + dx) * scale,
+        maxY: (bounds.maxY + dy) * scale,
+      },
+      pins: pins.map((pin) => ({
+        ...pin,
+        connection: movePoint(pin.connection),
+        body: movePoint(pin.body),
+      })),
+      shapes: shapes.map(moveShape),
+    });
+    const snapped = alignPinsToGrid(deduped);
+    const spaced = avoidLabelOverlapInSection(snapped);
+    return attachPinLabelAnchors(alignPinEndsToGrid(spaced));
   };
 
   /**

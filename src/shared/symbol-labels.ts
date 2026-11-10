@@ -405,9 +405,9 @@ export const pinLabelBoxOf = (
  */
 export const sectionLabelsCollide = (section: NormalizedSymbolSection): boolean => {
   const body = bodyBoxOf(section);
-  const boxes = section.pins.flatMap((pin) => [
-    ...(pinLabelVisible(pin, "name") ? [pinNameBox(pin, body)] : []),
-    ...(pinLabelVisible(pin, "number") ? [pinNumberBox(pin, body)] : []),
+  const boxes = section.pins.flatMap((pin, index) => [
+    ...(pinLabelShown(section, index, "name") ? [pinNameBox(pin, body)] : []),
+    ...(pinLabelShown(section, index, "number") ? [pinNumberBox(pin, body)] : []),
   ]);
   for (let i = 0; i < boxes.length; i += 1) {
     for (let j = i + 1; j < boxes.length; j += 1) {

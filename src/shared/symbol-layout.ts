@@ -444,46 +444,77 @@ export const alignPinsToGrid = (section: NormalizedSymbolSection): NormalizedSym
   };
 };
 
+/** 引脚长度取到最近的 10 的整数倍，最小一格。 */
+const pinLengthOnGrid = (length: number): number =>
+  Math.max(SYMBOL_PIN_GRID, Math.round(length / SYMBOL_PIN_GRID) * SYMBOL_PIN_GRID);
+
 /**
- * 写库前的最后一道吸附：把每个引脚的**连接端**取整到 100 mil 网格（10 单位）。
+ * 让每个引脚的**两端都落在 100 mil 网格**上 —— 用户 2026-11-10 明确要求
+ * 「生成的图 OrCAD 尺寸需要满足引脚落在网格上，也就是 100 mil」。
  *
- * 为什么还要这一步：`alignPinsToGrid` 只在**解析阶段**把整排平移一次；用户随后在
- * 预览里手动拖动元素（offset 是像素 ÷ 缩放算出来的任意小数），连接端会重新离开
- * 网格 —— 那样生成的 .olb 在 Capture 原理图里照样接不上线。写库出口统一过一遍
- * 这里，无论前面怎么编辑，落到文件里的连接端一定在格点上。
+ * 依据：本机 Cadence 自带库导出件里 51109/51414（Connector.olb）引脚两端都是
+ * 10 的整数倍，长度只有 0 / 10 / 30。立创的符号常用 15 单位引脚、本体端点还落在
+ * 半格上（SACB5.0：startY=4、长 15），直接照抄进 .olb，Capture 里就是歪的 ——
+ * 预览按自己的坐标画得很准，实物对不上，正是这个差异。
  *
- * 两个方向分开处理：
- *  - **排方向**（左右脚看 y、上下脚看 x）：整脚平移（connection 与 body 同移），
- *    这样引脚长度与方向不变，同一排的相对间距原样保留；
- *  - **引脚长度方向**：只挪 connection 端，body 端继续贴在本体边缘上 —— 若整体
- *    平移，引脚会离开本体留下一道缝，视觉上像断开的引脚。
- * 代价是引脚长度可能变化 ≤5 单位（最多半个网格），换连接端严格落格。
+ * 三步，只在必要时动，尽量保持图形与引脚的相对关系：
+ *  1. **整段平移**：所有引脚的「本体端」在同一轴上余数一致时，把**图元 + 引脚一起**
+ *     挪到格点（只挪引脚会跟图元裂开一道缝）。SACB5.0 的 -4 就是这一步。
+ *  2. **排方向补格**：余数不一致（整段挪不动，例如被标签避让推过的右脚、或预览里
+ *     拖过的脚）时，沿**垂直于引脚轴**的方向整脚平移；再把本体端沿引脚轴推到最近格点。
+ *  3. **长度取整**：连接端推到 10 的整数倍处，本体端继续贴图元（15 → 20 这类）。
  */
-export const snapPinsToGrid = (section: NormalizedSymbolSection): NormalizedSymbolSection => {
-  let changed = false;
-  const pins = section.pins.map((pin) => {
-    // 左右引脚沿 y 排、水平伸出；上下引脚沿 x 排、竖直伸出。
-    const side = pinSideOf(pin);
-    const rowsAlongY = side === "left" || side === "right";
-    // 排方向：整脚平移
-    const along = rowsAlongY ? pin.connection.y : pin.connection.x;
-    const snappedAlong = Math.round(along / SYMBOL_PIN_GRID) * SYMBOL_PIN_GRID;
-    const alongDelta = snappedAlong - along;
-    const moved =
-      alongDelta === 0
-        ? pin
-        : shiftPin(pin, rowsAlongY ? 0 : alongDelta, rowsAlongY ? alongDelta : 0);
-    // 引脚长度方向：只挪连接端，body 端继续贴在本体边缘
-    const axis = rowsAlongY ? moved.connection.x : moved.connection.y;
-    const snappedAxis = Math.round(axis / SYMBOL_PIN_GRID) * SYMBOL_PIN_GRID;
-    if (snappedAxis === axis && moved === pin) {
+export const alignPinEndsToGrid = (section: NormalizedSymbolSection): NormalizedSymbolSection => {
+  if (section.pins.length === 0) {
+    return section;
+  }
+  const bodyX = new Set(section.pins.map((pin) => gridRemainder(pin.body.x)));
+  const bodyY = new Set(section.pins.map((pin) => gridRemainder(pin.body.y)));
+  const dx = bodyX.size === 1 ? gridDelta([...bodyX][0]) : 0;
+  const dy = bodyY.size === 1 ? gridDelta([...bodyY][0]) : 0;
+  const aligned = dx === 0 && dy === 0 ? section : shiftSection(section, dx, dy);
+
+  let changed = aligned !== section;
+  const pins = aligned.pins.map((pin) => {
+    let body = pin.body;
+    let connection = pin.connection;
+    let length = Math.hypot(connection.x - body.x, connection.y - body.y);
+    // 零长度引脚（贴在体边的隐藏电源脚）无从判断方向，原样保留
+    if (length < 1e-6) {
       return pin;
     }
-    changed = true;
-    return rowsAlongY
-      ? { ...moved, connection: { x: snappedAxis, y: moved.connection.y } }
-      : { ...moved, connection: { x: moved.connection.x, y: snappedAxis } };
+    const horizontal = Math.abs(connection.x - body.x) >= Math.abs(connection.y - body.y);
+    // ① 排方向（垂直于引脚轴）整脚平移：拖动过的手动坐标可能停在半格上
+    const rowValue = horizontal ? body.y : body.x;
+    const rowDelta = Math.round(rowValue / SYMBOL_PIN_GRID) * SYMBOL_PIN_GRID - rowValue;
+    if (rowDelta !== 0) {
+      body = horizontal ? { x: body.x, y: body.y + rowDelta } : { x: body.x + rowDelta, y: body.y };
+      connection = horizontal
+        ? { x: connection.x, y: connection.y + rowDelta }
+        : { x: connection.x + rowDelta, y: connection.y };
+      changed = true;
+    }
+    // ② 引脚轴方向：本体端推到最近格点（一般正好落在本体边缘上）
+    const axisValue = horizontal ? body.x : body.y;
+    const axisDelta = Math.round(axisValue / SYMBOL_PIN_GRID) * SYMBOL_PIN_GRID - axisValue;
+    if (axisDelta !== 0) {
+      body = horizontal ? { x: body.x + axisDelta, y: body.y } : { x: body.x, y: body.y + axisDelta };
+      changed = true;
+    }
+    // ③ 长度取 10 的整数倍：只挪连接端，本体端继续贴图元
+    const vx = connection.x - body.x;
+    const vy = connection.y - body.y;
+    const raw = Math.hypot(vx, vy);
+    const target = pinLengthOnGrid(raw);
+    const snapped = {
+      x: body.x + (vx / raw) * target,
+      y: body.y + (vy / raw) * target,
+    };
+    if (Math.abs(target - length) > 1e-6) {
+      changed = true;
+    }
+    return { ...pin, body, connection: snapped, length: target };
   });
 
-  return changed ? { ...section, pins } : section;
+  return changed ? { ...aligned, pins } : aligned;
 };
