@@ -64,13 +64,30 @@ describe("describeUpdate", () => {
     );
     expect(summary.title).toContain("v0.1.64");
     expect(summary.action).toBe("download");
-    expect(summary.actionLabel).toBe("下载更新");
+    expect(summary.actionLabel).toBe("立即更新");
+    // 一步到位：文案要明说点一下就会自动装完，不是只下载
+    expect(summary.detail).toContain("自动退出并安装");
   });
 
-  it("asks for a restart once the package is downloaded", () => {
+  it("keeps a manual install button as a fallback once downloaded", () => {
     const summary = describeUpdate(state({ status: "downloaded", latestVersion: "0.1.64" }));
     expect(summary.action).toBe("install");
-    expect(summary.actionLabel).toBe("重启并安装");
+    expect(summary.actionLabel).toBe("立即重启安装");
+  });
+
+  it("shows why auto-install is waiting when a conversion is running", () => {
+    // 主进程会在 downloaded 上挂一条 message 说明在等转换结束
+    const waiting = describeUpdate(
+      state({ status: "downloaded", latestVersion: "0.1.64", message: "转换任务进行中，结束后会自动安装。" }),
+    );
+    expect(waiting.detail).toBe("转换任务进行中，结束后会自动安装。");
+  });
+
+  it("locks the UI while the installer is taking over", () => {
+    const installing = describeUpdate(state({ status: "installing", latestVersion: "0.1.64" }));
+    expect(installing.action).toBeNull();
+    expect(installing.busy).toBe(true);
+    expect(installing.title).toContain("正在安装");
   });
 
   it("falls back to the release page when updates are unsupported", () => {

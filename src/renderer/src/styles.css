@@ -955,6 +955,12 @@ select:focus,
   border-color: #cfe0f7;
 }
 
+/* 下载中 / 安装中：不可再点，但仍要能看清进度 */
+.top-action.update-action:disabled {
+  cursor: default;
+  opacity: 0.8;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -1887,6 +1893,17 @@ select:focus,
 
 .statusbar i.missing {
   background: #c44848;
+}
+
+/* 底栏右端的版本号：等宽数字，方便肉眼比对是不是刚装的那版 */
+.status-version {
+  padding-left: 10px;
+  border-left: 1px solid #d7dfe9;
+  color: #3c4a5c;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  user-select: text;
 }
 
 .status-spacer {

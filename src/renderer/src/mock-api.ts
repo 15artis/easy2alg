@@ -64,7 +64,8 @@ export const createMockApi = (): Easy2AlgApi => {
     progressListeners.forEach((listener) => listener(value));
   };
   return {
-    getAppInfo: async () => ({ platform: "browser-preview", appVersion: "0.1.4" }),
+    // 浏览器预览没有主进程，真实版本号由 Electron 侧 app.getVersion() 提供
+    getAppInfo: async () => ({ platform: "browser-preview", appVersion: "0.2.15" }),
     getSettings: async () => readSettings(),
     saveSettings: async (settings) => {
       window.localStorage.setItem(SettingsKey, JSON.stringify(settings));

@@ -44,6 +44,14 @@ const HistorySchema = z.array(HistoryEntrySchema);
 /** 自动更新控制器；窗口创建后由启动流程触发一次静默检查。 */
 let updater: UpdaterController | null = null;
 
+/**
+ * 正在跑的转换任务数。
+ *
+ * 自动更新下载完成后会立刻 quitAndInstall —— 转换跑到一半被掐掉，
+ * 用户得把器件重新导一遍，所以退出前必须问一句这里是不是 0。
+ */
+let conversionsInFlight = 0;
+
 const OlbWriteRequestSchema = z.object({
   symbol: NormalizedSymbolSchema,
   libraryPath: z.string().min(1).nullable(),
@@ -391,6 +399,7 @@ const registerHandlers = (): void => {
       detector.inspectExecutable(path, null),
     );
     const progressState: { last: GenerationProgress | null } = { last: null };
+    conversionsInFlight += 1;
     try {
       const result = await runner.generate(
         plan,
@@ -427,6 +436,8 @@ const registerHandlers = (): void => {
         timestamp: new Date().toISOString(),
       });
       throw error;
+    } finally {
+      conversionsInFlight = Math.max(0, conversionsInFlight - 1);
     }
   });
   ipcMain.handle(IpcChannels.getHistory, () => historyStore.read());
@@ -448,6 +459,8 @@ const registerHandlers = (): void => {
         }
       }
     },
+    // 转换在跑就不自动退出安装，等它跑完（控制器自己会轮询）
+    isBusy: () => conversionsInFlight > 0,
   });
   updater = controller;
   ipcMain.handle(IpcChannels.getUpdateState, () => controller.getState());

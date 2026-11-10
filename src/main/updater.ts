@@ -14,6 +14,11 @@ const { autoUpdater } = updaterPackage;
 type UpdateInfo = updaterPackage.UpdateInfo;
 type ProgressInfo = updaterPackage.ProgressInfo;
 
+/** 下载完成到退出安装之间的缓冲：留给界面把"正在安装"画出来。 */
+const AUTO_INSTALL_DELAY_MS = 600;
+/** 有转换在跑时的轮询间隔（每轮都重新问一次 isBusy）。 */
+const AUTO_INSTALL_RETRY_MS = 2000;
+
 export type UpdaterController = {
   readonly getState: () => UpdateState;
   /** 检查是否有新版本；已是最新时状态会变成 up-to-date */
@@ -30,13 +35,22 @@ type Options = {
   readonly currentVersion: string;
   /** 状态变化时推给界面（主进程往所有窗口广播） */
   readonly notify: (state: UpdateState) => void;
+  /**
+   * 主进程此刻有没有不能中断的活（现在是"转换正在跑"）。
+   * 下载完成后自动退出安装前要问一句 —— 转换中途被 quitAndInstall 掐掉，
+   * 用户得从头再来一遍。
+   */
+  readonly isBusy?: () => boolean;
 };
 
 /**
  * 自动更新（Windows 安装版）。
  *
- * 设计上只做三件事：检查 → 下载 → 重启安装，每一步都要用户点一下，
- * 不做静默下载（用户可能正在转换，流量和磁盘都不该偷偷用掉）。
+ * 用户 2026-11-10 定的一步到位流程：顶栏那颗"新版本 vX"点一下就
+ * **自动下载 → 下完自动退出安装 → 装完自动重开**，不再要求点第二次。
+ * 只保留两处必要的停顿：
+ *   1. 转换任务在跑时不退出，等它结束（`isBusy`），界面上写明原因；
+ *   2. 下载完成后留 600ms 让界面把"正在安装"画出来再 quit，否则用户只看到窗口凭空消失。
  *
  * 免安装版 / 开发模式不接 electron-updater：前者没有安装目录可替换，
  * 后者没有打包时生成的 `app-update.yml`，接了只会抛错。这两种情况界面显示
@@ -45,6 +59,7 @@ type Options = {
 export const createUpdaterController = ({
   currentVersion,
   notify,
+  isBusy,
 }: Options): UpdaterController => {
   const support = canAutoUpdate({
     packaged: app.isPackaged,
@@ -104,6 +119,61 @@ export const createUpdaterController = ({
     void writeLog("warn", "update_feed_override", { url: feedOverride.trim() });
   }
 
+  /** 用户点过"立即更新"→ 下载完成后自动装；没点过就不擅自退出。 */
+  let installRequested = false;
+  let installTimer: ReturnType<typeof setTimeout> | null = null;
+  let installStarted = false;
+
+  const install = (): void => {
+    if (installStarted || state.status !== "downloaded") {
+      return;
+    }
+    installStarted = true;
+    publish({ status: "installing", message: null });
+    void writeLog("info", "update_install_requested", {
+      latest: state.latestVersion,
+    });
+    // isSilent=true：不再让用户点安装向导（这是"点一下就装完"的最后一环，
+    // 安装目录沿用上次的选择，由 electron-builder 的注册表记录保证）；
+    // isForceRunAfter=true：装完自动重新打开。
+    // 想回到"看图点下一步"的老行为，把第一个参数改成 false 即可。
+    try {
+      autoUpdater.quitAndInstall(true, true);
+    } catch (error) {
+      // 退出失败（安装包被占用等）就别把界面卡在"正在安装…"，回到可重试的状态
+      installStarted = false;
+      const message = humanizeUpdateError(error);
+      publish({ status: "error", message });
+      void writeLog("error", "update_install_failed", { message });
+    }
+  };
+
+  /**
+   * 下载完成后自动退出安装。
+   *
+   * 转换在跑就先不退（`isBusy`），每 2 秒回来看一眼 —— 转换跑到一半被
+   * quitAndInstall 掐掉，用户得从头再导一次器件。
+   */
+  const scheduleAutoInstall = (): void => {
+    if (!installRequested || installTimer !== null) {
+      return;
+    }
+    if (isBusy?.() === true) {
+      publish({ message: "转换任务进行中，结束后会自动安装。" });
+      void writeLog("info", "update_install_deferred", { latest: state.latestVersion });
+      installTimer = setTimeout(() => {
+        installTimer = null;
+        scheduleAutoInstall();
+      }, AUTO_INSTALL_RETRY_MS);
+      return;
+    }
+    // 留一拍让界面把"正在安装"画出来，否则窗口凭空消失
+    installTimer = setTimeout(() => {
+      installTimer = null;
+      install();
+    }, AUTO_INSTALL_DELAY_MS);
+  };
+
   const handleCheckingForUpdate = (): void => {
     publish({ status: "checking", message: null });
     void writeLog("info", "update_check_started", { current: state.currentVersion });
@@ -128,8 +198,12 @@ export const createUpdaterController = ({
   const handleUpdateDownloaded = (info: UpdateInfo): void => {
     publish({ status: "downloaded", latestVersion: info.version, percent: 100, message: null });
     void writeLog("info", "update_downloaded", { latest: info.version });
+    // 一步到位：下完就直接装（转换在跑就等它跑完）
+    scheduleAutoInstall();
   };
   const handleError = (error: Error): void => {
+    // 出错就别再惦记自动安装了，等用户下一次点
+    installRequested = false;
     const message = humanizeUpdateError(error);
     publish({ status: "error", message });
     void writeLog("error", "update_failed", { message, raw: error.message });
@@ -168,10 +242,13 @@ export const createUpdaterController = ({
       return state;
     }
     downloading = true;
+    // 点了下载就当作"要装"：下完自动退出安装，不用再点第二次
+    installRequested = true;
     void writeLog("info", "update_download_requested", { latest: state.latestVersion });
     try {
       await autoUpdater.downloadUpdate();
     } catch (error) {
+      installRequested = false;
       const message = humanizeUpdateError(error);
       publish({ status: "error", message });
       void writeLog("error", "update_download_failed", { message });
@@ -181,18 +258,11 @@ export const createUpdaterController = ({
     return state;
   };
 
-  const install = (): void => {
-    if (state.status !== "downloaded") {
-      return;
-    }
-    void writeLog("info", "update_install_requested", {
-      latest: state.latestVersion,
-    });
-    // isSilent=false：让用户看到安装界面；isForceRunAfter=true：装完自动重开
-    autoUpdater.quitAndInstall(false, true);
-  };
-
   const dispose = (): void => {
+    if (installTimer !== null) {
+      clearTimeout(installTimer);
+      installTimer = null;
+    }
     autoUpdater.removeListener("checking-for-update", handleCheckingForUpdate);
     autoUpdater.removeListener("update-available", handleUpdateAvailable);
     autoUpdater.removeListener("update-not-available", handleUpdateNotAvailable);

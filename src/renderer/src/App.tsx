@@ -67,7 +67,7 @@ import type {
 import { KNOWN_ALLEGRO_VERSIONS } from "../../shared/allegro-version";
 import { OLB_REFRESH_HINT } from "../../shared/messages";
 import { createMockApi } from "./mock-api";
-import { describeUpdate, type UpdateAction, type UpdateState } from "../../shared/update";
+import { describePercent, describeUpdate, type UpdateAction, type UpdateState } from "../../shared/update";
 import { PanZoom, type PanZoomHandle } from "./PanZoom";
 import { SymbolGrid } from "./SymbolGrid";
 import { SymbolProperties } from "./SymbolProperties";
@@ -3255,6 +3255,79 @@ const HistoryPage = ({
 );
 
 /**
+ * 顶栏的更新徽标。
+ *
+ * 用户 2026-11-10 定的流程：点一下就开始下载 → 下完主进程自动退出安装 →
+ * 装完自动重开。所以这里不再是"跳到设置页"，而是直接触发动作；
+ * 下载中/安装中只做进度显示（按钮禁用，避免重复触发）。
+ */
+const UpdateBadge = ({ state }: { readonly state: UpdateState }): ReactElement | null => {
+  const act = async (): Promise<void> => {
+    try {
+      if (state.status === "available") {
+        await api.downloadUpdate();
+      } else if (state.status === "downloaded") {
+        await api.installUpdate();
+      }
+    } catch {
+      // 失败会由主进程推 error 状态，设置页里有完整文案与重试入口
+    }
+  };
+  switch (state.status) {
+    case "available":
+      return (
+        <button
+          className="top-action update-action"
+          type="button"
+          onClick={() => void act()}
+          data-testid="nav-update"
+          title="点击后自动下载，下载完成会自动退出安装，装完自动重开"
+        >
+          <Download size={17} />新版本 v{state.latestVersion ?? ""}
+        </button>
+      );
+    case "downloading":
+      return (
+        <button
+          className="top-action update-action"
+          type="button"
+          disabled
+          data-testid="nav-update"
+          title="正在下载更新，下载完会自动安装"
+        >
+          <Download size={17} />下载中 {describePercent(state.percent)}
+        </button>
+      );
+    case "downloaded":
+      return (
+        <button
+          className="top-action update-action"
+          type="button"
+          onClick={() => void act()}
+          data-testid="nav-update"
+          title={state.message ?? "下载完成，正在自动安装…"}
+        >
+          <Download size={17} />安装更新
+        </button>
+      );
+    case "installing":
+      return (
+        <button
+          className="top-action update-action"
+          type="button"
+          disabled
+          data-testid="nav-update"
+          title="正在退出并启动安装程序"
+        >
+          <Download size={17} />正在安装…
+        </button>
+      );
+    default:
+      return null;
+  }
+};
+
+/**
  * 自动更新卡片（设置页）。
  *
  * 状态全部由主进程维护、App 订阅后传下来，这里只负责点按钮和显示错误 ——
@@ -3290,7 +3363,7 @@ const UpdateCard = ({ state }: { readonly state: UpdateState | null }): ReactEle
       <div className="setting-icon"><Download size={21} /></div>
       <div className="setting-content">
         <label>软件更新</label>
-        <p>启动时自动检查新版本，下载完成后重启软件即可安装。</p>
+        <p>启动时自动检查新版本，点「立即更新」后自动下载、自动安装并重开。</p>
         <div className={`update-card ${state?.status ?? "idle"}`}>
           <div className="update-copy">
             <strong>{summary?.title ?? "读取版本信息…"}</strong>
@@ -3654,6 +3727,16 @@ export const App = (): ReactElement => {
   const [fatalError, setFatalError] = useState<string | null>(null);
   /** 自动更新状态：主进程推过来的唯一一份，设置页与顶栏共用。 */
   const [update, setUpdate] = useState<UpdateState | null>(null);
+  /** 当前运行版本，来自主进程的 app.getVersion()（发布包里的 package.json 版本）。 */
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    // 版本号拿不到不算致命错误：底栏显示占位符就行，别把整页拖进错误态。
+    void api
+      .getAppInfo()
+      .then((info) => setAppVersion(info.appVersion))
+      .catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     Promise.all([api.getSettings(), api.getHistory(), api.detectAllegro()])
@@ -3754,19 +3837,7 @@ export const App = (): ReactElement => {
           <button className="top-action" type="button" onClick={() => setPage("settings")} data-testid="nav-settings">
             <Settings size={17} />设置
           </button>
-          {update !== null &&
-          (update.status === "available" || update.status === "downloaded") ? (
-            <button
-              className="top-action update-action"
-              type="button"
-              onClick={() => setPage("settings")}
-              data-testid="nav-update"
-              title={update.status === "downloaded" ? "更新已下载，重启即可安装" : "发现新版本"}
-            >
-              <Download size={17} />
-              {update.status === "downloaded" ? "可安装更新" : `新版本 v${update.latestVersion ?? ""}`}
-            </button>
-          ) : null}
+          {update === null ? null : <UpdateBadge state={update} />}
           <button className="top-action" type="button">
             <CircleHelp size={17} />帮助
           </button>
@@ -3810,6 +3881,13 @@ export const App = (): ReactElement => {
         <span className="status-spacer" />
         <span>{selectedReady} 个器件已选择</span>
         <span>UTF-8</span>
+        <span
+          className="status-version"
+          title="当前运行版本（重新打包后这里会跟着 package.json 变）"
+          data-testid="app-version"
+        >
+          v{appVersion ?? "—"}
+        </span>
       </footer>
       {!settings.setupCompleted || activeInstall === null ? (
         <SetupDialog

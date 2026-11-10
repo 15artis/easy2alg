@@ -14,8 +14,10 @@ export type UpdateStatus =
   /** 有新版，等用户点下载 */
   | "available"
   | "downloading"
-  /** 下载完成，等用户重启安装 */
+  /** 下载完成，正在退出并交给安装程序 */
   | "downloaded"
+  /** 安装程序已启动，软件即将关闭（用户 2026-11-10：点一下就自动装，不用再点第二次） */
+  | "installing"
   | "error"
   /** 开发模式 / 免安装版 / 非 Windows：不提供自动更新 */
   | "unsupported";
@@ -79,6 +81,10 @@ export type UpdateSummary = {
   readonly busy: boolean;
 };
 
+/** 进度百分比统一夹到 0–100 并取整，界面上不要出现 -5% 或 480%。 */
+export const describePercent = (percent: number): string =>
+  `${Math.max(0, Math.min(100, Math.round(percent)))}%`;
+
 /**
  * 把状态翻译成界面上那一行字和主按钮。
  * 文案集中在这里，改一次全站一致。
@@ -114,15 +120,15 @@ export const describeUpdate = (state: UpdateState): UpdateSummary => {
     case "available":
       return {
         title: `发现新版本 ${latest}`,
-        detail: `当前版本 ${current}，下载完成后重启软件即可完成安装。`,
+        detail: `当前版本 ${current}，点击后自动下载，下载完成会自动退出并安装。`,
         action: "download",
-        actionLabel: "下载更新",
+        actionLabel: "立即更新",
         busy: false,
       };
     case "downloading":
       return {
         title: `正在下载 ${latest}`,
-        detail: `已完成 ${Math.max(0, Math.min(100, Math.round(state.percent)))}%，请保持网络畅通。`,
+        detail: `已完成 ${describePercent(state.percent)}，下载完会自动安装，请保持网络畅通。`,
         action: null,
         actionLabel: null,
         busy: true,
@@ -130,10 +136,21 @@ export const describeUpdate = (state: UpdateState): UpdateSummary => {
     case "downloaded":
       return {
         title: `${latest} 已下载完成`,
-        detail: "重启软件即可完成安装；正在进行的转换请先保存。",
+        // 正常路径下这行只闪一下：主进程 600ms 后就退出安装。
+        // 有转换在跑时 message 会被替换成"等任务结束再装"，用户能看到为什么还没退。
+        detail: state.message ?? "正在退出并启动安装程序…",
+        // 自动安装偶尔会被卡住（比如安装包被杀软锁住），留个手动兜底
         action: "install",
-        actionLabel: "重启并安装",
+        actionLabel: "立即重启安装",
         busy: false,
+      };
+    case "installing":
+      return {
+        title: `正在安装 ${latest}`,
+        detail: "软件即将关闭，安装完成后会自动重新打开。",
+        action: null,
+        actionLabel: null,
+        busy: true,
       };
     case "error":
       return {
