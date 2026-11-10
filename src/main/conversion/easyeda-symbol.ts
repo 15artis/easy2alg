@@ -111,6 +111,152 @@ const polylinePoints = (raw: string): Point[] =>
       return points;
     }, []) ?? [];
 
+/** 路径里的一个子环（`M … Z` 一段）。一条 `PT` 可能有多段，各自独立成图形。 */
+type PathRing = { readonly points: Point[]; readonly closed: boolean };
+
+/** 连没见过的命令字母一起切开：认不出来就停手，不能把它的参数当上一个命令的续参 */
+const PATH_TOKEN_PATTERN = /[A-Za-z]|-?\d*\.?\d+(?:[eE][-+]?\d+)?/g;
+/** 曲线采样段数：符号尺度下 16 段的弦高误差 < r/30，远小于 1 个库单位。 */
+const PATH_CURVE_STEPS = 16;
+
+const quadraticAt = (p0: Point, p1: Point, p2: Point, t: number): Point => {
+  const k = 1 - t;
+  return {
+    x: k * k * p0.x + 2 * k * t * p1.x + t * t * p2.x,
+    y: k * k * p0.y + 2 * k * t * p1.y + t * t * p2.y,
+  };
+};
+
+const cubicAt = (p0: Point, p1: Point, p2: Point, p3: Point, t: number): Point => {
+  const k = 1 - t;
+  const a = k * k * k;
+  const b = 3 * k * k * t;
+  const c = 3 * k * t * t;
+  const d = t * t * t;
+  return {
+    x: a * p0.x + b * p1.x + c * p2.x + d * p3.x,
+    y: a * p0.y + b * p1.y + c * p2.y + d * p3.y,
+  };
+};
+
+/**
+ * 多边形路径 `PT~M x y L x y Z~色~宽~…` → 一组折线环。
+ *
+ * 用户 2026-11-10 报「创建的预览有问题」（C3699281 / SACB5.0 的 TVS 符号）：
+ * 二极管的两个三角形在源数据里是 `PT` 路径，解析器只认 P/R/E/C/PL/A/T，
+ * `PT` 落进 default 被静默丢弃 —— 预览和写进 .olb 的符号都少了两个三角形，
+ * 只剩引脚、稳压条和两段连线。和之前漏掉 `A` 弧是同一类问题。
+ *
+ * 命令集按符号里实际出现的情况取 M/L/H/V/Z + C/Q（曲线采样），
+ * 遇到没见过的命令直接停止解析该路径，宁可少画也不要画错。
+ */
+const pathRings = (raw: string): PathRing[] => {
+  const tokens = raw.match(PATH_TOKEN_PATTERN) ?? [];
+  const rings: PathRing[] = [];
+  let points: Point[] = [];
+  let closed = false;
+  let cursor: Point = { x: 0, y: 0 };
+  let subpathStart: Point = { x: 0, y: 0 };
+  let index = 0;
+  /** 当前生效的命令；参数批次读完后保持不变（`M 1 2 3 4` 的后续坐标对是 L） */
+  let letter = "";
+
+  const flush = (): void => {
+    if (points.length >= 2) {
+      rings.push({ points, closed });
+    }
+    points = [];
+    closed = false;
+  };
+  const take = (): number => {
+    const value = Number(tokens[index]);
+    index += 1;
+    return Number.isFinite(value) ? value : 0;
+  };
+
+  while (index < tokens.length) {
+    const token = tokens[index] ?? "";
+    if (/^[A-Za-z]$/.test(token)) {
+      index += 1;
+      if (token === "Z" || token === "z") {
+        // 闭合由 closed 标记表达：写 .olb 时补首点、预览时画 Z，都不在数据里重复存首点
+        closed = true;
+        flush();
+        cursor = { ...subpathStart };
+        letter = "";
+        continue;
+      }
+      if ("MmLlHhVvCcQq".includes(token)) {
+        letter = token;
+        continue;
+      }
+      // 没见过的命令：后面的参数无从解释，整条路径就此打住
+      break;
+    }
+    if (letter === "") {
+      index += 1;
+      continue;
+    }
+    const relative = letter !== letter.toUpperCase();
+    const base = relative ? cursor : { x: 0, y: 0 };
+    switch (letter.toUpperCase()) {
+      case "M": {
+        flush();
+        const x = take() + base.x;
+        const y = take() + base.y;
+        cursor = { x, y };
+        subpathStart = { x, y };
+        points = [{ x, y }];
+        // SVG 语义：M 之后成对的坐标是隐式 L
+        letter = relative ? "l" : "L";
+        break;
+      }
+      case "L": {
+        const x = take() + base.x;
+        const y = take() + base.y;
+        cursor = { x, y };
+        points.push({ x, y });
+        break;
+      }
+      case "H": {
+        const x = take() + (relative ? cursor.x : 0);
+        cursor = { x, y: cursor.y };
+        points.push({ ...cursor });
+        break;
+      }
+      case "V": {
+        const y = take() + (relative ? cursor.y : 0);
+        cursor = { x: cursor.x, y };
+        points.push({ ...cursor });
+        break;
+      }
+      case "Q": {
+        const control = { x: take() + base.x, y: take() + base.y };
+        const end = { x: take() + base.x, y: take() + base.y };
+        for (let step = 1; step <= PATH_CURVE_STEPS; step += 1) {
+          points.push(quadraticAt(cursor, control, end, step / PATH_CURVE_STEPS));
+        }
+        cursor = end;
+        break;
+      }
+      case "C": {
+        const control1 = { x: take() + base.x, y: take() + base.y };
+        const control2 = { x: take() + base.x, y: take() + base.y };
+        const end = { x: take() + base.x, y: take() + base.y };
+        for (let step = 1; step <= PATH_CURVE_STEPS; step += 1) {
+          points.push(cubicAt(cursor, control1, control2, end, step / PATH_CURVE_STEPS));
+        }
+        cursor = end;
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  flush();
+  return rings;
+};
+
 /**
  * 圆弧 `A~M x0 y0 A rx ry rot large sweep x1 y1~…` → 折线采样。
  *
@@ -287,6 +433,14 @@ const parseShapes = (shape: readonly string[]): ParsedSymbolShapes => {
         const points = polylinePoints(head);
         if (points.length >= 2) {
           shapes.push({ kind: "polyline", points, closed: false });
+        }
+        break;
+      }
+      case "PT": {
+        // 多边形路径（二极管三角、箭头、异形本体）。一条 PT 可能含多个 M…Z 子环，
+        // 每个子环各写一条折线；闭合与否按源数据里的 Z 决定。
+        for (const ring of pathRings(head.split("~")[1] ?? "")) {
+          shapes.push({ kind: "polyline", points: [...ring.points], closed: ring.closed });
         }
         break;
       }

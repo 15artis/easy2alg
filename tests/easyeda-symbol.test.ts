@@ -527,3 +527,98 @@ describe("easyeda standard symbol", () => {
     });
   });
 });
+
+/**
+ * 多边形图元 `PT`（用户 2026-11-10 报「创建的预览有问题」，C3699281 / SACB5.0）。
+ *
+ * 二极管的三角形在源数据里是 `PT~M … L … Z~…` 路径，解析器原先只认 P/R/E/C/PL/A/T，
+ * 这类图元整条落进 default 被静默丢弃 —— 预览里只剩引脚、稳压条和两段连线，
+ * 写进 .olb 的符号同样少了两个三角形。和之前漏掉 `A` 弧是同一类问题。
+ */
+describe("多边形图元（PT）", () => {
+  // 真实响应摘录（C3699281）：两个三角形 + 稳压条 + 连接线，引脚 1/2 上下各一
+  const shapes = [
+    "P~show~0~1~10~-35~90~gge77~0^^10~-35^^M 10 -35 v 15~#880000^^0~13~-17~270~1~end~~~#0000FF^^0~9~-26~270~1~start~~~#0000FF^^0~10~-23^^0~M 7 -20 L 10 -17 L 13 -20",
+    "PL~19 -24 15 -20 5 -20 1 -16~#880000~1~0~none~gge98~0",
+    "PT~M 4 -10 L 10 -20 L 17 -10 Z ~#880000~1~0~none~gge101~0~",
+    "PL~10 -10 10 -5~#000000~1~0~none~gge104~0",
+    "PL~10 -5 10 0~#000000~1~0~none~gge107~0",
+    "PT~M 16 0 L 10 10 L 3 0 Z ~#880000~1~0~none~gge113~0~",
+    "PL~1 10 20 10~#000000~1~0~none~gge116~0",
+    "P~show~0~2~10~25~270~gge122~0^^10~25^^M 10 25 v -15~#880000^^0~13~7~270~2~start~~~#0000FF^^0~9~16~270~2~end~~~#0000FF^^0~10~13^^0~M 13 10 L 10 7 L 7 10",
+  ];
+  const parseTvs = (): NormalizedSymbol =>
+    parseEasyEdaSymbol(
+      {
+        head: { c_para: { name: "SACB5.0", pre: "U?" } },
+        shape: shapes,
+        BBox: { x: 1, y: -36, width: 19, height: 62 },
+      },
+      { lcscId: "C3699281", fallbackName: "SACB5.0", pcbFootprint: "DO-214AA" },
+    )!;
+
+  it("两个三角形都解析成闭合折线，不再是「只有引脚和稳压条」", () => {
+    const shapesOut = parseTvs().sections[0].shapes;
+    const closed = shapesOut.filter(
+      (shape) => shape.kind === "polyline" && shape.closed,
+    );
+    expect(closed.length).toBe(2);
+    for (const triangle of closed) {
+      if (triangle.kind !== "polyline") throw new Error("应为折线");
+      expect(triangle.points.length).toBe(3);
+      // 三角形有且只有一个顶点落在中轴 x 上：一个尖朝上（对着 1 脚），一个尖朝下
+      const onAxis = triangle.points.filter((point) => point.x === 10).length;
+      expect(onAxis).toBe(1);
+    }
+  });
+
+  it("闭合折线写进 .olb 时补上首点，三角形是 3 段线", () => {
+    const xml = buildCaptureLibraryXml(parseTvs(), "C:/libs/tvs.OLB");
+    const lineCount = (xml.match(/<Line>/g) ?? []).length;
+    // 稳压条 3 段 + 三角 3 + 连接线 1 + 1 + 三角 3 + 底部横条 1 = 12
+    expect(lineCount).toBe(12);
+  });
+
+  it("一条 PT 里的多个 M…Z 子环各自成图形", () => {
+    const symbol = parseEasyEdaSymbol(
+      {
+        head: { c_para: { name: "TWIN", pre: "U?" } },
+        shape: ["PT~M 0 0 L 10 0 L 10 10 Z M 20 0 L 30 0 L 30 10 Z ~#880000~1~0~none~g1~0~"],
+      },
+      { lcscId: "C000002", fallbackName: "TWIN", pcbFootprint: "TWIN" },
+    )!;
+    const closed = symbol.sections[0].shapes.filter(
+      (shape) => shape.kind === "polyline" && shape.closed,
+    );
+    expect(closed.length).toBe(2);
+  });
+
+  it("相对命令与曲线也能画出来（c/q 采样成折线）", () => {
+    const symbol = parseEasyEdaSymbol(
+      {
+        head: { c_para: { name: "CURVE", pre: "U?" } },
+        shape: ["PT~M 0 0 l 10 0 q 5 5 0 10 c 0 5 10 5 10 0 ~#880000~1~0~none~g1~0~"],
+      },
+      { lcscId: "C000003", fallbackName: "CURVE", pcbFootprint: "CURVE" },
+    )!;
+    const curve = symbol.sections[0].shapes[0];
+    if (curve.kind !== "polyline") throw new Error("应为折线");
+    // 1 个起点 + 1 个 L 终点 + 16 段 q + 16 段 c
+    expect(curve.points.length).toBe(2 + 16 + 16);
+    expect(curve.closed).toBe(false);
+  });
+
+  it("没见过的路径命令直接停手，不产出半截错误图形", () => {
+    const symbol = parseEasyEdaSymbol(
+      {
+        head: { c_para: { name: "ODD", pre: "U?" } },
+        // A 命令不在 PT 支持列表里：解析到此为止，前面的点保留
+        shape: ["PT~M 0 0 L 10 0 A 5 5 0 0 0 20 10 ~#880000~1~0~none~g1~0~"],
+      },
+      { lcscId: "C000004", fallbackName: "ODD", pcbFootprint: "ODD" },
+    )!;
+    const parsed = symbol.sections[0].shapes[0];
+    if (parsed.kind !== "polyline") throw new Error("应为折线");
+    expect(parsed.points.length).toBe(2);
+  });
+});
