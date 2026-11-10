@@ -528,8 +528,8 @@ const normalViewCommands = (
 ): readonly string[] => {
   const body = bodyBoxOf(section);
   // 全局旋转规则：**有上下边引脚时必须置 1**，否则它们的名字会被水平画出、
-  // 和相邻竖排标签糊在一起。重叠问题由 shared/symbol-layout.ts 的几何避让解决
-  // —— 逐脚 PinDisplayProp 那条路实测无效（见该文件注释）。
+  // 和相邻横排标签糊在一起。逐脚落点见 `pinNamePropCommands`，左右两侧的重叠
+  // 交给 shared/symbol-layout.ts 的几何避让。
   const commands: string[] = ["      <NormalView>", '        <Defn suffix=".Normal" />'];
   // "Part Reference" 贴在本体上方、"Value" 贴在本体下方 —— 坐标与现网库一致
   // （y 轴在编辑器里向下，所以 minY-14 在屏幕上位于本体上侧）。

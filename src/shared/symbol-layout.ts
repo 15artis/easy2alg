@@ -23,10 +23,12 @@ import { transformSymbolPrimitive } from "./symbol-edit";
 /**
  * 引脚标签避让 —— 用几何手段消除标签重叠（用户 2026-10-16 反馈"标签叠到一起"）。
  *
- * 为什么不能逐脚指定标签位置：orcad-package-autogen 走的是 PinDisplayProp。
- * 实测把现网库里 **Cadence 自己导出**的 PinDisplayProp 原样喂给
- * `XMATIC_XML2OLB`，导入后再导出，元素数为 0 —— 这条导入路径**静默丢弃**
- * PinDisplayProp（本工具链第三次遇到"报 ok 但掉料"）。所以只能改几何。
+ * 改几何而不是只挪文字：左右两侧的名字会顶到上/下引脚，光挪一个治不了根。
+ * （曾经以为 `PinDisplayProp` 会被 `XMATIC_XML2OLB` 静默丢弃，所以连"逐脚定
+ * 文字位置"都没考虑；2026-11-10 复测推翻了该结论 —— 带 PinDisplayProp 的 XML
+ * 导入再导出，元素与 locX/locY/rotation/val 全部逐字保留，见
+ * `capture-olb.ts` 的 `pinNamePropCommands`。上下引脚的名字现在写死落点，
+ * 这里只管左右两侧与本体尺寸。）
  *
  * 重叠成因（见 shared/symbol-labels.ts 的实测规则）：竖排名字从本体上/下边往
  * **本体内部**长、横排名字从左/右边往**本体内部**长，两者在**四角**必相交。
