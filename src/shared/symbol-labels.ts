@@ -1,4 +1,8 @@
-import type { NormalizedSymbolPin, NormalizedSymbolSection } from "./schemas";
+import type {
+  NormalizedSymbolPin,
+  NormalizedSymbolSection,
+  NormalizedSymbolShape,
+} from "./schemas";
 import {
   isSymbolPinKey,
   isSymbolPinLabelKey,
@@ -183,11 +187,61 @@ const drawingBoxOf = (section: NormalizedSymbolSection): SymbolBox | null => {
  * 连图元都没有才退到整段 bounds。
  */
 export const bodyBoxOf = (section: NormalizedSymbolSection): SymbolBox => {
-  const rect = section.shapes.find((shape) => shape.kind === "rect");
-  if (rect !== undefined && rect.kind === "rect") {
+  const rect = bodyRectOf(section);
+  if (rect !== undefined) {
     return normalize({ minX: rect.min.x, minY: rect.min.y, maxX: rect.max.x, maxY: rect.max.y });
   }
   return normalize(drawingBoxOf(section) ?? section.bounds);
+};
+
+/** 判定「引脚本体端压在这只矩形的边上」的容差（源数据有 .5 抖动与浮点误差）。 */
+export const SYMBOL_BODY_EDGE_TOLERANCE = 1;
+
+/**
+ * 本体矩形：一只 RECT 就是它；多只时挑**引脚本体端压在上面最多**的那只。
+ *
+ * 立创把装饰图形也画成 `R`（SMA-KWE 的接头外壳就是第二只矩形），
+ * `find(rect)` 拿到的不一定是本体 —— 全库抽查里 SMA-KWE 恰好本体在前，
+ * 但顺序不能靠运气。见 `keepSingleBodyRect`（只有本体保留 RECT，其余转线段）。
+ */
+export const bodyRectOf = (
+  section: NormalizedSymbolSection,
+): Extract<NormalizedSymbolShape, { kind: "rect" }> | undefined => {
+  const rects = section.shapes.filter(
+    (shape): shape is Extract<NormalizedSymbolShape, { kind: "rect" }> => shape.kind === "rect",
+  );
+  if (rects.length <= 1) {
+    return rects[0];
+  }
+  let best = rects[0];
+  let bestCount = -1;
+  for (const rect of rects) {
+    const count = section.pins.filter((pin) => pinBodyOnRect(pin, rect)).length;
+    if (count > bestCount) {
+      best = rect;
+      bestCount = count;
+    }
+  }
+  return best;
+};
+
+/** 引脚的本体端是不是压在这只矩形的四条边上。 */
+const pinBodyOnRect = (
+  pin: NormalizedSymbolPin,
+  rect: Extract<NormalizedSymbolShape, { kind: "rect" }>,
+): boolean => {
+  const minX = Math.min(rect.min.x, rect.max.x);
+  const maxX = Math.max(rect.min.x, rect.max.x);
+  const minY = Math.min(rect.min.y, rect.max.y);
+  const maxY = Math.max(rect.min.y, rect.max.y);
+  const tolerance = SYMBOL_BODY_EDGE_TOLERANCE;
+  const nearX =
+    Math.abs(pin.body.x - minX) <= tolerance || Math.abs(pin.body.x - maxX) <= tolerance;
+  const nearY =
+    Math.abs(pin.body.y - minY) <= tolerance || Math.abs(pin.body.y - maxY) <= tolerance;
+  const insideX = pin.body.x >= minX - tolerance && pin.body.x <= maxX + tolerance;
+  const insideY = pin.body.y >= minY - tolerance && pin.body.y <= maxY + tolerance;
+  return (nearX && insideY) || (nearY && insideX);
 };
 
 export type PinSide = "left" | "right" | "top" | "bottom";

@@ -3,16 +3,20 @@ import type {
   NormalizedSymbolPin,
   NormalizedSymbolSection,
   NormalizedSymbolShape,
+  Point,
 } from "./schemas";
 import {
+  SYMBOL_BODY_EDGE_TOLERANCE,
   SYMBOL_LABEL_CLEARANCE,
   SYMBOL_LABEL_HALF,
   SYMBOL_LABEL_OFFSET,
   bodyBoxOf,
+  bodyRectOf,
   boxesOverlap,
   commentTextBox,
   estimateLabelWidth,
   pinIsVertical,
+  pinLabelShown,
   pinNameBox,
   pinNumberBox,
   pinSideOf,
@@ -49,10 +53,16 @@ import { transformSymbolPrimitive } from "./symbol-edit";
 /** 用来吸收 5 单位取整误差的额外余量。 */
 const GRID = 5;
 
-/** 某一侧名字占的竖带深度（该侧最长名字宽）。 */
-const sideDepth = (pins: readonly NormalizedSymbolPin[], side: "left" | "right"): number =>
-  pins.reduce(
-    (depth, pin) => (pinSideOf(pin) === side ? Math.max(depth, estimateLabelWidth(pin.name)) : depth),
+/** 某一侧名字占的竖带深度（该侧最长名字宽；名字被整段关掉的不算）。 */
+const sideDepth = (
+  section: NormalizedSymbolSection,
+  side: "left" | "right",
+): number =>
+  section.pins.reduce(
+    (depth, pin, index) =>
+      pinSideOf(pin) === side && pinLabelShown(section, index, "name")
+        ? Math.max(depth, estimateLabelWidth(pin.name))
+        : depth,
     0,
   );
 
@@ -194,9 +204,9 @@ const resolveTextCollisions = (section: NormalizedSymbolSection): NormalizedSymb
     return section;
   }
   const body = bodyBoxOf(section);
-  const labels: SymbolBox[] = section.pins.flatMap((pin) => [
-    pinNameBox(pin, body),
-    pinNumberBox(pin, body),
+  const labels: SymbolBox[] = section.pins.flatMap((pin, index) => [
+    ...(pinLabelShown(section, index, "name") ? [pinNameBox(pin, body)] : []),
+    ...(pinLabelShown(section, index, "number") ? [pinNumberBox(pin, body)] : []),
   ]);
   const placed: SymbolBox[] = [];
   let changed = false;
@@ -247,9 +257,22 @@ const widenForVerticalLabels = (
   if (!section.shapes.some((shape) => shape.kind === "rect")) {
     return section;
   }
+  /**
+   * 左右两侧**一条显示出来的引脚名都没有**时，就没有竖带要避让 ——
+   * 名字与脚号相同（排针 / 端子 / SMA 头）的段整段关名字，Capture 只画脚号。
+   * 旧逻辑照样按 name 的字宽算竖带，把 SMA-KWE 27 宽的本体硬撑到 50，
+   * 比立创原图宽了近一倍（用户 2026-11-10：「怎么这么大，与原理图差异大」）。
+   */
+  const hasHorizontalName = section.pins.some((pin, index) => {
+    const side = pinSideOf(pin);
+    return (side === "left" || side === "right") && pinLabelShown(section, index, "name");
+  });
+  if (!hasHorizontalName) {
+    return section;
+  }
   const body = bodyBoxOf(section);
-  const leftDepth = sideDepth(section.pins, "left");
-  const rightDepth = sideDepth(section.pins, "right");
+  const leftDepth = sideDepth(section, "left");
+  const rightDepth = sideDepth(section, "right");
   const leftInset = bandInset(leftDepth);
   const rightInset = bandInset(rightDepth);
   const span = spanOf(vertical);
@@ -519,6 +542,196 @@ export const alignPinEndsToGrid = (section: NormalizedSymbolSection): Normalized
   });
 
   return changed ? { ...aligned, pins } : aligned;
+};
+
+const snapToPinGrid = (value: number): number => {
+  const snapped = Math.round(value / SYMBOL_PIN_GRID) * SYMBOL_PIN_GRID;
+  return snapped === 0 ? 0 : snapped;
+};
+
+/** 长/宽取到最近的 10 的整数倍（最小一格）。 */
+const sizeOnGrid = (size: number): number =>
+  Math.max(SYMBOL_PIN_GRID, Math.round(size / SYMBOL_PIN_GRID) * SYMBOL_PIN_GRID);
+
+/**
+ * 本体矩形落到 100 mil 网格（用户 2026-11-10：「框」也要按网格走）。
+ *
+ * 立创的本体是按像素画的，宽高往往不是 10 的整数倍 —— SN74LVC1G17DBVR 是 33×62，
+ * 左边落格、右边和下边却停在半格上。引脚两端已经落格，框却没落，预览里一眼就看
+ * 得出来（截图里框的右边比网格线多出 3 个单位），进 Capture 后抓线、对齐也得手动补。
+ *
+ * **位置取格点、长宽取 10 的倍数**：四条边各自独立取整会把 27 宽的本体撑成 40
+ * （左 -3→-10、右 24→30），跟源符号差得远 —— 用户 2026-11-10 第二次报的
+ * 「怎么这么大，与原理图差异大」就是尺寸被改坏。锚点不动、只把长宽收到最近的
+ * 10 的倍数，比例最接近原图，也不会把引脚挤到框外。
+ *
+ * 只动「本体」那一只矩形（与 `bodyBoxOf` 选的是同一只），三步：
+ *  1. 边取整 + 长宽取整；
+ *  2. 本体端正好压在被移动的边上的引脚，跟着边一起走（相对间距与顺序不变）；
+ *  3. 按新的本体端重算引脚长度并取 10 的整数倍 —— 连接端因此仍落在格点上
+ *     （两端都在格点 ⇒ 长度必是 10 的整数倍，Capture 里也才是标准引脚）。
+ *
+ * 贴边画的分隔线（`poly (0,200)-(180,200)` 那种）端点跟着外推/内收，否则框变了
+ * 线会短一截或戳出去；椭圆/圆弧采样出来的折线不动（只挪一个采样点会把圆啃出一个口）。
+ */
+export const alignBodyToGrid = (section: NormalizedSymbolSection): NormalizedSymbolSection => {
+  const body = bodyRectOf(section);
+  if (body === undefined) {
+    return section;
+  }
+  const minX = Math.min(body.min.x, body.max.x);
+  const maxX = Math.max(body.min.x, body.max.x);
+  const minY = Math.min(body.min.y, body.max.y);
+  const maxY = Math.max(body.min.y, body.max.y);
+  const target = {
+    minX: snapToPinGrid(minX),
+    maxX: snapToPinGrid(minX) + sizeOnGrid(maxX - minX),
+    minY: snapToPinGrid(minY),
+    maxY: snapToPinGrid(minY) + sizeOnGrid(maxY - minY),
+  };
+  // 长宽取整只会动对面那条边；万一还是把「本来就在框里」的引脚挤到框外，往外让一格。
+  // 压在某条边上的引脚不算：它会跟着那条边一起走（见下面的 snapPoint）。
+  const inside = section.pins
+    .map((pin) => pin.body)
+    .filter(
+      (point) =>
+        point.x > minX + SYMBOL_BODY_EDGE_TOLERANCE &&
+        point.x < maxX - SYMBOL_BODY_EDGE_TOLERANCE &&
+        point.y > minY + SYMBOL_BODY_EDGE_TOLERANCE &&
+        point.y < maxY - SYMBOL_BODY_EDGE_TOLERANCE,
+    );
+  if (inside.length > 0) {
+    const pinMinX = Math.min(...inside.map((point) => point.x));
+    const pinMaxX = Math.max(...inside.map((point) => point.x));
+    const pinMinY = Math.min(...inside.map((point) => point.y));
+    const pinMaxY = Math.max(...inside.map((point) => point.y));
+    if (target.minX > pinMinX) {
+      target.minX = Math.floor(pinMinX / SYMBOL_PIN_GRID) * SYMBOL_PIN_GRID;
+    }
+    if (target.maxX < pinMaxX) {
+      target.maxX = Math.ceil(pinMaxX / SYMBOL_PIN_GRID) * SYMBOL_PIN_GRID;
+    }
+    if (target.minY > pinMinY) {
+      target.minY = Math.floor(pinMinY / SYMBOL_PIN_GRID) * SYMBOL_PIN_GRID;
+    }
+    if (target.maxY < pinMaxY) {
+      target.maxY = Math.ceil(pinMaxY / SYMBOL_PIN_GRID) * SYMBOL_PIN_GRID;
+    }
+  }
+  if (
+    target.minX === minX &&
+    target.maxX === maxX &&
+    target.minY === minY &&
+    target.maxY === maxY
+  ) {
+    return section;
+  }
+
+  /** 把落在这四条边上的坐标替换成新边；不在边上的原样返回。 */
+  const snapPoint = (point: Point): Point => {
+    let x = point.x;
+    let y = point.y;
+    if (Math.abs(x - minX) <= SYMBOL_BODY_EDGE_TOLERANCE) {
+      x = target.minX;
+    } else if (Math.abs(x - maxX) <= SYMBOL_BODY_EDGE_TOLERANCE) {
+      x = target.maxX;
+    }
+    if (Math.abs(y - minY) <= SYMBOL_BODY_EDGE_TOLERANCE) {
+      y = target.minY;
+    } else if (Math.abs(y - maxY) <= SYMBOL_BODY_EDGE_TOLERANCE) {
+      y = target.maxY;
+    }
+    return x === point.x && y === point.y ? point : { x, y };
+  };
+
+  const shapes: NormalizedSymbolShape[] = section.shapes.map((shape) => {
+    if (shape.kind === "rect") {
+      if (shape !== body) {
+        return shape;
+      }
+      // 保持 RECT 原本的角点顺序（源数据偶尔给反的 min/max）
+      const xs = shape.min.x <= shape.max.x ? [target.minX, target.maxX] : [target.maxX, target.minX];
+      const ys = shape.min.y <= shape.max.y ? [target.minY, target.maxY] : [target.maxY, target.minY];
+      return { ...shape, min: { x: xs[0], y: ys[0] }, max: { x: xs[1], y: ys[1] } };
+    }
+    if (shape.kind === "polyline") {
+      // 椭圆/圆弧采样出来的折线只可能有一个点碰到边，挪它会变形
+      if (shape.primitive !== undefined) {
+        return shape;
+      }
+      const points = shape.points.map(snapPoint);
+      return points.every((point, index) => point === shape.points[index])
+        ? shape
+        : { ...shape, points };
+    }
+    return shape;
+  });
+
+  let changed = shapes.some((shape, index) => shape !== section.shapes[index]);
+  const pins = section.pins.map((pin) => {
+    const snapped = snapPoint(pin.body);
+    if (snapped === pin.body) {
+      return pin;
+    }
+    changed = true;
+    const vx = pin.connection.x - snapped.x;
+    const vy = pin.connection.y - snapped.y;
+    const raw = Math.hypot(vx, vy);
+    // 零长度引脚（贴边隐藏的电源脚）只挪本体端
+    if (raw < 1e-6) {
+      return { ...pin, body: snapped };
+    }
+    const length = pinLengthOnGrid(raw);
+    return {
+      ...pin,
+      body: snapped,
+      connection: { x: snapped.x + (vx / raw) * length, y: snapped.y + (vy / raw) * length },
+      length,
+    };
+  });
+
+  return changed ? { ...section, shapes, pins } : section;
+};
+
+/**
+ * 一只符号只保留**一个** RECT，其余矩形改成四段线段（闭合折线）。
+ *
+ * 用户 2026-11-10：「只有一个矩形才能使用矩形，其他情况都使用线段 —— 一个框会把
+ * 引脚限制在这个框内进行」。立创把装饰图形也画成 `R`（SMA-KWE 的接头外壳就是
+ * 第二只矩形），照抄进 OLB 就变成两个 `<Rect>`，Capture 里等于两个本体，引脚被
+ * 夹在中间那个框里。本体（`bodyRectOf`：引脚本体端压得最多的那只）保留 RECT，
+ * 其余转闭合折线 —— 外观一样，但不再被当成本体。
+ */
+export const keepSingleBodyRect = (
+  section: NormalizedSymbolSection,
+): NormalizedSymbolSection => {
+  const rectCount = section.shapes.filter((shape) => shape.kind === "rect").length;
+  if (rectCount <= 1) {
+    return section;
+  }
+  const body = bodyRectOf(section);
+  let changed = false;
+  const shapes: NormalizedSymbolShape[] = section.shapes.map((shape) => {
+    if (shape.kind !== "rect" || shape === body) {
+      return shape;
+    }
+    changed = true;
+    const minX = Math.min(shape.min.x, shape.max.x);
+    const maxX = Math.max(shape.min.x, shape.max.x);
+    const minY = Math.min(shape.min.y, shape.max.y);
+    const maxY = Math.max(shape.min.y, shape.max.y);
+    return {
+      kind: "polyline",
+      closed: true,
+      points: [
+        { x: minX, y: minY },
+        { x: maxX, y: minY },
+        { x: maxX, y: maxY },
+        { x: minX, y: maxY },
+      ],
+    };
+  });
+  return changed ? { ...section, shapes } : section;
 };
 
 /**

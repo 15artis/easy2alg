@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { parseEasyEdaSymbol } from "../src/main/conversion/easyeda-symbol";
 import { buildCaptureLibraryXml } from "../src/main/conversion/capture-olb";
 import { applySymbolEdits } from "../src/shared/symbol-edit";
-import { alignPinEndsToGrid } from "../src/shared/symbol-layout";
+import { alignBodyToGrid, alignPinEndsToGrid } from "../src/shared/symbol-layout";
 import type { NormalizedSymbol, NormalizedSymbolSection } from "../src/shared/schemas";
 
 /**
@@ -109,28 +109,29 @@ describe("原理图符号引脚落入 100 mil 网格", () => {
 });
 
 /**
- * 两颗真实器件（夹具 `easyeda-pins.json` 是接口响应原文）。
+ * 三颗真实器件（夹具 `easyeda-pins.json` 是接口响应原文）。
  *
  * 用户 2026-11-10：「生成的图 OrCAD 尺寸需要满足引脚落在网格上，也就是 100 mil；
  * 预览能够准确，实物就不正常。」SACB5.0 的引脚原本 `startY=4`、长 15 —— 两端都不在
  * 10 的整数倍上；预览按自己的坐标画得准，Capture 里就是歪的。
  */
-describe("真实器件：引脚两端都落在 100 mil 网格", () => {
-  const fixtures = JSON.parse(
-    readFileSync(fileURLToPath(new URL("./fixtures/easyeda-pins.json", import.meta.url)), "utf8"),
-  ) as Record<string, { title: string; dataStr: unknown }>;
+const fixtures = JSON.parse(
+  readFileSync(fileURLToPath(new URL("./fixtures/easyeda-pins.json", import.meta.url)), "utf8"),
+) as Record<string, { title: string; dataStr: unknown }>;
 
-  const parse = (lcscId: string): NormalizedSymbol => {
-    const symbol = parseEasyEdaSymbol(fixtures[lcscId].dataStr, {
-      lcscId,
-      fallbackName: fixtures[lcscId].title,
-      pcbFootprint: "",
-    });
-    if (symbol === null) {
-      throw new Error(`解析失败：${lcscId}`);
-    }
-    return symbol;
-  };
+const parse = (lcscId: string): NormalizedSymbol => {
+  const symbol = parseEasyEdaSymbol(fixtures[lcscId].dataStr, {
+    lcscId,
+    fallbackName: fixtures[lcscId].title,
+    pcbFootprint: "",
+  });
+  if (symbol === null) {
+    throw new Error(`解析失败：${lcscId}`);
+  }
+  return symbol;
+};
+
+describe("真实器件：引脚两端都落在 100 mil 网格", () => {
 
   it("SACB5.0：本体与引脚一起下移 4，引脚落在 0/30，长度取整到 20", () => {
     const [section] = parse("C3699281").sections;
@@ -151,7 +152,7 @@ describe("真实器件：引脚两端都落在 100 mil 网格", () => {
     expect(apex.points).toContainEqual({ x: 10, y: 0 });
   });
 
-  it("SMA-KWE：五条脚两端都在格点上，右脚贴住本体右边缘", () => {
+  it("SMA-KWE：五条脚两端都在格点上，5 号脚穿出本体右边缘", () => {
     const [section] = parse("C7498154").sections;
     for (const pin of section.pins) {
       for (const point of [pin.body, pin.connection]) {
@@ -164,9 +165,27 @@ describe("真实器件：引脚两端都落在 100 mil 网格", () => {
     if (body?.kind !== "rect") {
       throw new Error("缺少本体矩形");
     }
-    // 5 号脚从本体右边缘水平引出（排序后不再固定是数组第 0 个）
+    // 5 号脚从本体**内部**起画、穿出右边缘（立创原图就是这样：本体 387..414、脚从 410 引出）
     const right = section.pins.find((pin) => pin.number === "5");
-    expect(right?.body.x).toBe(body.max.x);
+    expect(right?.body.x).toBeLessThan(body.max.x);
+    expect(right?.connection.x).toBeGreaterThan(body.max.x);
+  });
+
+  it("SMA-KWE：只有本体保留 RECT，接头外壳转成线段", () => {
+    const [section] = parse("C7498154").sections;
+    expect(section.shapes.filter((shape) => shape.kind === "rect")).toHaveLength(1);
+    // 外壳（源 340..377×290..310，归一化后 -50..-13）必须是四段闭合折线
+    const shell = section.shapes.find(
+      (shape) =>
+        shape.kind === "polyline" &&
+        shape.closed &&
+        shape.points.length === 4 &&
+        Math.min(...shape.points.map((point) => point.x)) === -50,
+    );
+    if (shell?.kind !== "polyline") {
+      throw new Error("外壳没有被转成线段");
+    }
+    expect(Math.max(...shell.points.map((point) => point.x))).toBe(-13);
   });
 
   it("引脚按脚号排序：立创数组顺序不按号排（SMA-KWE 是 5,4,3,2,1）", () => {
@@ -174,6 +193,136 @@ describe("真实器件：引脚两端都落在 100 mil 网格", () => {
     expect(section.pins.map((pin) => pin.number)).toEqual(["1", "2", "3", "4", "5"]);
     // 排序后 position（数组下标）与脚号一致，Capture 才不会把名字和编号错开画
     expect(section.pins.map((pin) => pin.name)).toEqual(["1", "2", "3", "4", "5"]);
-    expect(section.pins[0].body).toEqual({ x: 10, y: 0 });
+    expect(section.pins[0].body).toEqual({ x: 0, y: 0 });
+  });
+
+  it("SMA-KWE：本体不再为（被关掉的）引脚名让位而加宽", () => {
+    const [section] = parse("C7498154").sections;
+    const body = section.shapes.find((shape) => shape.kind === "rect");
+    if (body?.kind !== "rect") {
+      throw new Error("缺少本体矩形");
+    }
+    // 立创原图 27 宽 → 收到 30（曾经被撑到 50，用户 2026-11-10：「怎么这么大」）
+    expect(body.max.x - body.min.x).toBe(30);
+    expect(body.max.y - body.min.y).toBe(20);
+  });
+});
+
+/**
+ * 用户 2026-11-10（第二次）：「可以看到生成的……不在网格上，这是有问题，
+ * 正常的一个框内部引脚原理图符号 应该需要按照网格进行」。
+ *
+ * 截图（SN74LVC1G17DBVR）里框的下边压在两行网格线**之间**：立创画的本体是
+ * 33×62，左右/上下四条边只有左上角在格点上。引脚早已两端落格，框却没落，
+ * 预览一眼就能看出来，进 Capture 也一样对不齐。
+ */
+describe("本体矩形也落在 100 mil 网格", () => {
+  const framed = (): NormalizedSymbolSection => ({
+    name: "FRAME",
+    bounds: { minX: -11, minY: 0, maxX: 33, maxY: 62 },
+    pins: [
+      {
+        name: "A",
+        number: "1",
+        connection: { x: -10, y: 10 },
+        body: { x: 0, y: 10 },
+        length: 10,
+        type: "passive",
+        visible: true,
+      },
+      {
+        name: "B",
+        number: "2",
+        connection: { x: 43, y: 30 },
+        body: { x: 33, y: 30 },
+        length: 10,
+        type: "passive",
+        visible: true,
+      },
+    ],
+    shapes: [
+      { kind: "rect", min: { x: 0, y: 0 }, max: { x: 33, y: 62 }, cornerRadius: 2, filled: false },
+      // 横贯本体的分隔线：右端贴住本体的右边
+      {
+        kind: "polyline",
+        points: [
+          { x: 0, y: 20 },
+          { x: 33, y: 20 },
+        ],
+        closed: false,
+      },
+      // 反相圆圈：采样折线带 primitive，只可能有一个点碰到边，不能挪
+      {
+        kind: "polyline",
+        points: [
+          { x: 1.5, y: 3 },
+          { x: 3, y: 4.5 },
+        ],
+        closed: true,
+        primitive: { type: "ellipse", center: { x: 3, y: 3 }, rx: 1.5, ry: 1.5 },
+      },
+    ],
+  });
+
+  it("锚点取格点、长宽取 10 的倍数（33×62 → 30×60）", () => {
+    const shape = alignBodyToGrid(framed()).shapes[0];
+    if (shape.kind !== "rect") {
+      throw new Error("缺少本体矩形");
+    }
+    expect(shape.min).toEqual({ x: 0, y: 0 });
+    expect(shape.max).toEqual({ x: 30, y: 60 });
+  });
+
+  it("贴边引脚跟着边走，连接端仍在格点上，长度还是 10 的整数倍", () => {
+    const [left, right] = alignBodyToGrid(framed()).pins;
+    // 左脚贴左边缘（0 未动）
+    expect(left.body).toEqual({ x: 0, y: 10 });
+    expect(left.connection).toEqual({ x: -10, y: 10 });
+    // 右脚贴右边缘：33 → 30，连接端跟着落到 40（原来是 43）
+    expect(right.body).toEqual({ x: 30, y: 30 });
+    expect(right.connection).toEqual({ x: 40, y: 30 });
+    expect(right.length).toBe(10);
+  });
+
+  it("贴边折线端点跟着走，椭圆/圆弧采样折线不动", () => {
+    const source = framed();
+    const shapes = alignBodyToGrid(source).shapes;
+    const divider = shapes[1];
+    if (divider.kind !== "polyline") {
+      throw new Error("缺少分隔线");
+    }
+    expect(divider.points).toEqual([
+      { x: 0, y: 20 },
+      { x: 30, y: 20 },
+    ]);
+    // 椭圆采样折线原样保留（挪一个采样点会把圆啃出一个口）
+    expect(shapes[2]).toBe(source.shapes[2]);
+  });
+
+  it("已经落在网格上的本体原样返回（不产生无意义的复制）", () => {
+    const aligned = alignBodyToGrid(framed());
+    expect(alignBodyToGrid(aligned)).toBe(aligned);
+  });
+
+  it("真实器件 SN74LVC1G17DBVR：本体 33×62 收敛到 30×60", () => {
+    const [section] = parse("C7836").sections;
+    const body = section.shapes.find((shape) => shape.kind === "rect");
+    if (body?.kind !== "rect") {
+      throw new Error("缺少本体矩形");
+    }
+    expect(Math.abs(body.min.x % 10)).toBe(0);
+    expect(Math.abs(body.max.x % 10)).toBe(0);
+    expect(Math.abs(body.min.y % 10)).toBe(0);
+    expect(Math.abs(body.max.y % 10)).toBe(0);
+    expect(body.max.x - body.min.x).toBe(30);
+    expect(body.max.y - body.min.y).toBe(60);
+    // 引脚仍然两端落格，并且 1/2/3/4/5 都在左边缘上一字排开
+    for (const pin of section.pins) {
+      for (const point of [pin.body, pin.connection]) {
+        expect(Math.abs(point.x % 10)).toBe(0);
+        expect(Math.abs(point.y % 10)).toBe(0);
+      }
+      expect(pin.body.x).toBe(body.min.x);
+    }
   });
 });

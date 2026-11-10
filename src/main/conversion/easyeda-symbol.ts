@@ -16,7 +16,13 @@ import {
   DEFAULT_SYMBOL_TEXT_HEIGHT,
   sectionLabelsCollide,
 } from "../../shared/symbol-labels";
-import { alignPinEndsToGrid, alignPinsToGrid, sortPinsByNumber } from "../../shared/symbol-layout";
+import {
+  alignBodyToGrid,
+  alignPinEndsToGrid,
+  alignPinsToGrid,
+  keepSingleBodyRect,
+  sortPinsByNumber,
+} from "../../shared/symbol-layout";
 import { dedupePinNames } from "../../shared/symbol-normalize";
 import { transformSymbolPrimitive } from "../../shared/symbol-edit";
 import { cleanSymbolName, refdesPrefixFrom, sanitizeSymbolName } from "./naming";
@@ -709,11 +715,13 @@ const buildSection = (part: ParsedPart, name: string): NormalizedSymbolSection =
       })),
       shapes: shapes.map(moveShape),
     });
-    const snapped = alignPinsToGrid(deduped);
+    const snapped = alignPinsToGrid(keepSingleBodyRect(deduped));
     const spaced = avoidLabelOverlapInSection(snapped);
-    // ④ 按脚号重排放在最后：立创的焊盘顺序不按号排（SMA-KWE 是 5,4,3,2,1），
+    // ④ 本体矩形也要落到 100 mil 网格（用户 2026-11-10：「框」不在网格式的符号没法对齐）。
+    //    放在引脚落格之后：本体边一挪，贴边引脚的连接端要跟着重算，才能两端都还在格点上。
+    // ⑤ 按脚号重排放在最后：立创的焊盘顺序不按号排（SMA-KWE 是 5,4,3,2,1），
     //    而 OLB 的 position 就是数组下标 —— 不排的话名字与编号整体错位。
-    return sortPinsByNumber(attachPinLabelAnchors(alignPinEndsToGrid(spaced)));
+    return sortPinsByNumber(attachPinLabelAnchors(alignBodyToGrid(alignPinEndsToGrid(spaced))));
   };
 
   /**
