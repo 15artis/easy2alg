@@ -127,12 +127,10 @@ describe("capture library XML", () => {
 
   it("writes pin geometry as hotpt=connection and start=body with the Capture type code", () => {
     const xml = buildCaptureLibraryXml(singleSection(), "C:/libs/target.OLB");
-    // name 与 number 同为 "1" 也照常打开脚号：Capture 里两者分属 SymbolPinScalar.name
-    // 与 PhysicalPart.PinNumber，本来就各画一份；IsNumberVisible=0 在实机不生效，
-    // 写 0 只会让预览跟实机对不上（用户 2026-11-10 的 OrCAD 对照截图）。
+    // name 与 number 同为 "1" → 关掉脚号，只由 Capture 画一次 name（否则同一个字出现两遍）
     expect(xml).toContain('<Defn hotptX="30" hotptY="10" name="1" position="0" startX="20" startY="10" type="4" visible="1" />');
     expect(xml).toMatch(
-      /<IsNumberVisible>\s*<Defn val="1" \/>\s*<\/IsNumberVisible>/,
+      /<IsNumberVisible>\s*<Defn val="0" \/>\s*<\/IsNumberVisible>/,
     );
     // power(7) 与 passive(4) 不同码；name≠number 的脚保留脚号
     expect(xml).toContain(
@@ -143,6 +141,49 @@ describe("capture library XML", () => {
     );
     expect(xml).toContain('<Defn number="1" position="0" />');
     expect(xml).toContain('<Defn number="2" position="1" />');
+  });
+
+  /**
+   * 用户 2026-11-10 第二次报障：SMA-KWE 在 Capture 里每个脚画两遍（name 在
+   * 本体内侧、number 贴在引脚旁）。逐脚 `IsNumberVisible=0` 在实机上不生效，
+   * 只能整段关 `<IsPinNamesVisible>`；关掉时脚号必须补上，否则一个字都不剩。
+   */
+  it("name 全等于 number 时整段关引脚名，同时保留脚号", () => {
+    const numbered: NormalizedSymbol = {
+      ...singleSection(),
+      sections: [
+        {
+          ...singleSection().sections[0],
+          pins: [
+            {
+              name: "1",
+              number: "1",
+              connection: { x: 30, y: 10 },
+              body: { x: 20, y: 10 },
+              length: 10,
+              type: "passive",
+              visible: true,
+            },
+            {
+              name: "2",
+              number: "2",
+              connection: { x: -10, y: 10 },
+              body: { x: 0, y: 10 },
+              length: 10,
+              type: "passive",
+              visible: true,
+            },
+          ],
+        },
+      ],
+    };
+    const xml = buildCaptureLibraryXml(numbered, "C:/libs/target.OLB");
+    expect(xml).toMatch(/<IsPinNamesVisible>\s*<Defn val="0" \/>\s*<\/IsPinNamesVisible>/);
+    expect(xml.match(/<IsNumberVisible>\s*<Defn val="1" \/>/g)).toHaveLength(2);
+
+    // 有语义名字（GND）的段不关
+    const xml2 = buildCaptureLibraryXml(singleSection(), "C:/libs/target.OLB");
+    expect(xml2).toMatch(/<IsPinNamesVisible>\s*<Defn val="1" \/>\s*<\/IsPinNamesVisible>/);
   });
 
   it("uses letter-suffixed CellName for multi-section packages", async () => {

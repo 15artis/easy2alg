@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildCaptureLibraryXml } from "../src/main/conversion/capture-olb";
 import { applySymbolEdits } from "../src/shared/symbol-edit";
-import { alignPinEndsToGrid, snapPinsToGrid } from "../src/shared/symbol-layout";
+import { snapPinsToGrid } from "../src/shared/symbol-layout";
 import type { NormalizedSymbol, NormalizedSymbolSection } from "../src/shared/schemas";
 
 /**
@@ -102,105 +102,5 @@ describe("原理图符号引脚落入 100 mil 网格", () => {
     }
     // 至少有一个坐标不再落在 10 的倍数上（说明确实没有强制吸附）
     expect(points.some(([x, y]) => x % 10 !== 0 || y % 10 !== 0)).toBe(true);
-  });
-});
-
-/**
- * 用户 2026-11-10：「注意 OrCAD 应该需要按照网格上，有些是不需要网格吸附」。
- *
- * 本机 Cadence 自带 `Discrete.olb` 的 7023 个引脚**全部**是两端都在 10 单位格点上、
- * 长度只有 10/30；立创的符号却常用 15 单位引脚、本体端落在半格（SACB5.0 的
- * `startY=4` 就在三角形顶点上）。这样的 .olb 放进 Capture，引脚比本体短一截、
- * 连接端对不上格。
- */
-describe("引脚两端都落到 100 mil 格点", () => {
-  const tvs = (): NormalizedSymbolSection => ({
-    name: "SACB5.0",
-    bounds: { minX: 1, minY: -16, maxX: 20, maxY: 46 },
-    pins: [
-      {
-        name: "1",
-        number: "1",
-        connection: { x: 10, y: -11 },
-        body: { x: 10, y: 4 },
-        length: 15,
-        type: "passive",
-        visible: true,
-      },
-      {
-        name: "2",
-        number: "2",
-        connection: { x: 10, y: 49 },
-        body: { x: 10, y: 34 },
-        length: 15,
-        type: "passive",
-        visible: true,
-      },
-    ],
-    shapes: [
-      // 三角形顶点 (10,4) 正好是上脚的本体端
-      {
-        kind: "polyline",
-        points: [
-          { x: 4, y: 14 },
-          { x: 10, y: 4 },
-          { x: 17, y: 14 },
-        ],
-        closed: true,
-      },
-      { kind: "polyline", points: [{ x: 1, y: 34 }, { x: 20, y: 34 }], closed: false },
-    ],
-  });
-
-  it("两端落格、长度取 10 的整数倍", () => {
-    const aligned = alignPinEndsToGrid(tvs());
-    for (const pin of aligned.pins) {
-      for (const point of [pin.connection, pin.body]) {
-        expect(Math.abs(point.x % 10)).toBe(0);
-        expect(Math.abs(point.y % 10)).toBe(0);
-      }
-      expect(pin.length % 10).toBe(0);
-      expect(pin.length).toBeGreaterThanOrEqual(10);
-    }
-    expect(aligned.pins.map((pin) => pin.length)).toEqual([20, 20]);
-  });
-
-  it("图元跟着引脚一起挪，顶点仍然贴着引脚本体端（不会裂开一道缝）", () => {
-    const aligned = alignPinEndsToGrid(tvs());
-    const triangle = aligned.shapes[0];
-    if (triangle.kind !== "polyline") {
-      throw new Error("应为折线");
-    }
-    const apex = triangle.points[1];
-    expect(apex).toEqual(aligned.pins[0].body);
-  });
-
-  it("已经合规的符号原样返回（不产生无意义的复制）", () => {
-    const once = alignPinEndsToGrid(tvs());
-    expect(alignPinEndsToGrid(once)).toBe(once);
-  });
-
-  it("本体端余数不一致时（标签避让推歪过）沿引脚轴单独补格", () => {
-    const mixed = tvs();
-    const section: NormalizedSymbolSection = {
-      ...mixed,
-      pins: [
-        mixed.pins[0],
-        mixed.pins[1],
-        {
-          name: "5",
-          number: "5",
-          connection: { x: 66, y: 10 },
-          body: { x: 46, y: 10 },
-          length: 20,
-          type: "passive",
-          visible: true,
-        },
-      ],
-    };
-    const aligned = alignPinEndsToGrid(section);
-    const side = aligned.pins[2];
-    expect(side.body).toEqual({ x: 50, y: 10 });
-    expect(side.connection).toEqual({ x: 70, y: 10 });
   });
 });

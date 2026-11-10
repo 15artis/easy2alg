@@ -39,6 +39,7 @@ import {
   pinLabelPlacement,
   pinLabelVisible,
   pinLabelWidth,
+  pinNamesSuppressed,
   pinSideOf,
   symbolFontHeight,
   symbolTextLines,
@@ -556,11 +557,14 @@ const SymbolPins = memo(
     onMoveEnd,
     onDoubleTap,
     onEditPinLabel,
+    namesSuppressed,
   }: {
     readonly sectionIndex: number;
     readonly pins: readonly NormalizedSymbolPin[];
     readonly body: SymbolBox;
     readonly showText: boolean;
+    /** 整段名字被 `<IsPinNamesVisible=0>` 关掉（见 `pinNamesSuppressed`） */
+    readonly namesSuppressed: boolean;
     readonly editing: boolean;
     readonly selectedKeys: ReadonlySet<string>;
     readonly scaleRef: RefObject<number>;
@@ -623,6 +627,12 @@ const SymbolPins = memo(
           const active = selectedKeys.has(key);
           const nameKey = symbolPinLabelKey(sectionIndex, pinIndex, "name");
           const numberKey = symbolPinLabelKey(sectionIndex, pinIndex, "number");
+          /* 名字被整段关掉时只留脚号（与写库的 IsPinNamesVisible 一一对应）：
+           * 这类符号的 name 就是 number，少画一条才是 Capture 里真实的样子。 */
+          const showName = !namesSuppressed && pinLabelVisible(pin, "name");
+          const showNumber = namesSuppressed
+            ? pin.number.trim() !== ""
+            : pinLabelVisible(pin, "number");
           return (
             <g
               /* key 只用"段:脚"这个稳定键。以前把 connection 坐标也拼进 key，
@@ -670,7 +680,7 @@ const SymbolPins = memo(
               {/* 标签：画在引脚命中线之后（上层），点文字优先命中文字 */}
               {showText ? (
                 <>
-                  {pinLabelVisible(pin, "number")
+                  {showNumber
                     ? (() => {
                         const box = pinLabelBoxOf(pin, "number", body);
                         return (
@@ -696,7 +706,7 @@ const SymbolPins = memo(
                         );
                       })()
                     : null}
-                  {pinLabelVisible(pin, "name")
+                  {showName
                     ? (() => {
                         const box = pinLabelBoxOf(pin, "name", body);
                         return (
@@ -1206,6 +1216,7 @@ export const SymbolPreview = ({
         pins={section.pins}
         body={body}
         showText={showPinText}
+        namesSuppressed={pinNamesSuppressed(section)}
         editing={editing}
         selectedKeys={selectedKeys}
         scaleRef={scaleRef}

@@ -9,12 +9,13 @@ import type {
 import {
   bodyBoxOf,
   estimateCommentWidth,
-  pinLabelVisible,
+  pinLabelShown,
+  pinNamesSuppressed,
   pinSideOf,
   symbolFontHeight,
   symbolTextLines,
 } from "../../shared/symbol-labels";
-import { alignPinEndsToGrid, snapPinsToGrid } from "../../shared/symbol-layout";
+import { snapPinsToGrid } from "../../shared/symbol-layout";
 
 /**
  * OrCAD Capture 库 XML（.olb 交换格式）生成器。
@@ -367,7 +368,11 @@ const shapeCommands = (shape: NormalizedSymbolShape): readonly string[] => {
   return commentTextCommands(shape);
 };
 
-const pinCommands = (pin: NormalizedSymbolPin, position: number): readonly string[] => [
+const pinCommands = (
+  section: NormalizedSymbolSection,
+  pin: NormalizedSymbolPin,
+  position: number,
+): readonly string[] => [
   "    <SymbolPinScalar>",
   tag("Defn", {
     hotptX: grid(pin.connection.x),
@@ -389,9 +394,9 @@ const pinCommands = (pin: NormalizedSymbolPin, position: number): readonly strin
       ["IsNetStyle", 0],
       ["IsNoConnect", 0],
       ["IsGlobal", 0],
-      // name 与 number 相同时只留 name（Capture 画在本体内侧）。OLB 没有独立脚号
-      // 字段、name 写空又会被换成 $PIN0，能逐脚关的只有这个开关。
-      ["IsNumberVisible", pinLabelVisible(pin, "number") ? 1 : 0],
+      // 名字与脚号相同时只留一份，**由 `pinLabelShown` 统一裁决**：
+      // 整段名字被关掉时改由脚号顶上，两个开关不能各判各的（否则两边都关 = 什么都不画）。
+      ["IsNumberVisible", pinLabelShown(section, position, "number") ? 1 : 0],
     ] as const
   ).flatMap(([name, value]) => [
     `      <${name}>`,
@@ -473,7 +478,10 @@ const normalViewCommands = (
     `          <Defn val="${hasVerticalPins(section) ? 1 : 0}" />`,
     "        </IsPinNamesRotated>",
     "        <IsPinNamesVisible>",
-    '          <Defn val="1" />',
+    // 逐脚 `IsNumberVisible=0` 在这台 Capture 上不生效（照样画脚号），只有整段的
+    // 这个开关能真正关掉那排名字。name 全等于 number 时名字没有信息量，关掉后
+    // 每个脚只剩一个脚号，不再出现「本体内侧一个数字、引脚旁又一个」的叠字。
+    `          <Defn val="${pinNamesSuppressed(section) ? 0 : 1}" />`,
     "        </IsPinNamesVisible>",
     "        <ContentsLibName>",
     '          <Defn name="" />',
@@ -499,7 +507,7 @@ const normalViewCommands = (
     commands.push(...shapeCommands(shape));
   }
   section.pins.forEach((pin, index) => {
-    commands.push(...pinCommands(pin, index));
+    commands.push(...pinCommands(section, pin, index));
   });
   commands.push("      </NormalView>");
   return commands;
@@ -519,12 +527,8 @@ export const buildCaptureLibraryXml = (
   // 写库出口统一吸附：解析阶段已对齐过一次，但用户可能在预览里手动拖过元素
   // （offset 是任意小数）。不吸附的话生成出来的引脚在 Capture 里接不上线。
   // 用户 2026-10-20 定：**跟随界面吸附开关** —— 关掉后按实际坐标写（仍取整）。
-  // 先按格点规整引脚长度与本体端，再由 snapPinsToGrid 兜底把连接端钉在格点上
-  // （用户在预览里拖动后坐标是小数，最后一步必须落在写库出口）。
   const sections =
-    options.snapPins === false
-      ? symbol.sections
-      : symbol.sections.map((section) => snapPinsToGrid(alignPinEndsToGrid(section)));
+    options.snapPins === false ? symbol.sections : symbol.sections.map(snapPinsToGrid);
   const multiSection = sections.length > 1;
   const now = Math.floor(Date.now() / 1000);
   const lines: string[] = [

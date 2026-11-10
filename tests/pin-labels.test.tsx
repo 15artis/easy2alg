@@ -2,15 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { render } from "@testing-library/react";
 import { SymbolPreview } from "../src/renderer/src/SymbolPreview";
-import {
-  SYMBOL_LABEL_AXIS_CENTER,
-  SYMBOL_LABEL_AXIS_GAP,
-  SYMBOL_PIN_FONT,
-  bodyBoxOf,
-  pinLabelPlacement,
-  pinLabelWidth,
-  pinLabelVisible,
-} from "../src/shared/symbol-labels";
+import { bodyBoxOf, pinLabelPlacement, pinLabelWidth, pinLabelVisible, pinNamesSuppressed } from "../src/shared/symbol-labels";
 import type { NormalizedSymbol } from "../src/shared/schemas";
 
 /**
@@ -80,12 +72,10 @@ const renderTexts = (): readonly string[] => {
 };
 
 describe("pin labels", () => {
-  it("name 与 number 相同时两条都画 —— Capture 本来就是画两遍", () => {
-    // 用户 2026-11-10 用 OrCAD 截图对照预览：实机脚上有「本体内的 name + 引脚外的
-    // number」两份，预览只画一份就成了假的。IsNumberVisible 在实机不生效，只能跟着实机走。
+  it("name 与 number 相同时只画一遍（关脚号、留 name）", () => {
     expect(pinLabelVisible(symbol.sections[0].pins[0], "name")).toBe(true);
-    expect(pinLabelVisible(symbol.sections[0].pins[0], "number")).toBe(true);
-    expect(renderTexts().filter((text) => text === "7")).toHaveLength(2);
+    expect(pinLabelVisible(symbol.sections[0].pins[0], "number")).toBe(false);
+    expect(renderTexts().filter((text) => text === "7")).toHaveLength(1);
   });
 
   it("name 与 number 不同时两个都画", () => {
@@ -96,8 +86,7 @@ describe("pin labels", () => {
     expect(texts).toContain("10");
   });
 
-  it("字宽按 Capture 的等宽值钉死，渲染宽度与盒模型一致", () => {
-    expect(pinLabelWidth("MH1")).toBe(13.5);
+  it("字宽按 Capture 的等宽值钉死，渲染宽度与盒模型一致", () => {    expect(pinLabelWidth("MH1")).toBe(13.5);
     const view = render(
       <SymbolPreview
         symbol={symbol}
@@ -125,74 +114,102 @@ describe("pin labels", () => {
 });
 
 /**
- * 用户 2026-11-10 第二次报的："引脚没有在三角形中间位置和出现空白"。
+ * 2026-11-10 第二次返工：逐脚 `IsNumberVisible=0` 在这台 Capture 上不生效，
+ * 名字和脚号照旧各画一遍 → 本体内侧一个数字、引脚旁又一个，SMA-KWE 的四个脚
+ * 直接糊成一坨。能真正关掉的只有**整段**的 `<IsPinNamesVisible>`。
  *
- * C3699281（DO-214AA 的 TVS）本体是两个三角形，引脚从上下两端顶在**顶点**上，
- * 名字就落在三角形里面。OrCAD 实测（3.53 px/单位）：三角中轴 x=104，名字 bbox
- * x 94..113、字心 103.5 —— Capture 是**压着轴线居中**画的；预览却把基线放在轴线上，
- * 整个字挂到左边、三角形中间空着。
+ * 规则：name 全等于 number 时关掉名字、只留脚号（文字本来就相同）；
+ * 名字带语义（GND/GPIO7）的段不关。
  */
-describe("引脚文字以引脚轴线为中线", () => {
-  // 与 C3699281 同构：本体 x1..20 / y0..34，上引脚从 (10,-11) 顶到顶点 (10,4)
-  const tvs: NormalizedSymbol = {
-    name: "SACB5.0",
-    refdesPrefix: "D",
-    pcbFootprint: "DO-214AA",
+describe("整段关掉引脚名", () => {
+  const numbered = (names: readonly string[]): NormalizedSymbol => ({
+    name: "SMA",
+    refdesPrefix: "J",
+    pcbFootprint: "",
     sections: [
       {
-        name: "SACB5.0",
-        bounds: { minX: 1, minY: -11, maxX: 20, maxY: 49 },
-        pins: [
-          {
-            name: "1",
-            number: "1",
-            connection: { x: 10, y: -11 },
-            body: { x: 10, y: 4 },
-            length: 15,
-            type: "unspecified",
-            visible: true,
-          },
-          {
-            name: "2",
-            number: "2",
-            connection: { x: 10, y: 49 },
-            body: { x: 10, y: 34 },
-            length: 15,
-            type: "unspecified",
-            visible: true,
-          },
-        ],
+        name: "SMA",
+        bounds: { minX: 0, minY: 0, maxX: 20, maxY: 20 },
+        pins: names.map((name, index) => ({
+          name,
+          number: String(index + 1),
+          connection: { x: -20, y: 10 * (index + 1) },
+          body: { x: 0, y: 10 * (index + 1) },
+          length: 20,
+          type: "passive" as const,
+          visible: true,
+        })),
         shapes: [
-          { kind: "polyline", points: [{ x: 4, y: 14 }, { x: 10, y: 4 }, { x: 17, y: 14 }], closed: true },
-          { kind: "polyline", points: [{ x: 16, y: 24 }, { x: 10, y: 34 }, { x: 3, y: 24 }], closed: true },
+          { kind: "rect", min: { x: 0, y: 0 }, max: { x: 20, y: 20 }, cornerRadius: 0, filled: false },
         ],
       },
     ],
     sourceJson: "{}",
+  });
+
+  const labelX = (target: NormalizedSymbol): readonly (string | null)[] => {
+    const view = render(
+      <SymbolPreview
+        symbol={target}
+        sectionIndex={0}
+        scale={1}
+        edits={{}}
+        editing
+        selectedKeys={new Set<string>()}
+        onSelectKeys={() => {
+          /* 不关心 */
+        }}
+        onMoveElements={() => {
+          /* 不关心 */
+        }}
+        onResizeRect={() => {
+          /* 不关心 */
+        }}
+      />,
+    );
+    return [...view.container.querySelectorAll("text")].map((node) => node.getAttribute("x"));
   };
-  const body = bodyBoxOf(tvs.sections[0]);
 
-  it("上下引脚的名字压在轴线上（基线右移半个字高）", () => {
-    for (const pin of tvs.sections[0].pins) {
-      const name = pinLabelPlacement(pin, "name", body);
-      expect(name.rotate).toBe(-90);
-      expect(name.x).toBe(10 + SYMBOL_LABEL_AXIS_CENTER);
-      // 字形从基线往左长，字心正好落回 x=10
-      const center = name.x - SYMBOL_PIN_FONT * 0.36;
-      expect(Math.abs(center - 10)).toBeLessThan(0.5);
-    }
+  it("name 全等于 number → 整段关名字，脚号画到本体外侧", () => {
+    const target = numbered(["1", "2"]);
+    const section = target.sections[0];
+    expect(pinNamesSuppressed(section)).toBe(true);
+    // 只画两个（一个脚一个），且落在 number 的锚点上（本体外侧），不是 name 的
+    const xs = labelX(target);
+    expect(xs).toHaveLength(2);
+    const expected = section.pins.map(
+      (pin) => String(pinLabelPlacement(pin, "number", bodyBoxOf(section)).x),
+    );
+    expect(xs).toEqual(expected);
   });
 
-  it("脚号让到轴线左侧 4 单位，不再压在引脚线上", () => {
-    for (const pin of tvs.sections[0].pins) {
-      expect(pinLabelPlacement(pin, "number", body).x).toBe(10 - SYMBOL_LABEL_AXIS_GAP);
+  it("名字带语义（不等于脚号）→ 名字照画", () => {
+    const target = numbered(["GND", "2"]);
+    expect(pinNamesSuppressed(target.sections[0])).toBe(false);
+    const texts: string[] = [];
+    const view = render(
+      <SymbolPreview
+        symbol={target}
+        sectionIndex={0}
+        scale={1}
+        edits={{}}
+        editing
+        selectedKeys={new Set<string>()}
+        onSelectKeys={() => {
+          /* 不关心 */
+        }}
+        onMoveElements={() => {
+          /* 不关心 */
+        }}
+        onResizeRect={() => {
+          /* 不关心 */
+        }}
+      />,
+    );
+    for (const node of view.container.querySelectorAll("text")) {
+      texts.push(node.textContent ?? "");
     }
-  });
-
-  it("横排引脚的名字竖直居中（基线比引脚线低半个字高）", () => {
-    const left = tvs.sections[0].pins[0];
-    const horizontal = { ...left, connection: { x: -20, y: 20 }, body: { x: 0, y: 20 } };
-    expect(pinLabelPlacement(horizontal, "name", body).y).toBe(20 + SYMBOL_LABEL_AXIS_CENTER);
-    expect(pinLabelPlacement(horizontal, "number", body).y).toBe(20 - SYMBOL_LABEL_AXIS_GAP);
+    expect(texts).toContain("GND");
+    expect(texts).toContain("2");
   });
 });
