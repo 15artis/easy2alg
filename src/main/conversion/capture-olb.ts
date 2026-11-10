@@ -19,7 +19,7 @@ import {
 import {
   alignBodyToGrid,
   alignPinEndsToGrid,
-  keepSingleBodyRect,
+  rectsToSegments,
   sortPinsByNumber,
 } from "../../shared/symbol-layout";
 
@@ -615,9 +615,9 @@ export const buildCaptureLibraryXml = (
   // 解析阶段已排过一次，这里再兜一次（历史器件 / 拖动过的）。
   const aligned =
     options.snapPins === false
-      ? symbol.sections
+      ? symbol.sections.map(rectsToSegments)
       : symbol.sections.map((section) =>
-          alignBodyToGrid(alignPinEndsToGrid(keepSingleBodyRect(section))),
+          rectsToSegments(alignBodyToGrid(alignPinEndsToGrid(section))),
         );
   const sections = aligned.map(sortPinsByNumber);
   const multiSection = sections.length > 1;

@@ -20,7 +20,7 @@ import {
   alignBodyToGrid,
   alignPinEndsToGrid,
   alignPinsToGrid,
-  keepSingleBodyRect,
+  rectsToSegments,
   sortPinsByNumber,
 } from "../../shared/symbol-layout";
 import { dedupePinNames } from "../../shared/symbol-normalize";
@@ -715,13 +715,16 @@ const buildSection = (part: ParsedPart, name: string): NormalizedSymbolSection =
       })),
       shapes: shapes.map(moveShape),
     });
-    const snapped = alignPinsToGrid(keepSingleBodyRect(deduped));
+    const snapped = alignPinsToGrid(deduped);
     const spaced = avoidLabelOverlapInSection(snapped);
     // ④ 本体矩形也要落到 100 mil 网格（用户 2026-11-10：「框」不在网格式的符号没法对齐）。
     //    放在引脚落格之后：本体边一挪，贴边引脚的连接端要跟着重算，才能两端都还在格点上。
-    // ⑤ 按脚号重排放在最后：立创的焊盘顺序不按号排（SMA-KWE 是 5,4,3,2,1），
+    // ⑤ 多矩形全部转线段（用户 2026-11-10：一个框会把引脚限制在框内，5 号脚实体被裁掉）。
+    //    必须排在落格之后 —— 落格改的是矩形的四条边，折线版本要按边重算更麻烦。
+    // ⑥ 按脚号重排放在最后：立创的焊盘顺序不按号排（SMA-KWE 是 5,4,3,2,1），
     //    而 OLB 的 position 就是数组下标 —— 不排的话名字与编号整体错位。
-    return sortPinsByNumber(attachPinLabelAnchors(alignBodyToGrid(alignPinEndsToGrid(spaced))));
+    const gridded = rectsToSegments(alignBodyToGrid(alignPinEndsToGrid(spaced)));
+    return sortPinsByNumber(attachPinLabelAnchors(gridded));
   };
 
   /**

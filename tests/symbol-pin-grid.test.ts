@@ -5,6 +5,7 @@ import { parseEasyEdaSymbol } from "../src/main/conversion/easyeda-symbol";
 import { buildCaptureLibraryXml } from "../src/main/conversion/capture-olb";
 import { applySymbolEdits } from "../src/shared/symbol-edit";
 import { alignBodyToGrid, alignPinEndsToGrid } from "../src/shared/symbol-layout";
+import { bodyBoxOf } from "../src/shared/symbol-labels";
 import type { NormalizedSymbol, NormalizedSymbolSection } from "../src/shared/schemas";
 
 /**
@@ -161,31 +162,31 @@ describe("真实器件：引脚两端都落在 100 mil 网格", () => {
       }
       expect(Math.abs(pin.length % 10)).toBe(0);
     }
-    const body = section.shapes.find((shape) => shape.kind === "rect");
-    if (body?.kind !== "rect") {
-      throw new Error("缺少本体矩形");
-    }
+    const body = bodyBoxOf(section);
     // 5 号脚从本体**内部**起画、穿出右边缘（立创原图就是这样：本体 387..414、脚从 410 引出）
     const right = section.pins.find((pin) => pin.number === "5");
-    expect(right?.body.x).toBeLessThan(body.max.x);
-    expect(right?.connection.x).toBeGreaterThan(body.max.x);
+    expect(right?.body.x).toBeLessThan(body.maxX);
+    expect(right?.connection.x).toBeGreaterThan(body.maxX);
   });
 
-  it("SMA-KWE：只有本体保留 RECT，接头外壳转成线段", () => {
+  it("SMA-KWE：两个矩形都转线段，本体打 body 标记", () => {
     const [section] = parse("C7498154").sections;
-    expect(section.shapes.filter((shape) => shape.kind === "rect")).toHaveLength(1);
-    // 外壳（源 340..377×290..310，归一化后 -50..-13）必须是四段闭合折线
-    const shell = section.shapes.find(
-      (shape) =>
-        shape.kind === "polyline" &&
-        shape.closed &&
-        shape.points.length === 4 &&
-        Math.min(...shape.points.map((point) => point.x)) === -50,
+    // 用户 2026-11-10：「出现了两个矩形图应该都使用线段，不要使用矩形」——
+    // 一只 RECT 就是 Capture 的「本体」，会把框内的引脚裁掉（5 号脚实体被裁成空白）
+    expect(section.shapes.filter((shape) => shape.kind === "rect")).toHaveLength(0);
+    const closed = section.shapes.filter(
+      (shape): shape is Extract<typeof shape, { kind: "polyline" }> =>
+        shape.kind === "polyline" && shape.closed && shape.points.length === 4,
     );
-    if (shell?.kind !== "polyline") {
-      throw new Error("外壳没有被转成线段");
-    }
-    expect(Math.max(...shell.points.map((point) => point.x))).toBe(-13);
+    expect(closed).toHaveLength(2);
+    // 外壳（源 340..377×290..310，归一化后 -50..-13）也是四段闭合折线
+    const shell = closed.find(
+      (shape) => Math.min(...shape.points.map((point) => point.x)) === -50,
+    );
+    expect(shell).toBeDefined();
+    // 本体（引脚本体端压得最多的那只）带标记，布局据此算标签落点
+    const body = closed.find((shape) => shape.kind === "polyline" && shape.body === true);
+    expect(body).toBeDefined();
   });
 
   it("引脚按脚号排序：立创数组顺序不按号排（SMA-KWE 是 5,4,3,2,1）", () => {
@@ -198,13 +199,10 @@ describe("真实器件：引脚两端都落在 100 mil 网格", () => {
 
   it("SMA-KWE：本体不再为（被关掉的）引脚名让位而加宽", () => {
     const [section] = parse("C7498154").sections;
-    const body = section.shapes.find((shape) => shape.kind === "rect");
-    if (body?.kind !== "rect") {
-      throw new Error("缺少本体矩形");
-    }
+    const body = bodyBoxOf(section);
     // 立创原图 27 宽 → 收到 30（曾经被撑到 50，用户 2026-11-10：「怎么这么大」）
-    expect(body.max.x - body.min.x).toBe(30);
-    expect(body.max.y - body.min.y).toBe(20);
+    expect(body.maxX - body.minX).toBe(30);
+    expect(body.maxY - body.minY).toBe(20);
   });
 });
 

@@ -11,7 +11,8 @@ import {
   SYMBOL_LABEL_HALF,
   SYMBOL_LABEL_OFFSET,
   bodyBoxOf,
-  bodyRectOf,
+  bodyShapeOf,
+  boxOfShape,
   boxesOverlap,
   commentTextBox,
   estimateLabelWidth,
@@ -575,14 +576,11 @@ const sizeOnGrid = (size: number): number =>
  * 线会短一截或戳出去；椭圆/圆弧采样出来的折线不动（只挪一个采样点会把圆啃出一个口）。
  */
 export const alignBodyToGrid = (section: NormalizedSymbolSection): NormalizedSymbolSection => {
-  const body = bodyRectOf(section);
+  const body = bodyShapeOf(section);
   if (body === undefined) {
     return section;
   }
-  const minX = Math.min(body.min.x, body.max.x);
-  const maxX = Math.max(body.min.x, body.max.x);
-  const minY = Math.min(body.min.y, body.max.y);
-  const maxY = Math.max(body.min.y, body.max.y);
+  const { minX, maxX, minY, maxY } = boxOfShape(body);
   const target = {
     minX: snapToPinGrid(minX),
     maxX: snapToPinGrid(minX) + sizeOnGrid(maxX - minX),
@@ -694,28 +692,34 @@ export const alignBodyToGrid = (section: NormalizedSymbolSection): NormalizedSym
 };
 
 /**
- * 一只符号只保留**一个** RECT，其余矩形改成四段线段（闭合折线）。
+ * 多矩形符号：**一个 RECT 都不写**，全部改成四段线段（闭合折线）。
  *
- * 用户 2026-11-10：「只有一个矩形才能使用矩形，其他情况都使用线段 —— 一个框会把
- * 引脚限制在这个框内进行」。立创把装饰图形也画成 `R`（SMA-KWE 的接头外壳就是
- * 第二只矩形），照抄进 OLB 就变成两个 `<Rect>`，Capture 里等于两个本体，引脚被
- * 夹在中间那个框里。本体（`bodyRectOf`：引脚本体端压得最多的那只）保留 RECT，
- * 其余转闭合折线 —— 外观一样，但不再被当成本体。
+ * 用户 2026-11-10：「出现了两个矩形图应该都使用线段，不要使用矩形」「只有一个矩形
+ * 才能使用矩形，其他情况都使用线段 —— 一个框会把引脚限制在这个框内进行」。
+ *
+ * 线索来自实物：SMA-KWE 的 5 号脚本体端画进框内 10 单位（源图如此），预览里正常，
+ * 但 OLB 里那只 RECT 一存在，Capture 就把引脚**裁到框外** —— 框内那段消失，圆圈
+ * 与框边之间留下空白（用户截图 4）。立创把装饰图形也画成 `R`（外壳是第二只矩形），
+ * 两只都写进 OLB 就是两个本体，引脚被夹在中间。所以只要矩形超过一只，就一组都不
+ * 保留：本体那只转折线后打 `body: true`，布局仍能认出本体（`bodyShapeOf`），
+ * 但 Capture 不会再把任何框当成本体去裁引脚。
+ *
+ * 只有源符号**本来就只有一只**矩形时，才照写 `<Rect>`（那是真正的本体）。
  */
-export const keepSingleBodyRect = (
+export const rectsToSegments = (
   section: NormalizedSymbolSection,
 ): NormalizedSymbolSection => {
-  const rectCount = section.shapes.filter((shape) => shape.kind === "rect").length;
-  if (rectCount <= 1) {
+  const rects = section.shapes.filter(
+    (shape): shape is Extract<NormalizedSymbolShape, { kind: "rect" }> => shape.kind === "rect",
+  );
+  if (rects.length <= 1) {
     return section;
   }
-  const body = bodyRectOf(section);
-  let changed = false;
+  const body = bodyShapeOf(section);
   const shapes: NormalizedSymbolShape[] = section.shapes.map((shape) => {
-    if (shape.kind !== "rect" || shape === body) {
+    if (shape.kind !== "rect") {
       return shape;
     }
-    changed = true;
     const minX = Math.min(shape.min.x, shape.max.x);
     const maxX = Math.max(shape.min.x, shape.max.x);
     const minY = Math.min(shape.min.y, shape.max.y);
@@ -729,9 +733,10 @@ export const keepSingleBodyRect = (
         { x: maxX, y: maxY },
         { x: minX, y: maxY },
       ],
+      ...(shape === body ? { body: true as const } : {}),
     };
   });
-  return changed ? { ...section, shapes } : section;
+  return { ...section, shapes };
 };
 
 /**

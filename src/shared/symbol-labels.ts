@@ -182,58 +182,79 @@ const drawingBoxOf = (section: NormalizedSymbolSection): SymbolBox | null => {
   };
 };
 
+/** 能当「本体」的图元：矩形，或由矩形转来的闭合折线。 */
+export type SymbolBodyShape =
+  | Extract<NormalizedSymbolShape, { kind: "rect" }>
+  | Extract<NormalizedSymbolShape, { kind: "polyline" }>;
+
+/** 图元包围盒（矩形取对角点，折线取点集）。 */
+export const boxOfShape = (shape: SymbolBodyShape): SymbolBox => {
+  if (shape.kind === "rect") {
+    return normalize({ minX: shape.min.x, minY: shape.min.y, maxX: shape.max.x, maxY: shape.max.y });
+  }
+  const xs = shape.points.map((point) => point.x);
+  const ys = shape.points.map((point) => point.y);
+  return {
+    minX: Math.min(...xs),
+    minY: Math.min(...ys),
+    maxX: Math.max(...xs),
+    maxY: Math.max(...ys),
+  };
+};
+
 /**
- * 本体包围盒：优先 RECT；没有 RECT 时用**图元包围盒**（不是整段 bounds）；
+ * 本体包围盒：优先本体图元（`bodyShapeOf`）；没有时用**图元包围盒**（不是整段 bounds）；
  * 连图元都没有才退到整段 bounds。
  */
 export const bodyBoxOf = (section: NormalizedSymbolSection): SymbolBox => {
-  const rect = bodyRectOf(section);
-  if (rect !== undefined) {
-    return normalize({ minX: rect.min.x, minY: rect.min.y, maxX: rect.max.x, maxY: rect.max.y });
+  const body = bodyShapeOf(section);
+  if (body !== undefined) {
+    return normalize(boxOfShape(body));
   }
   return normalize(drawingBoxOf(section) ?? section.bounds);
 };
 
-/** 判定「引脚本体端压在这只矩形的边上」的容差（源数据有 .5 抖动与浮点误差）。 */
+/** 判定「引脚本体端压在这只图元的边上」的容差（源数据有 .5 抖动与浮点误差）。 */
 export const SYMBOL_BODY_EDGE_TOLERANCE = 1;
 
 /**
- * 本体矩形：一只 RECT 就是它；多只时挑**引脚本体端压在上面最多**的那只。
+ * 本体图元：一只 RECT 就是它；多只时挑**引脚本体端压在上面最多**的那只；
+ * 全部转线段之后靠 `body: true` 标记找（见 `rectsToSegments`）。
  *
  * 立创把装饰图形也画成 `R`（SMA-KWE 的接头外壳就是第二只矩形），
  * `find(rect)` 拿到的不一定是本体 —— 全库抽查里 SMA-KWE 恰好本体在前，
- * 但顺序不能靠运气。见 `keepSingleBodyRect`（只有本体保留 RECT，其余转线段）。
+ * 但顺序不能靠运气。
  */
-export const bodyRectOf = (
+export const bodyShapeOf = (
   section: NormalizedSymbolSection,
-): Extract<NormalizedSymbolShape, { kind: "rect" }> | undefined => {
+): SymbolBodyShape | undefined => {
   const rects = section.shapes.filter(
     (shape): shape is Extract<NormalizedSymbolShape, { kind: "rect" }> => shape.kind === "rect",
   );
-  if (rects.length <= 1) {
+  if (rects.length === 1) {
     return rects[0];
   }
-  let best = rects[0];
-  let bestCount = -1;
-  for (const rect of rects) {
-    const count = section.pins.filter((pin) => pinBodyOnRect(pin, rect)).length;
-    if (count > bestCount) {
-      best = rect;
-      bestCount = count;
+  if (rects.length > 1) {
+    let best = rects[0];
+    let bestCount = -1;
+    for (const rect of rects) {
+      const count = section.pins.filter((pin) => pinBodyOnBox(pin, boxOfShape(rect))).length;
+      if (count > bestCount) {
+        best = rect;
+        bestCount = count;
+      }
     }
+    return best;
   }
-  return best;
+  return section.shapes.find(
+    (shape): shape is Extract<NormalizedSymbolShape, { kind: "polyline" }> =>
+      shape.kind === "polyline" && shape.body === true,
+  );
 };
 
-/** 引脚的本体端是不是压在这只矩形的四条边上。 */
-const pinBodyOnRect = (
-  pin: NormalizedSymbolPin,
-  rect: Extract<NormalizedSymbolShape, { kind: "rect" }>,
-): boolean => {
-  const minX = Math.min(rect.min.x, rect.max.x);
-  const maxX = Math.max(rect.min.x, rect.max.x);
-  const minY = Math.min(rect.min.y, rect.max.y);
-  const maxY = Math.max(rect.min.y, rect.max.y);
+/** 引脚的本体端是不是压在这个盒子的四条边上。 */
+const pinBodyOnBox = (pin: NormalizedSymbolPin, box: SymbolBox): boolean => {
+  const { minX, maxX, minY, maxY } = box;
   const tolerance = SYMBOL_BODY_EDGE_TOLERANCE;
   const nearX =
     Math.abs(pin.body.x - minX) <= tolerance || Math.abs(pin.body.x - maxX) <= tolerance;

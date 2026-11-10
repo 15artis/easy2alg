@@ -350,6 +350,11 @@ export const NormalizedSymbolShapeSchema = z.discriminatedUnion("kind", [
     closed: z.boolean(),
     /** 这条折线是不是某条椭圆/圆弧的采样结果（见 SymbolShapePrimitiveSchema） */
     primitive: SymbolShapePrimitiveSchema.optional(),
+    /**
+     * 由「本体矩形」转换来的折线（多矩形符号全部转线段时打标，见 rectsToSegments）。
+     * 只用于布局（标签落点、加宽判断）；写库仍是普通闭合折线。
+     */
+    body: z.literal(true).optional(),
   }),
   z.object({
     kind: z.literal("text"),
