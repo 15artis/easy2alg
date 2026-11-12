@@ -61,6 +61,36 @@ export const snapDragDelta = (
 };
 
 /**
+ * 位置吸附下的拖动增量（用户 2026-11-11：「文本拖动跳动两个网格，应该是一个网格」）。
+ *
+ * `snapDragDelta` 量化的是**位移**，于是"元素原本不在格点上"时落点永远不在格线上：
+ * 源文本 `at.x = 143`、档位 10，位移取整后落点是 143 / 153 / 163…，用户看到的是
+ * 半格起步、有时一格有时两格的跳动。
+ *
+ * 这里改成量化**位置**：`target = snap(origin + raw) - origin`，落点必定压在格线上，
+ * 且每次跨越半格才前进一格（不会一次跳两格）。组内其它元素共用同一增量，
+ * 相对间距与位移量化完全一致。
+ */
+export const snapDragDeltaFromOrigin = (
+  raw: { readonly dx: number; readonly dy: number },
+  applied: { readonly dx: number; readonly dy: number },
+  snap: SnapState,
+  origin: { readonly x: number; readonly y: number } | null,
+): { readonly dx: number; readonly dy: number; readonly appliedX: number; readonly appliedY: number } => {
+  if (!snap.enabled || origin === null || !(snap.grid > 0)) {
+    return snapDragDelta(raw, applied, snap);
+  }
+  const targetX = snapValue(origin.x + raw.dx, snap.grid) - origin.x;
+  const targetY = snapValue(origin.y + raw.dy, snap.grid) - origin.y;
+  return {
+    dx: targetX - applied.dx,
+    dy: targetY - applied.dy,
+    appliedX: targetX,
+    appliedY: targetY,
+  };
+};
+
+/**
  * 本体改大小的吸附：只量化**被拖的边**的绝对坐标。
  *
  * 用绝对值而不是位移：拖到哪条格线就停在哪条格线，OrCAD 手感。首帧最多跳半格，

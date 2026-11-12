@@ -70,7 +70,6 @@ describe("本体填充位", () => {
         symbol={symbol}
         sectionIndex={0}
         scale={1}
-        edits={{}}
         editing
         selectedKeys={new Set<string>()}
         onSelectKeys={() => {

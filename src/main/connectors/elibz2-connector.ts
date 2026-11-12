@@ -36,7 +36,7 @@ import {
   translateSymbolShape,
   translateSymbolPoint,
 } from "../../shared/symbol-edit";
-import { avoidLabelOverlapInSection, rectsToSegments } from "../../shared/symbol-layout";
+import { avoidLabelOverlapInSection } from "../../shared/symbol-layout";
 import { attachPinLabelAnchors, DEFAULT_SYMBOL_TEXT_HEIGHT } from "../../shared/symbol-labels";
 import { alignPinsToGrid } from "../../shared/symbol-layout";
 import { dedupePinNames } from "../../shared/symbol-normalize";
@@ -911,9 +911,7 @@ export class Elibz2Connector {
       // 引脚先吸附到 100 mil 网格，避让再按最终位置摆标签（顺序反了会重新压上）
       .map(alignPinsToGrid)
       .map(avoidLabelOverlapInSection)
-      // 多矩形全部转线段（用户 2026-11-10：一个框会把引脚限制在框内）
-      .map(rectsToSegments)
-      // 文字锚点冻结到引脚上（必须在避让与转线段之后，几何才是最终的）
+      // 文字锚点冻结到引脚上（必须在避让之后，几何才是最终的）
       .map(attachPinLabelAnchors);
     if (sections.length === 0) {
       return null;

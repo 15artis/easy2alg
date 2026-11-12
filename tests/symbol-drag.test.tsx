@@ -105,6 +105,13 @@ const mount = (
         };
       }[],
     ) => void;
+    readonly view?: { readonly tx: number; readonly ty: number; readonly scale: number; readonly width: number; readonly height: number };
+    readonly drawTool?: "line" | "rect" | "circle" | null;
+    readonly onDrawShape?: (shape: {
+      readonly kind: "line" | "rect" | "circle";
+      readonly from: { readonly x: number; readonly y: number };
+      readonly to: { readonly x: number; readonly y: number };
+    }) => void;
   } = {},
 ) => {
   const view = render(
@@ -112,7 +119,6 @@ const mount = (
       symbol={options.symbol ?? symbol}
       sectionIndex={0}
       scale={1}
-      edits={{}}
       editing
       selectedKeys={new Set<string>()}
       onSelectKeys={options.onSelectKeys ?? (() => {})}
@@ -127,6 +133,9 @@ const mount = (
       onReorientPins={options.onReorientPins}
       onTextEdit={options.onTextEdit}
       onPinTextEdit={options.onPinTextEdit}
+      view={options.view}
+      drawTool={options.drawTool ?? null}
+      onDrawShape={options.onDrawShape}
     />,
   );
   const draggable = view.container.querySelectorAll('[data-draggable="true"]');
@@ -358,7 +367,6 @@ describe("text double-click editing (user 2026-10-21)", () => {
         symbol={symbol}
         sectionIndex={0}
         scale={1}
-        edits={{}}
         editing
         selectedKeys={new Set<string>()}
         onSelectKeys={() => {}}
@@ -393,7 +401,6 @@ describe("text double-click editing (user 2026-10-21)", () => {
         symbol={symbol}
         sectionIndex={0}
         scale={1}
-        edits={{}}
         editing
         selectedKeys={new Set<string>()}
         onSelectKeys={() => {}}
@@ -435,7 +442,6 @@ describe("text double-click editing (user 2026-10-21)", () => {
         symbol={multiline}
         sectionIndex={0}
         scale={1}
-        edits={{}}
         editing
         selectedKeys={new Set<string>()}
         onSelectKeys={() => {}}
@@ -457,7 +463,6 @@ describe("text double-click editing (user 2026-10-21)", () => {
         symbol={symbol}
         sectionIndex={0}
         scale={1}
-        edits={{}}
         editing
         selectedKeys={new Set<string>()}
         onSelectKeys={() => {}}
@@ -482,7 +487,6 @@ describe("pin label double-click editing (user 2026-10-22)", () => {
         symbol={symbol}
         sectionIndex={0}
         scale={1}
-        edits={{}}
         editing
         selectedKeys={new Set<string>()}
         onSelectKeys={() => {}}
@@ -534,7 +538,6 @@ describe("double tap on pointerdown (user 2026-10-22)", () => {
         symbol={symbol}
         sectionIndex={0}
         scale={1}
-        edits={{}}
         editing
         selectedKeys={new Set<string>()}
         onSelectKeys={() => {}}
@@ -556,7 +559,6 @@ describe("double tap on pointerdown (user 2026-10-22)", () => {
         symbol={symbol}
         sectionIndex={0}
         scale={1}
-        edits={{}}
         editing
         selectedKeys={new Set<string>()}
         onSelectKeys={() => {}}
@@ -589,7 +591,6 @@ describe("double tap on pointerdown (user 2026-10-22)", () => {
           symbol={symbol}
           sectionIndex={0}
           scale={1}
-          edits={{}}
           editing
           selectedKeys={new Set<string>()}
           onSelectKeys={() => {}}
@@ -620,7 +621,6 @@ describe("double tap on pointerdown (user 2026-10-22)", () => {
         symbol={symbol}
         sectionIndex={0}
         scale={1}
-        edits={{}}
         editing
         selectedKeys={new Set<string>()}
         onSelectKeys={() => {}}
@@ -655,7 +655,6 @@ describe("double tap on pointerdown (user 2026-10-22)", () => {
         symbol={symbol}
         sectionIndex={0}
         scale={1}
-        edits={{}}
         editing
         selectedKeys={new Set<string>()}
         onSelectKeys={() => {}}
@@ -669,5 +668,140 @@ describe("double tap on pointerdown (user 2026-10-22)", () => {
     )!;
     tapTwice(textLabel, 120, 120, mods);
     expect(document.querySelector('[data-testid="text-editor"]')).not.toBeNull();
+  });
+});
+
+/**
+ * 用户 2026-11-11：「文本拖动出现跳动两个网格，应该是一个网格才对」。
+ *
+ * 根因：吸附量化的是**位移**，源文本起点 `at.x = 13` 时落点永远在 143/153… 这些
+ * 格线之间的位置，视觉上就会"有时一格有时两格"。改成量化**位置**之后，
+ * 落点必定压在格线上（位移量反过来不再是 10 的整数倍，这是预期的）。
+ */
+describe("position snapping (user 2026-11-11)", () => {
+  const offGrid: NormalizedSymbol = {
+    ...symbol,
+    sections: [
+      {
+        ...symbol.sections[0],
+        shapes: symbol.sections[0].shapes.map((shape) =>
+          shape.kind === "text" ? { ...shape, at: { x: 13, y: 40 } } : shape,
+        ),
+      },
+    ],
+  };
+
+  const textElement = (): Element =>
+    [...document.querySelectorAll('[data-draggable="true"]')][1] as Element;
+
+  it("起点在格线之间时，拖动后的落点压回格线", () => {
+    const onMove = vi.fn();
+    mount({ symbol: offGrid, onMove });
+    drag(textElement(), { x: 100, y: 100 }, { x: 133, y: 100 });
+    const [, dx] = onMove.mock.calls[0] as [readonly string[], number, number];
+    // 13 + 33 = 46 → 吸附到 50 → 位移 37（落点 50 在格线上）
+    expect(dx).toBe(37);
+    expect((13 + dx) % 10).toBe(0);
+  });
+
+  it("起点本来就在格线上时，位移仍是整格", () => {
+    const onMove = vi.fn();
+    mount({ symbol, onMove });
+    drag(textElement(), { x: 100, y: 100 }, { x: 133, y: 100 });
+    const [, dx] = onMove.mock.calls[0] as [readonly string[], number, number];
+    expect(dx).toBe(30);
+    expect((10 + dx) % 10).toBe(0);
+  });
+});
+
+/** 用户 2026-11-11：「再添加啊支持线段，圆，矩形 任意画线」。 */
+describe("draw tools (user 2026-11-11)", () => {
+  const view = { tx: 0, ty: 0, scale: 1, width: 800, height: 600 };
+
+  beforeEach(() => {
+    /* jsdom 没有 getScreenCTM：给一个恒等矩阵，让绘制层能算出世界坐标。
+     * 挂 `Element.prototype` 而不是 `SVGElement.prototype` —— mount 没有 `<svg>` 包裹，
+     * `<rect>` 在 jsdom 里被建成了 HTMLUnknownElement，拿不到 SVGElement 上的方法。 */
+    (Element.prototype as unknown as { getScreenCTM: () => unknown }).getScreenCTM = () => ({
+      inverse: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }),
+    });
+  });
+
+  afterEach(() => {
+    delete (Element.prototype as unknown as { getScreenCTM?: unknown }).getScreenCTM;
+  });
+
+  it("绘制层铺满可视区，并接管按下/移动/抬起", () => {
+    const onDraw = vi.fn();
+    mount({ view, drawTool: "line", onDrawShape: onDraw });
+    const layer = document.querySelector('[data-testid="symbol-draw-layer"]') as Element;
+    expect(layer).not.toBeNull();
+    // 世界矩形按 view 换算：0..800 × 0..600
+    expect(layer.getAttribute("width")).toBe("800");
+    expect(layer.getAttribute("height")).toBe("600");
+
+    firePointer(layer, "pointerdown", { x: 10, y: 20, buttons: 1 });
+    firePointer(layer, "pointermove", { x: 58, y: 24, buttons: 1 });
+    firePointer(layer, "pointerup", { x: 58, y: 24, buttons: 0 });
+
+    expect(onDraw).toHaveBeenCalledTimes(1);
+    const drawn = onDraw.mock.calls[0][0] as {
+      kind: string;
+      from: { x: number; y: number };
+      to: { x: number; y: number };
+    };
+    expect(drawn.kind).toBe("line");
+    // 两端都吸附到 10 单位的格点
+    expect(drawn.from).toEqual({ x: 10, y: 20 });
+    expect(drawn.to).toEqual({ x: 60, y: 20 });
+  });
+
+  it("绘制态下元素层不接指针（落点压在本体上也能起笔）", () => {
+    mount({ view, drawTool: "rect", onDrawShape: () => {} });
+    const preview = document.querySelector(".symbol-preview") as Element;
+    expect(preview.getAttribute("pointer-events")).toBe("none");
+  });
+
+  it("没开绘图工具时不渲染绘制层", () => {
+    mount({});
+    expect(document.querySelector('[data-testid="symbol-draw-layer"]')).toBeNull();
+  });
+});
+
+/** 用户自己画的矩形拖整体移动，不是改本体四边。 */
+describe("added rect is movable, not resizable (user 2026-11-11)", () => {
+  const withAddedRect: NormalizedSymbol = {
+    ...symbol,
+    sections: [
+      {
+        ...symbol.sections[0],
+        shapes: [
+          ...symbol.sections[0].shapes,
+          {
+            kind: "rect",
+            min: { x: 20, y: 10 },
+            max: { x: 40, y: 20 },
+            cornerRadius: 0,
+            filled: false,
+            added: true,
+          },
+        ],
+      },
+    ],
+  };
+
+  it("只有源库本体才挂框线改大小命中区", () => {
+    mount({ symbol: withAddedRect });
+    expect(document.querySelectorAll('[data-hit="stroke"]')).toHaveLength(1);
+  });
+
+  it("拖自己画的矩形走移动回调", () => {
+    const onMove = vi.fn();
+    mount({ symbol: withAddedRect, onMove });
+    const added = [...document.querySelectorAll('[data-draggable="true"]')][2] as Element;
+    drag(added, { x: 100, y: 100 }, { x: 133, y: 100 });
+    const [, dx] = onMove.mock.calls[0] as [readonly string[], number, number];
+    // 锚点 = 左上角 (20,10)：20+33=53 → 50 → 位移 30（落点 50 在格线上）
+    expect(dx).toBe(30);
   });
 });

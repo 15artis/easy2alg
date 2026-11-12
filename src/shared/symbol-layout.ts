@@ -692,54 +692,6 @@ export const alignBodyToGrid = (section: NormalizedSymbolSection): NormalizedSym
 };
 
 /**
- * 多矩形符号：**一个 RECT 都不写**，全部改成四段线段（闭合折线）。
- *
- * 用户 2026-11-10：「出现了两个矩形图应该都使用线段，不要使用矩形」「只有一个矩形
- * 才能使用矩形，其他情况都使用线段 —— 一个框会把引脚限制在这个框内进行」。
- *
- * 线索来自实物：SMA-KWE 的 5 号脚本体端画进框内 10 单位（源图如此），预览里正常，
- * 但 OLB 里那只 RECT 一存在，Capture 就把引脚**裁到框外** —— 框内那段消失，圆圈
- * 与框边之间留下空白（用户截图 4）。立创把装饰图形也画成 `R`（外壳是第二只矩形），
- * 两只都写进 OLB 就是两个本体，引脚被夹在中间。所以只要矩形超过一只，就一组都不
- * 保留：本体那只转折线后打 `body: true`，布局仍能认出本体（`bodyShapeOf`），
- * 但 Capture 不会再把任何框当成本体去裁引脚。
- *
- * 只有源符号**本来就只有一只**矩形时，才照写 `<Rect>`（那是真正的本体）。
- */
-export const rectsToSegments = (
-  section: NormalizedSymbolSection,
-): NormalizedSymbolSection => {
-  const rects = section.shapes.filter(
-    (shape): shape is Extract<NormalizedSymbolShape, { kind: "rect" }> => shape.kind === "rect",
-  );
-  if (rects.length <= 1) {
-    return section;
-  }
-  const body = bodyShapeOf(section);
-  const shapes: NormalizedSymbolShape[] = section.shapes.map((shape) => {
-    if (shape.kind !== "rect") {
-      return shape;
-    }
-    const minX = Math.min(shape.min.x, shape.max.x);
-    const maxX = Math.max(shape.min.x, shape.max.x);
-    const minY = Math.min(shape.min.y, shape.max.y);
-    const maxY = Math.max(shape.min.y, shape.max.y);
-    return {
-      kind: "polyline",
-      closed: true,
-      points: [
-        { x: minX, y: minY },
-        { x: maxX, y: minY },
-        { x: maxX, y: maxY },
-        { x: minX, y: maxY },
-      ],
-      ...(shape === body ? { body: true as const } : {}),
-    };
-  });
-  return { ...section, shapes };
-};
-
-/**
  * 按引脚号自然序重排（1、2、3…9、10）。
  *
  * 立创的 `shape` 数组不按焊盘号排列 —— SMA-KWE 是 5、4、3、2、1。OLB 的

@@ -6,9 +6,12 @@ import { buildCaptureLibraryXml } from "../src/main/conversion/capture-olb";
 import { applySymbolEdits, setTextHidden, symbolShapeKey } from "../src/shared/symbol-edit";
 import {
   bodyBoxOf,
+  commentTextBox,
+  estimateCommentWidth,
   estimateLabelWidth,
   pinIsVertical,
   pinSideOf,
+  symbolCapHeight,
   symbolFontHeight,
 } from "../src/shared/symbol-labels";
 import type { NormalizedSymbol } from "../src/shared/schemas";
@@ -294,10 +297,24 @@ describe("capture library XML", () => {
     expect(moved.sections[0].shapes[0]).toEqual(symbol!.sections[0].shapes[0]);
 
     const xml = buildCaptureLibraryXml(moved, "C:/libs/target.OLB");
-    // CommentText 的锚点与包围盒都跟着走
-    expect(xml).toContain(
-      `locX="${after.at.x}" locY="${after.at.y}" name="${after.text}"`,
-    );
+    // CommentText 的锚点与包围盒都跟着走。
+    // 锚点语义（用户 2026-11-11 实机截图逐条比对得出）：`at` 是文字**基线的左端**，
+    // Capture 把整行字贴着框的**最小角**画 —— 墨迹上沿 = y1、基线 = y1 + 0.64×字高。
+    // 所以框的上沿要抬到 `at.y - cap`，直接拿 at.y 当 y1 会让整行字往下掉半个字高。
+    const cap = symbolCapHeight(after.height);
+    const boxHeight = Math.round(symbolFontHeight(after.height) * 1.556);
+    const movedText = new RegExp(
+      `<CommentText>\\s*<Defn locX="(-?\\d+)" locY="(-?\\d+)" name="${after.text}"[^>]*x1="(-?\\d+)" x2="(-?\\d+)" y1="(-?\\d+)" y2="(-?\\d+)" \\/>`,
+    ).exec(xml);
+    expect(movedText).not.toBeNull();
+    const [locX, locY, x1, x2, y1, y2] = movedText!.slice(1).map(Number);
+    expect(locX).toBe(Math.round(after.at.x));
+    expect(x1).toBe(Math.round(after.at.x));
+    // 墨迹上沿 = y1；基线 = at.y ⇒ y1 = at.y - cap（这就是 Capture 里的可见位置）
+    expect(y1).toBe(Math.round(after.at.y) - cap);
+    expect(locY).toBe(y1);
+    expect(y2).toBe(y1 + boxHeight);
+    expect(x2).toBe(Math.round(after.at.x + estimateCommentWidth(after.text, after.height)));
     // 未编辑的段落不受影响
     const untouched = buildCaptureLibraryXml(symbol!, "C:/libs/target.OLB");
     expect(xml.match(/<SymbolPinScalar>/g)).toHaveLength(
@@ -328,7 +345,7 @@ describe("capture library XML", () => {
     expect(xml).toContain('escapement="900"');
     expect(xml).toContain('orientation="90"');
     expect(xml).toContain('orientation="0"');
-    // 90° 的框绕锚点旋转：宽度变成纵向高度，y 向上铺开
+    // 90° 的框绕锚点旋转：横排时的"字墨方向"（基线→字顶）转到 -x，文本长度方向转到 -y
     const comment = /<CommentText>\s*<Defn locX="(-?\d+)" locY="(-?\d+)"[^>]*x1="(-?\d+)" x2="(-?\d+)" y1="(-?\d+)" y2="(-?\d+)" \/>/.exec(xml)!;
     const [locX, locY, x1, x2, y1, y2] = comment.slice(1).map(Number);
     // loc = 框的最小角（Capture 自己保存竖排文本时就是这个约定）
@@ -336,7 +353,13 @@ describe("capture library XML", () => {
     expect(locY).toBe(Math.min(y1, y2));
     // 竖框：高比宽大，且不再从锚点往右铺
     expect(x2 - x1).toBeLessThan(y2 - y1);
-    expect(x1).toBe(rotated.sections[0].shapes[1].kind === "text" ? rotated.sections[0].shapes[1].at.x : NaN);
+    // 锚点仍是**基线端**：90° 时基线与字墨方向都落在 x 轴上，框从 `at.x - cap` 起铺
+    const at = rotated.sections[0].shapes[1].kind === "text" ? rotated.sections[0].shapes[1].at : null;
+    const rotatedText = rotated.sections[0].shapes[1];
+    const cap = symbolCapHeight(rotatedText.kind === "text" ? rotatedText.height : 0);
+    expect(x1).toBe(Math.round(at!.x) - cap);
+    // 文本长度方向沿 -y：框的下沿是文字起点
+    expect(y2).toBe(Math.round(at!.y));
 
     // 未旋转的文本仍然是横框
     const horizontal = buildCaptureLibraryXml(symbol, "C:/libs/target.OLB");
@@ -374,6 +397,33 @@ describe("capture library XML", () => {
     const step = Math.round(symbolFontHeight(12) * 1.556);
     expect(boxes[1].y - boxes[0].y).toBe(step);
     expect(boxes[1].x).toBe(boxes[0].x);
+  });
+
+  /**
+   * 预览占位盒（`symbol-labels.commentTextBox`）与写库框（`capture-olb.commentTextBox`）
+   * 必须是**同一条字墨带** —— 用户 2026-11-11 报"预览与生成的位置不一致"，
+   * 根因就是两边各写一份几何、差了一个字高。
+   */
+  it("预览占位盒与写库框落在同一条字墨带上", () => {
+    const symbol = singleSection();
+    const shape = symbol.sections[0].shapes[1];
+    expect(shape.kind).toBe("text");
+    if (shape.kind !== "text") return;
+    const preview = commentTextBox(shape);
+    const xml = buildCaptureLibraryXml(symbol, "C:/libs/target.OLB");
+    const written = /<CommentText>\s*<Defn locX="(-?\d+)" locY="(-?\d+)"[^>]*x1="(-?\d+)" x2="(-?\d+)" y1="(-?\d+)" y2="(-?\d+)" \/>/.exec(xml)!;
+    const [locX, locY, x1, x2, y1, y2] = written.slice(1).map(Number);
+    // 横向：都是从基线左端起铺
+    expect(locX).toBe(x1);
+    expect(preview.minX).toBe(x1);
+    expect(preview.maxX).toBe(x2);
+    // 纵向：预览盒就是字墨（上沿 = y1、下沿 = 基线 = at.y）
+    expect(preview.minY).toBe(y1);
+    expect(preview.maxY).toBe(shape.at.y);
+    expect(locY).toBe(y1);
+    // 写库框比字墨高出一个行距（Capture 的选择框就是 1.556×字高），多出来的留在字下面
+    expect(y2 - y1).toBe(Math.round(symbolFontHeight(shape.height) * 1.556));
+    expect(y2).toBeGreaterThan(preview.maxY);
   });
 
   it("keeps every attribute value XML-escaped", () => {
@@ -684,5 +734,173 @@ describe("原生曲线图元（Ellipse / Arc）", () => {
     ]);
     expect(xml.match(/<Line>/g)?.length).toBe(2);
     expect(xml).not.toContain("<Arc>");
+  });
+});
+
+/**
+ * 用户 2026-11-11：「再添加啊支持线段，圆，矩形 任意画线」。
+ * 画出来的图形必须真的进 .olb：圆走原生 `<Ellipse>`（采样点会被整数取整成多边形），
+ * 删掉的图形留位不写。
+ */
+describe("user-drawn shapes in the library XML (user 2026-11-11)", () => {
+  const withDrawn = (shapes: NormalizedSymbol["sections"][number]["shapes"]): NormalizedSymbol => {
+    const base = singleSection();
+    return {
+      ...base,
+      sections: [
+        ...base.sections,
+      ].map((section) => ({ ...section, shapes: [...section.shapes, ...shapes] })),
+    };
+  };
+
+  it("圆写成原生 <Ellipse>，外接矩形按圆心±半径取整", () => {
+    const symbolWithCircle = withDrawn([
+      {
+        kind: "polyline",
+        points: [
+          { x: 10, y: 5 },
+          { x: 20, y: 15 },
+          { x: 10, y: 15 },
+        ],
+        closed: true,
+        primitive: { type: "ellipse", center: { x: 15, y: 10 }, rx: 5, ry: 4 },
+        added: true,
+      },
+    ]);
+    const xml = buildCaptureLibraryXml(symbolWithCircle, "C:/libs/target.OLB");
+    expect(xml).toContain("<Ellipse>");
+    expect(xml).toContain(`x1="10" x2="20" y1="6" y2="14"`);
+    // 不再写成折线
+    expect(xml).not.toContain("points=");
+  });
+
+  it("线段写成一条 <Line>", () => {
+    const symbolWithLine = withDrawn([
+      {
+        kind: "polyline",
+        points: [
+          { x: 2, y: 4 },
+          { x: 12, y: 14 },
+        ],
+        closed: false,
+        added: true,
+      },
+    ]);
+    const xml = buildCaptureLibraryXml(symbolWithLine, "C:/libs/target.OLB");
+    const matches = xml.match(/<Line>\s*<Defn[^>]*x1="2"[^>]*x2="12"[^>]*y1="4"[^>]*y2="14"[^>]*\/>\s*<\/Line>/);
+    expect(matches).not.toBeNull();
+  });
+
+  it("用户画的矩形写成 <Rect>", () => {
+    const symbolWithRect = withDrawn([
+      {
+        kind: "rect",
+        min: { x: 3, y: 2 },
+        max: { x: 9, y: 7 },
+        cornerRadius: 0,
+        filled: false,
+        added: true,
+      },
+    ]);
+    const xml = buildCaptureLibraryXml(symbolWithRect, "C:/libs/target.OLB");
+    expect(xml).toContain(`x1="3" x2="9" y1="2" y2="7"`);
+  });
+
+  it("软删除的图形留位不写进库", () => {
+    const symbolWithRect = withDrawn([
+      {
+        kind: "rect",
+        min: { x: 3, y: 2 },
+        max: { x: 9, y: 7 },
+        cornerRadius: 0,
+        filled: false,
+        added: true,
+      },
+    ]);
+    const index = symbolWithRect.sections[0].shapes.length - 1;
+    const hidden = applySymbolEdits(symbolWithRect, {
+      [symbolShapeKey(0, index)]: { hidden: true },
+    });
+    const xml = buildCaptureLibraryXml(hidden, "C:/libs/target.OLB");
+    expect(xml).not.toContain(`x1="3" x2="9" y1="2" y2="7"`);
+  });
+});
+
+/**
+ * 用户 2026-11-11：右侧「属性编辑」改了线宽/线型/粗斜体要真的进库。
+ *
+ * `.olb` 只有 `lineWidth` / `lineStyle` 两个描边位（没有颜色 —— XSD 里
+ * `color` 未声明，实测导入直接报 `attribute 'color' is not declared`）。
+ */
+describe("stroke & text style in the library XML (user 2026-11-11)", () => {
+  const withStyledRect = (stroke: { lineWidth?: number; lineStyle?: number }): NormalizedSymbol => {
+    const base = singleSection();
+    return {
+      ...base,
+      sections: base.sections.map((section) => ({
+        ...section,
+        shapes: section.shapes.map((shape) =>
+          shape.kind === "rect" ? { ...shape, ...stroke } : shape,
+        ),
+      })),
+    };
+  };
+
+  it("矩形线宽/线型原样写进 <Rect>", () => {
+    const xml = buildCaptureLibraryXml(withStyledRect({ lineWidth: 3, lineStyle: 2 }), "C:/libs/t.xml");
+    const rect = /<Rect>\s*<Defn([^>]*)\/>/.exec(xml)!;
+    expect(rect[1]).toContain('lineWidth="3"');
+    expect(rect[1]).toContain('lineStyle="2"');
+  });
+
+  it("没设样式时仍写默认 0（老数据不变）", () => {
+    const xml = buildCaptureLibraryXml(singleSection(), "C:/libs/t.xml");
+    const rect = /<Rect>\s*<Defn([^>]*)\/>/.exec(xml)!;
+    expect(rect[1]).toContain('lineWidth="0"');
+    expect(rect[1]).toContain('lineStyle="0"');
+  });
+
+  it("圆的线宽跟着 <Ellipse> 走", () => {
+    const base = singleSection();
+    const withCircle: NormalizedSymbol = {
+      ...base,
+      sections: base.sections.map((section) => ({
+        ...section,
+        shapes: [
+          ...section.shapes,
+          {
+            kind: "polyline" as const,
+            points: [
+              { x: 0, y: 0 },
+              { x: 10, y: 0 },
+              { x: 0, y: 10 },
+            ],
+            closed: true,
+            lineWidth: 2,
+            primitive: { type: "ellipse" as const, center: { x: 5, y: 5 }, rx: 5, ry: 5 },
+            added: true as const,
+          },
+        ],
+      })),
+    };
+    const xml = buildCaptureLibraryXml(withCircle, "C:/libs/t.xml");
+    const ellipse = /<Ellipse>\s*<Defn([^>]*)\/>/.exec(xml)!;
+    expect(ellipse[1]).toContain('lineWidth="2"');
+  });
+
+  it("文本粗体 → weight=700、斜体 → italic=1", () => {
+    const base = singleSection();
+    const bold: NormalizedSymbol = {
+      ...base,
+      sections: base.sections.map((section) => ({
+        ...section,
+        shapes: section.shapes.map((shape) =>
+          shape.kind === "text" ? { ...shape, bold: true, italic: true } : shape,
+        ),
+      })),
+    };
+    const xml = buildCaptureLibraryXml(bold, "C:/libs/t.xml");
+    expect(xml).toContain('weight="700"');
+    expect(xml).toContain('italic="1"');
   });
 });

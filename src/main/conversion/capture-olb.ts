@@ -19,7 +19,6 @@ import {
 import {
   alignBodyToGrid,
   alignPinEndsToGrid,
-  rectsToSegments,
   sortPinsByNumber,
 } from "../../shared/symbol-layout";
 
@@ -133,10 +132,30 @@ const textOrientation = (rotation: number): number => {
 const textEscapement = (rotation: number): number => textOrientation(rotation) * 10;
 
 /**
+ * 字墨在 CommentText 框里的落点（用户 2026-11-11 XUTS-2201-042 实机截图实测）。
+ *
+ * 逐条比对 `locY/y1/y2` 与截图像素（用 24 个引脚的锚点标定 `py = 67 + 1.5667×y`）：
+ *   - 16 条标注全部满足 `墨迹上沿 ≈ y1`（偏差 ≤ 0.3 单位）；
+ *   - 墨迹高 ≈ `0.64 × 字高`（h=8 实测 5.1、h=9 的引脚号实测 5.74）；
+ *   - 框高恒为 `round(1.556 × 字高)`，多出来的部分在字下面空着。
+ *
+ * 也就是说 Capture **把整行字贴着框的最小角画**，基线在 `y1 + 0.64×字高`，
+ * y2 只影响选择框、不影响画面。之前把 `at`（预览里的基线）直接当 y1 写，
+ * 整行字就往下掉了半个字高（8 号字 5 单位），再叠上源数据本身 10/12 混合的行距，
+ * 越往下偏得越多、相邻标注叠成「3V/GND」。
+ */
+const CAP_HEIGHT_RATIO = 0.64;
+
+/** 字墨高度（字高 → 基线上方的实际墨迹高度）。 */
+const capHeight = (height: number): number => Math.round(height * CAP_HEIGHT_RATIO);
+
+/**
  * 注释文字的包围盒（x1/x2/y1/y2）。
  *
- * 竖排不是"横框加个 orientation"，而是把整个框绕锚点**刚性旋转** —— 90° 时文字
- * 向上读，框变成"窄而高"（与预览里 `rotate(-rotation)` 的效果一致）。
+ * `at` 与预览里的 SVG `<text x y>` 同义：**文字基线的左端**。框以「字墨贴着最小角」
+ * 的规则反推：横排基线在 `y1 + cap`，所以 `y1 = at.y - cap`；90° 时整个框绕锚点
+ * 刚性旋转，"字墨方向"（基线→字顶）转到 -x，`x1 = at.x - cap`。
+ * 180°/270° 的基线本来就落在最小角上，无需偏移。
  *
  * **loc 必须取框的最小角**（用户 2026-10-19 手改对照得出的结论）：Capture 自己保存
  * 竖排文本时 locX/locY 就是 x1/y1。XMATIC 导入时若 loc 不在最小角，会**按横排把包围盒
@@ -148,16 +167,18 @@ const commentTextBox = (
   width: number,
   boxHeight: number,
   orientation: number,
+  height: number,
 ): { readonly x1: number; readonly x2: number; readonly y1: number; readonly y2: number } => {
+  const cap = capHeight(height);
   switch (orientation) {
     case 90:
-      return { x1: at.x, x2: at.x + boxHeight, y1: at.y - width, y2: at.y };
+      return { x1: at.x - cap, x2: at.x - cap + boxHeight, y1: at.y - width, y2: at.y };
     case 180:
-      return { x1: at.x - width, x2: at.x, y1: at.y - boxHeight, y2: at.y };
+      return { x1: at.x - width, x2: at.x, y1: at.y, y2: at.y + boxHeight };
     case 270:
-      return { x1: at.x - boxHeight, x2: at.x, y1: at.y, y2: at.y + width };
+      return { x1: at.x, x2: at.x + boxHeight, y1: at.y, y2: at.y + width };
     default:
-      return { x1: at.x, x2: at.x + width, y1: at.y, y2: at.y + boxHeight };
+      return { x1: at.x, x2: at.x + width, y1: at.y - cap, y2: at.y - cap + boxHeight };
   }
 };
 
@@ -201,7 +222,7 @@ const commentTextCommands = (
     }
     const at = lineAnchor(shape.at, boxHeight, orientation, index);
     const width = estimateCommentWidth(line, height);
-    const box = commentTextBox(at, width, boxHeight, orientation);
+    const box = commentTextBox(at, width, boxHeight, orientation, height);
     const commands = [
       tag("Defn", {
         locX: grid(Math.min(box.x1, box.x2)),
@@ -223,10 +244,14 @@ const commentTextCommands = (
           charset: 0,
           escapement: textEscapement(shape.rotation),
           height: -height,
-          italic: 0,
+          /**
+           * 文本字形（用户 2026-11-11 的属性编辑）。真实库里 400 = 常规、700 = 粗体，
+           * italic 0/1 —— CommentText 只有这两个可写的字形位，没有颜色。
+           */
+          italic: shape.italic === true ? 1 : 0,
           name: COMMENT_FONT_NAME,
           orientation,
-          weight: 400,
+          weight: shape.bold === true ? 700 : 400,
           width: COMMENT_FONT_WIDTH,
         }),
         "      </TextFont>",
@@ -258,8 +283,18 @@ const arcPointOf = (
   y: arc.center.y + arc.ry * Math.sin(angle),
 });
 
+/** 描边属性（用户 2026-11-11）：改过就用 shape 上的枚举值，否则保持默认 0/0。 */
+const strokeAttributes = (shape: {
+  readonly lineStyle?: number;
+  readonly lineWidth?: number;
+}): { readonly lineStyle: string; readonly lineWidth: string } => ({
+  lineStyle: shape.lineStyle === undefined ? SHAPE_LINE_STYLE : String(shape.lineStyle),
+  lineWidth: shape.lineWidth === undefined ? SHAPE_LINE_WIDTH : String(shape.lineWidth),
+});
+
 const arcCommands = (
   arc: Extract<SymbolShapePrimitive, { type: "arc" }>,
+  stroke: { readonly lineStyle: string; readonly lineWidth: string },
 ): readonly string[] | null => {
   const x1 = Math.round(arc.center.x - arc.rx);
   const x2 = Math.round(arc.center.x + arc.rx);
@@ -284,8 +319,7 @@ const arcCommands = (
       tag("Defn", {
         endX: grid(end.x),
         endY: grid(end.y),
-        lineStyle: SHAPE_LINE_STYLE,
-        lineWidth: SHAPE_LINE_WIDTH,
+        ...stroke,
         startX: grid(start.x),
         startY: grid(start.y),
         x1: grid(x1),
@@ -299,9 +333,12 @@ const arcCommands = (
   return commands;
 };
 
-const primitiveCommands = (primitive: SymbolShapePrimitive): readonly string[] | null => {
+const primitiveCommands = (
+  primitive: SymbolShapePrimitive,
+  stroke: { readonly lineStyle: string; readonly lineWidth: string },
+): readonly string[] | null => {
   if (primitive.type === "arc") {
-    return arcCommands(primitive);
+    return arcCommands(primitive, stroke);
   }
   const x1 = Math.round(primitive.center.x - primitive.rx);
   const x2 = Math.round(primitive.center.x + primitive.rx);
@@ -315,8 +352,7 @@ const primitiveCommands = (primitive: SymbolShapePrimitive): readonly string[] |
     tag("Defn", {
       fillStyle: SHAPE_FILL_STYLE,
       hatchStyle: CURVE_HATCH_STYLE,
-      lineStyle: SHAPE_LINE_STYLE,
-      lineWidth: SHAPE_LINE_WIDTH,
+      ...stroke,
       x1: grid(x1),
       x2: grid(x2),
       y1: grid(y1),
@@ -327,14 +363,14 @@ const primitiveCommands = (primitive: SymbolShapePrimitive): readonly string[] |
 };
 
 const shapeCommands = (shape: NormalizedSymbolShape): readonly string[] => {
+  const stroke = strokeAttributes(shape.kind === "text" ? {} : shape);
   if (shape.kind === "rect") {
     return [
       "    <Rect>",
       tag("Defn", {
         fillStyle: SHAPE_FILL_STYLE,
         hatchStyle: SHAPE_HATCH_STYLE,
-        lineStyle: SHAPE_LINE_STYLE,
-        lineWidth: SHAPE_LINE_WIDTH,
+        ...stroke,
         x1: grid(shape.min.x),
         x2: grid(shape.max.x),
         y1: grid(shape.min.y),
@@ -346,7 +382,7 @@ const shapeCommands = (shape: NormalizedSymbolShape): readonly string[] => {
   if (shape.kind === "polyline") {
     // 折线只是椭圆/圆弧的采样近似 → 有原生参数就写真曲线，避免整数取整把圆画成多边形
     if (shape.primitive !== undefined) {
-      const native = primitiveCommands(shape.primitive);
+      const native = primitiveCommands(shape.primitive, stroke);
       if (native !== null) {
         return native;
       }
@@ -359,8 +395,7 @@ const shapeCommands = (shape: NormalizedSymbolShape): readonly string[] => {
       commands.push(
         "    <Line>",
         tag("Defn", {
-          lineStyle: SHAPE_LINE_STYLE,
-          lineWidth: SHAPE_LINE_WIDTH,
+          ...stroke,
           x1: grid(start.x),
           x2: grid(end.x),
           y1: grid(start.y),
@@ -581,8 +616,8 @@ const normalViewCommands = (
     "        </Reference>",
   );
   for (const shape of section.shapes) {
-    // 用户在预览里删掉的注释文本：留位（下标稳定）但不写进库
-    if (shape.kind === "text" && shape.hidden === true) {
+    // 用户在预览里删掉的东西（注释文本 / 自己画的图形）：留位（下标稳定）但不写进库
+    if (shape.hidden === true) {
       continue;
     }
     commands.push(...shapeCommands(shape));
@@ -615,10 +650,8 @@ export const buildCaptureLibraryXml = (
   // 解析阶段已排过一次，这里再兜一次（历史器件 / 拖动过的）。
   const aligned =
     options.snapPins === false
-      ? symbol.sections.map(rectsToSegments)
-      : symbol.sections.map((section) =>
-          rectsToSegments(alignBodyToGrid(alignPinEndsToGrid(section))),
-        );
+      ? symbol.sections
+      : symbol.sections.map((section) => alignBodyToGrid(alignPinEndsToGrid(section)));
   const sections = aligned.map(sortPinsByNumber);
   const multiSection = sections.length > 1;
   const now = Math.floor(Date.now() / 1000);

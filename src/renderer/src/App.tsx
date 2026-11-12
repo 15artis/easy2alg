@@ -26,12 +26,15 @@ import {
   Settings,
   ShieldCheck,
   Sparkles,
+  Square,
   Trash2,
   Type,
   TriangleAlert,
   Undo2,
   X,
   Zap,
+  Circle as CircleIcon,
+  Minus,
 } from "lucide-react";
 import {
   useCallback,
@@ -63,6 +66,7 @@ import type {
   OlbWriteResult,
   ProductSearchHit,
   QueueItem,
+  SymbolPinType,
 } from "../../shared/schemas";
 import { KNOWN_ALLEGRO_VERSIONS } from "../../shared/allegro-version";
 import { OLB_REFRESH_HINT } from "../../shared/messages";
@@ -70,7 +74,7 @@ import { createMockApi } from "./mock-api";
 import { describePercent, describeUpdate, type UpdateAction, type UpdateState } from "../../shared/update";
 import { PanZoom, type PanZoomHandle } from "./PanZoom";
 import { SymbolGrid } from "./SymbolGrid";
-import { SymbolProperties } from "./SymbolProperties";
+import { SymbolInspector } from "./SymbolInspector";
 import { SymbolPreview } from "./SymbolPreview";
 import { applySelection, selectRunnableItems, shouldOfferRegeneration } from "./selection";
 import {
@@ -78,10 +82,11 @@ import {
   accumulateLabelShift,
   accumulateOffset,
   accumulateRotation,
+  addedItemToShape,
+  appendAddedItems,
   applySymbolEdits,
   symbolShapeKey,
   EMPTY_SYMBOL_EDITS,
-  appendAddedTexts,
   hasSymbolEdits,
   isSymbolPinKey,
   setPinPoints,
@@ -89,21 +94,29 @@ import {
   setRectBounds,
   setTextHidden,
   setTextContent,
+  selectionToAddedItems,
   type RectEdges,
   type SymbolEdits,
   type SymbolEdit,
+  type AddedSymbolItem,
   type AddedTextShape,
+  type AddedShape,
+  type SymbolDrawTool,
   type SymbolPinPoints,
   type SymbolShapeBounds,
+  translateAddedItem,
 } from "../../shared/symbol-edit";
 import {
   canRedo,
   canUndo,
+  EMPTY_ADDED_ITEMS,
   EMPTY_EDIT_HISTORY,
   pushUndo,
   redoOnce,
+  sameSnapshot,
   undoOnce,
   type EditHistory,
+  type SymbolSnapshot,
 } from "../../shared/edit-history";
 import { normalizePackageName, sanitizeLibraryName } from "../../shared/naming";
 import { offsetPolygon, polygonPointsAttribute } from "../../shared/pad-geometry";
@@ -132,14 +145,21 @@ import { collectBoxes, planLayoutAction } from "../../shared/symbol-align";
 import { arrowStep, gridMil, snapValue } from "../../shared/symbol-snap";
 import { reattachPinsToBounds } from "../../shared/symbol-pin";
 import {
-  readElementProps,
+  writeCircleRadius,
   writeElementHeight,
   writeElementWidth,
   writeElementX,
   writeElementY,
+  writeLineEndpoint,
+  writePinLength,
+  writePinSide,
+  writePinType,
+  writeSelectionStroke,
   writeTextHeight,
   writeTextRotation,
+  writeTextStyle,
   type ElementField,
+  type PinSide,
 } from "../../shared/symbol-property";
 
 type Page = "convert" | "history" | "settings";
@@ -252,8 +272,12 @@ type DeviceEdit = {
   readonly pcbName: string | null;
   readonly symbolName: string | null;
   readonly symbolEdits: SymbolEdits;
-  /** 用户新加的文本（0.1.46）：追加在对应段末尾，「重置调整」会一并清掉 */
-  readonly addedTexts?: readonly AddedTextShape[];
+  /**
+   * 用户在预览里新增的东西（文本 / 手画的线段、矩形、圆），**按加入顺序放在一个数组里**：
+   * 段内下标就是编辑键，文本和图形分成两个数组各追加在末尾的话，
+   * 先加文本再加图形会把文本的下标顶掉，之前所有位移/改字全落到别的元素上。
+   */
+  readonly addedItems?: readonly AddedSymbolItem[];
 };
 
 const EMPTY_DEVICE_EDIT: DeviceEdit = {
@@ -266,8 +290,8 @@ const EMPTY_DEVICE_EDIT: DeviceEdit = {
 const applyEdits = (symbol: NormalizedSymbol, edit: DeviceEdit): NormalizedSymbol => {
   const name = edit.symbolName === null ? "" : sanitizeLibraryName(edit.symbolName);
   const named = name.length === 0 ? symbol : { ...symbol, name };
-  // 先追加新文本（在段末尾、下标稳定），再做既有编辑 —— 预览与写库同源
-  return applySymbolEdits(appendAddedTexts(named, edit.addedTexts), edit.symbolEdits);
+  // 先追加新元素（在段末尾、下标稳定），再做既有编辑 —— 预览与写库同源
+  return applySymbolEdits(appendAddedItems(named, edit.addedItems), edit.symbolEdits);
 };
 
 const basenameOf = (filePath: string): string => filePath.split(/[\\/]/).pop() ?? filePath;
@@ -1051,6 +1075,11 @@ const ConverterPage = ({
   const [editMode, setEditMode] = useState(false);
   /** 「添加文本」后自动进入行内编辑的请求（nonce 变化即重新触发） */
   const [textEditRequest, setTextEditRequest] = useState<{ key: string; nonce: number } | null>(null);
+  /**
+   * 绘图工具（用户 2026-11-11）：线段 / 矩形 / 圆。非空时画布进入绘制态 ——
+   * 拖一笔就落一个图形，工具保持激活可以连着画，Esc 或再点按钮退出。
+   */
+  const [drawTool, setDrawTool] = useState<SymbolDrawTool | null>(null);
   // 原理图元件预览的网格设置（用户 2026-10-20）：100 mil / 50 mil 两档
   const snapEnabled = settings.ui.symbolSnapEnabled;
   const snapGrid = settings.ui.symbolSnapGrid;
@@ -1108,17 +1137,15 @@ const ConverterPage = ({
     if (selectedSymbolEntry === undefined || selectedSymbolEntry === null) {
       return null;
     }
-    const withAdded = appendAddedTexts(selectedSymbolEntry.symbol, selectedEdit.addedTexts);
+    const withAdded = appendAddedItems(selectedSymbolEntry.symbol, selectedEdit.addedItems);
     return (
       withAdded.sections[Math.min(sectionIndex, withAdded.sections.length - 1)] ?? null
     );
-  }, [sectionIndex, selectedEdit.addedTexts, selectedSymbolEntry]);
-  const elementProps = useMemo(() => {
-    if (!editMode || rawSection === null || selectedKeys.length !== 1) {
-      return null;
-    }
-    return readElementProps(rawSection, selectedEdit.symbolEdits, selectedKeys[0]);
-  }, [editMode, rawSection, selectedEdit.symbolEdits, selectedKeys]);
+  }, [sectionIndex, selectedEdit.addedItems, selectedSymbolEntry]);
+  /**
+   * 属性面板（右侧 tab）自己从 `rawSection + symbolEdits` 读值，
+   * 这里不再预算一份 —— 面板要支持多选与 6 种元素类型，读值逻辑收在 SymbolInspector。
+   */
 
   /**
    * 画布命令面（用户 2026-10-20）：缩放到选中。
@@ -1298,7 +1325,8 @@ const ConverterPage = ({
 
   /**
    * 撤销 / 重做（用户 2026-10-16 要求"编辑支持退回步骤"）。每台器件一条栈，
-   * 栈里存的是**编辑前**的 SymbolEdits 快照 —— 编辑本身不可变，退回即放回旧快照。
+   * 栈里存的是**编辑前**的快照（符号编辑 + 用户新增元素，用户 2026-11-11）——
+   * 编辑本身不可变，退回即放回旧快照。
    */
   const [editHistory, setEditHistory] = useState<Record<string, EditHistory>>({});
   const deviceEditsRef = useRef(deviceEdits);
@@ -1306,13 +1334,24 @@ const ConverterPage = ({
   /** 正在进行的"一步"（拖动/长按方向键期间挂着，空闲后结算）。 */
   const editStepRef = useRef<{
     readonly deviceId: string;
-    readonly before: SymbolEdits;
+    readonly before: SymbolSnapshot;
     timer: number;
   } | null>(null);
 
-  const symbolEditsOf = useCallback(
-    (deviceId: string): SymbolEdits =>
-      deviceEditsRef.current[deviceId]?.symbolEdits ?? EMPTY_SYMBOL_EDITS,
+  /**
+   * 当前编辑快照。
+   *
+   * `addedItems` 缺失时返回**同一个空数组常量**，这样"有没有真改动"可以走引用比较
+   * （每次 `[]` 新建数组会让每次点击都被当成改动、白攒撤销点）。
+   */
+  const snapshotOf = useCallback(
+    (deviceId: string): SymbolSnapshot => {
+      const edit = deviceEditsRef.current[deviceId];
+      return {
+        symbolEdits: edit?.symbolEdits ?? EMPTY_SYMBOL_EDITS,
+        addedItems: edit?.addedItems ?? EMPTY_ADDED_ITEMS,
+      };
+    },
     [],
   );
 
@@ -1323,14 +1362,14 @@ const ConverterPage = ({
    * `editHistory`，就看不到刚刚结算的这一步 —— 表现是"拖完立刻 Ctrl+Z 没反应"
    * （必须等 400ms 合并窗口自然结算才行）。
    */
-  const sealEditStep = useCallback((): { readonly deviceId: string; readonly before: SymbolEdits } | null => {
+  const sealEditStep = useCallback((): { readonly deviceId: string; readonly before: SymbolSnapshot } | null => {
     const open = editStepRef.current;
     if (open === null) {
       return null;
     }
     editStepRef.current = null;
     window.clearTimeout(open.timer);
-    if (symbolEditsOf(open.deviceId) === open.before) {
+    if (sameSnapshot(snapshotOf(open.deviceId), open.before)) {
       return null;
     }
     setEditHistory((current) => ({
@@ -1338,14 +1377,42 @@ const ConverterPage = ({
       [open.deviceId]: pushUndo(current[open.deviceId] ?? EMPTY_EDIT_HISTORY, open.before),
     }));
     return { deviceId: open.deviceId, before: open.before };
-  }, [symbolEditsOf]);
+  }, [snapshotOf]);
 
   /**
-   * 改符号编辑状态（统一入口，带撤销记录）。
+   * 记一步撤销（"改符号编辑"与"增删新增元素"两个入口共用）。
    *
    * `continuous=true` 用于拖动与长按方向键：连续改动先挂在同一个"步"里，
    * 停手 `EDIT_STEP_IDLE_MS` 之后才结算 —— 否则一次拖动会攒出几十个撤销点，
    * Ctrl+Z 要按到手酸。
+   */
+  const recordEditStep = useCallback(
+    (deviceId: string, continuous: boolean, before: SymbolSnapshot): void => {
+      const open = editStepRef.current;
+      if (continuous && open !== null && open.deviceId === deviceId) {
+        window.clearTimeout(open.timer);
+        open.timer = window.setTimeout(sealEditStep, EDIT_STEP_IDLE_MS);
+        return;
+      }
+      sealEditStep();
+      if (continuous) {
+        editStepRef.current = {
+          deviceId,
+          before,
+          timer: window.setTimeout(sealEditStep, EDIT_STEP_IDLE_MS),
+        };
+        return;
+      }
+      setEditHistory((current) => ({
+        ...current,
+        [deviceId]: pushUndo(current[deviceId] ?? EMPTY_EDIT_HISTORY, before),
+      }));
+    },
+    [sealEditStep],
+  );
+
+  /**
+   * 改符号编辑状态（统一入口，带撤销记录）。
    *
    * **状态更新必须是函数式**：指针事件会被浏览器合并（一次批处理里来两个 move），
    * 若以渲染期的 ref 为基线，后一个事件会把前一个的位移整个覆盖掉
@@ -1353,26 +1420,7 @@ const ConverterPage = ({
    */
   const mutateSymbolEdits = useCallback(
     (deviceId: string, mutate: (edits: SymbolEdits) => SymbolEdits, continuous: boolean): void => {
-      const before = symbolEditsOf(deviceId);
-      const open = editStepRef.current;
-      if (continuous && open !== null && open.deviceId === deviceId) {
-        window.clearTimeout(open.timer);
-        open.timer = window.setTimeout(sealEditStep, EDIT_STEP_IDLE_MS);
-      } else {
-        sealEditStep();
-        if (continuous) {
-          editStepRef.current = {
-            deviceId,
-            before,
-            timer: window.setTimeout(sealEditStep, EDIT_STEP_IDLE_MS),
-          };
-        } else {
-          setEditHistory((current) => ({
-            ...current,
-            [deviceId]: pushUndo(current[deviceId] ?? EMPTY_EDIT_HISTORY, before),
-          }));
-        }
-      }
+      recordEditStep(deviceId, continuous, snapshotOf(deviceId));
       setDeviceEdits((current) => {
         const base = current[deviceId] ?? EMPTY_DEVICE_EDIT;
         const next = mutate(base.symbolEdits);
@@ -1385,7 +1433,82 @@ const ConverterPage = ({
         };
       });
     },
-    [sealEditStep, symbolEditsOf],
+    [recordEditStep, snapshotOf],
+  );
+
+  /**
+   * 改"用户新增元素"（文本 / 手画图形）：**同样走撤销记录**。
+   *
+   * 追加项会被展开成段末的 shapes，下标就是编辑键；早先这两个入口（添加、粘贴）
+   * 直接 `setDeviceEdits`，结果 Ctrl+Z 撤不掉刚画的东西，却把更早的编辑退掉了
+   * （用户 2026-11-11 反馈"画完撤不回"）。
+   */
+  const mutateAddedItems = useCallback(
+    (deviceId: string, mutate: (items: readonly AddedSymbolItem[]) => readonly AddedSymbolItem[]): void => {
+      recordEditStep(deviceId, false, snapshotOf(deviceId));
+      setDeviceEdits((current) => {
+        const base = current[deviceId] ?? EMPTY_DEVICE_EDIT;
+        const items = mutate(base.addedItems ?? EMPTY_ADDED_ITEMS);
+        if (items === (base.addedItems ?? EMPTY_ADDED_ITEMS)) {
+          return current;
+        }
+        return { ...current, [deviceId]: { ...base, addedItems: items } };
+      });
+    },
+    [recordEditStep, snapshotOf],
+  );
+
+  /** 重置调整：符号编辑与新增元素一起清掉，**只占一个撤销点**。 */
+  const resetSymbolEdits = useCallback(
+    (deviceId: string): void => {
+      recordEditStep(deviceId, false, snapshotOf(deviceId));
+      setDeviceEdits((current) => ({
+        ...current,
+        [deviceId]: {
+          ...(current[deviceId] ?? EMPTY_DEVICE_EDIT),
+          symbolEdits: EMPTY_SYMBOL_EDITS,
+          addedItems: undefined,
+        },
+      }));
+    },
+    [recordEditStep, snapshotOf],
+  );
+
+  /** 把快照放回器件（撤销 / 重做共用）；越界的选中下标一并清掉。 */
+  const restoreSnapshot = useCallback(
+    (deviceId: string, snapshot: SymbolSnapshot): void => {
+      setDeviceEdits((current) => ({
+        ...current,
+        [deviceId]: {
+          ...(current[deviceId] ?? EMPTY_DEVICE_EDIT),
+          symbolEdits: snapshot.symbolEdits,
+          addedItems: snapshot.addedItems.length === 0 ? undefined : snapshot.addedItems,
+        },
+      }));
+      /**
+       * 撤销"画了一个圆"之后，原来那个下标已经不存在，留着会显示成"已选 1 项"却
+       * 改不动任何东西（属性面板读不到 props）。有效下标上界 = **源库** shapes 数
+       * + 快照里的新增件数（一件展开成一个 shape）——
+       * 不能用 `rawSection.shapes.length`：它已经把当前新增项算进去了，会重复计数。
+       */
+      const sourceSection =
+        selectedSymbolEntry?.symbol.sections[
+          Math.min(sectionIndex, selectedSymbolEntry.symbol.sections.length - 1)
+        ] ?? null;
+      if (sourceSection === null) {
+        return;
+      }
+      const shapeCount = sourceSection.shapes.length + snapshot.addedItems.length;
+      setSelectedKeys((keys) =>
+        keys.filter(
+          (key) =>
+            key.startsWith("p") ||
+            key.startsWith("t") ||
+            Number(key.split(":")[1] ?? -1) < shapeCount,
+        ),
+      );
+    },
+    [sectionIndex, selectedSymbolEntry],
   );
 
   const currentEditHistory =
@@ -1401,19 +1524,13 @@ const ConverterPage = ({
       sealed !== null && sealed.deviceId === selectedKeyId
         ? pushUndo(currentEditHistory, sealed.before)
         : currentEditHistory;
-    const result = undoOnce(stack, symbolEditsOf(selectedKeyId));
+    const result = undoOnce(stack, snapshotOf(selectedKeyId));
     if (result === null) {
       return;
     }
     setEditHistory((current) => ({ ...current, [selectedKeyId]: result.history }));
-    setDeviceEdits((current) => ({
-      ...current,
-      [selectedKeyId]: {
-        ...(current[selectedKeyId] ?? EMPTY_DEVICE_EDIT),
-        symbolEdits: result.edits,
-      },
-    }));
-  }, [currentEditHistory, sealEditStep, selectedKeyId, symbolEditsOf]);
+    restoreSnapshot(selectedKeyId, result.snapshot);
+  }, [currentEditHistory, restoreSnapshot, sealEditStep, selectedKeyId, snapshotOf]);
 
   const redoEdit = useCallback((): void => {
     const sealed = sealEditStep();
@@ -1424,19 +1541,13 @@ const ConverterPage = ({
       sealed !== null && sealed.deviceId === selectedKeyId
         ? pushUndo(currentEditHistory, sealed.before)
         : currentEditHistory;
-    const result = redoOnce(stack, symbolEditsOf(selectedKeyId));
+    const result = redoOnce(stack, snapshotOf(selectedKeyId));
     if (result === null) {
       return;
     }
     setEditHistory((current) => ({ ...current, [selectedKeyId]: result.history }));
-    setDeviceEdits((current) => ({
-      ...current,
-      [selectedKeyId]: {
-        ...(current[selectedKeyId] ?? EMPTY_DEVICE_EDIT),
-        symbolEdits: result.edits,
-      },
-    }));
-  }, [currentEditHistory, sealEditStep, selectedKeyId, symbolEditsOf]);
+    restoreSnapshot(selectedKeyId, result.snapshot);
+  }, [currentEditHistory, restoreSnapshot, sealEditStep, selectedKeyId, snapshotOf]);
 
   const updateDeviceEdit = (id: string, patch: Partial<DeviceEdit>): void => {
     setDeviceEdits((current) => ({
@@ -1576,6 +1687,24 @@ const ConverterPage = ({
   );
 
   /**
+   * 往当前器件追加一件"用户新增"（文本 / 手画图形）。
+   *
+   * 下标 = 当前段 shapes 的长度：新增项永远排在段末尾，所以这个下标就是它的编辑键。
+   * 返回该键，调用方拿它去选中/开编辑器。
+   */
+  const appendAddedItem = useCallback(
+    (item: AddedSymbolItem, sectionLength: number): string | null => {
+      if (selectedKeyId === null) {
+        return null;
+      }
+      // 走带撤销记录的入口：刚画的图形/刚加的文本也要能 Ctrl+Z 撤掉
+      mutateAddedItems(selectedKeyId, (items) => [...items, item]);
+      return symbolShapeKey(sectionIndex, sectionLength);
+    },
+    [mutateAddedItems, sectionIndex, selectedKeyId],
+  );
+
+  /**
    * 添加文本（用户 2026-10-21）：放在本体中心、默认字号，追加为该段末尾的文本形状，
    * 然后自动进入行内编辑。追加的形状下标稳定，可拖动/改字/进属性面板。
    */
@@ -1584,6 +1713,7 @@ const ConverterPage = ({
       return;
     }
     const shape: AddedTextShape = {
+      kind: "text",
       id: `t${Date.now().toString(36)}`,
       section: sectionIndex,
       text: "文本",
@@ -1593,17 +1723,41 @@ const ConverterPage = ({
       },
       height: DEFAULT_SYMBOL_TEXT_HEIGHT,
     };
-    const key = symbolShapeKey(sectionIndex, previewSection.shapes.length);
-    setDeviceEdits((current) => ({
-      ...current,
-      [selectedKeyId]: {
-        ...(current[selectedKeyId] ?? EMPTY_DEVICE_EDIT),
-        addedTexts: [...(current[selectedKeyId]?.addedTexts ?? []), shape],
-      },
-    }));
+    const key = appendAddedItem(shape, previewSection.shapes.length);
+    if (key === null) {
+      return;
+    }
     setSelectedKeys([key]);
     setTextEditRequest({ key, nonce: Date.now() });
-  }, [previewBounds, previewSection, sectionIndex, selectedKeyId, snapGrid]);
+  }, [appendAddedItem, previewBounds, previewSection, sectionIndex, selectedKeyId, snapGrid]);
+
+  /**
+   * 画完一笔（用户 2026-11-11）：线段 / 矩形 / 圆。坐标已由预览层吸附与约束过，
+   * 这里只负责追加 + 选中，接着可以立刻拖动或按 Delete 删掉。
+   */
+  const addDrawnShape = useCallback(
+    (drawn: {
+      readonly kind: SymbolDrawTool;
+      readonly from: { readonly x: number; readonly y: number };
+      readonly to: { readonly x: number; readonly y: number };
+    }): void => {
+      if (selectedKeyId === null || previewSection === null) {
+        return;
+      }
+      const shape: AddedShape = {
+        kind: drawn.kind,
+        id: `d${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`,
+        section: sectionIndex,
+        from: drawn.from,
+        to: drawn.to,
+      };
+      const key = appendAddedItem(shape, previewSection.shapes.length);
+      if (key !== null) {
+        setSelectedKeys([key]);
+      }
+    },
+    [appendAddedItem, previewSection, sectionIndex, selectedKeyId],
+  );
 
   /** 双击引脚名/脚号改字（用户 2026-10-22）：一次提交 = 一个撤销点。 */
   const editPinText = useCallback(
@@ -1623,6 +1777,136 @@ const ConverterPage = ({
     },
     [mutateSymbolEdits],
   );
+
+  /**
+   * 编辑模式内部剪贴板（用户 2026-11-11：「文本支持复制粘贴」）。
+   *
+   * 存的是**可再生成的一份描述**而不是编辑键：源库元素没有"新增"记录，粘贴只能
+   * 追加新元素，所以复制时就把当时的几何展开成 AddedSymbolItem，粘贴出来的是一份
+   * 独立副本（改它不会动原件）。
+   */
+  const symbolClipboardRef = useRef<{ items: readonly AddedSymbolItem[] } | null>(null);
+  /** 连续粘贴的错开倍数（每次粘贴再挪一格，不会叠在同一处） */
+  const pasteCountRef = useRef(0);
+
+  const newItemId = (prefix: string): string =>
+    `${prefix}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
+
+  /**
+   * 把当前选中的东西转成"可粘贴项"（规则见 `selectionToAddedItems`：
+   * 只收文本与用户自己画的图形，引脚/源库图形不复制）。
+   */
+  const collectSelectionItems = useCallback(
+    (): readonly AddedSymbolItem[] =>
+      previewSection === null
+        ? []
+        : selectionToAddedItems(previewSection, sectionIndex, selectedKeys, newItemId),
+    [previewSection, sectionIndex, selectedKeys],
+  );
+
+  /** 追加一批新增元素并选中它们（粘贴 / 再制共用）。 */
+  const insertAddedItems = useCallback(
+    (items: readonly AddedSymbolItem[]): void => {
+      if (selectedKeyId === null || previewSection === null || items.length === 0) {
+        return;
+      }
+      const base = previewSection.shapes.length;
+      // 与"画一个图形"同一条入口：粘贴/再制也是一步，可 Ctrl+Z 撤回
+      mutateAddedItems(selectedKeyId, (current) => [...current, ...items]);
+      setSelectedKeys(items.map((_item, index) => symbolShapeKey(sectionIndex, base + index)));
+      setTextEditRequest(null);
+    },
+    [mutateAddedItems, previewSection, sectionIndex, selectedKeyId],
+  );
+
+  /** 复制：返回是否真的复制到了东西（没有可复制内容时不拦截 Ctrl+C）。 */
+  const copySelection = useCallback((): boolean => {
+    const items = collectSelectionItems();
+    if (items.length === 0) {
+      return false;
+    }
+    symbolClipboardRef.current = { items };
+    pasteCountRef.current = 0;
+    // 文本顺手写进系统剪贴板：跨应用也能粘出去（权限/安全上下文不满足时忽略）
+    const text = items
+      .filter((item): item is AddedTextShape => item.kind === "text")
+      .map((item) => item.text)
+      .join("\n");
+    if (text.length > 0) {
+      void navigator.clipboard?.writeText(text).catch(() => {
+        /* 剪贴板不可用不影响内部复制 */
+      });
+    }
+    return true;
+  }, [collectSelectionItems]);
+
+  /** 粘贴：每次再错开一格（用户连按 Ctrl+V 不会叠在一起）。 */
+  const pasteClipboard = useCallback((): boolean => {
+    const clipboard = symbolClipboardRef.current;
+    if (clipboard === null || clipboard.items.length === 0) {
+      return false;
+    }
+    pasteCountRef.current += 1;
+    const step = snapEnabled ? snapGrid : 10;
+    const offset = pasteCountRef.current * step;
+    insertAddedItems(
+      clipboard.items.map((item) =>
+        translateAddedItem({ ...item, id: newItemId("p") }, offset, offset),
+      ),
+    );
+    return true;
+  }, [insertAddedItems, snapEnabled, snapGrid]);
+
+  /** 再制（Ctrl+D）：复制一份挪一格，剪贴板内容不变。 */
+  const duplicateSelection = useCallback((): boolean => {
+    const items = collectSelectionItems();
+    if (items.length === 0) {
+      return false;
+    }
+    const step = snapEnabled ? snapGrid : 10;
+    insertAddedItems(items.map((item) => translateAddedItem({ ...item, id: newItemId("d") }, step, step)));
+    return true;
+  }, [collectSelectionItems, insertAddedItems, snapEnabled, snapGrid]);
+
+  /**
+   * 删除选中：文本与手画图形**软删除**（`hidden`，保留下标），源库图形与引脚不动
+   * —— 删掉本体或引脚会让符号不可用，那是源数据的事。
+   */
+  const deleteSelectedElements = useCallback((): boolean => {
+    if (selectedKeyId === null || previewSection === null || selectedKeys.length === 0) {
+      return false;
+    }
+    const removable = selectedKeys.filter((key) => {
+      if (isSymbolPinKey(key) || key.startsWith("t")) {
+        return false;
+      }
+      const shape = previewSection.shapes[Number(key.split(":")[1] ?? -1)];
+      if (shape === undefined) {
+        return false;
+      }
+      // 文本谁都能删；图形只删用户自己画的那部分
+      return shape.kind === "text" || shape.added === true;
+    });
+    if (removable.length === 0) {
+      return false;
+    }
+    mutateSymbolEdits(
+      selectedKeyId,
+      (edits) => removable.reduce((acc, key) => setTextHidden(acc, key, true), edits),
+      false,
+    );
+    setSelectedKeys([]);
+    return true;
+  }, [mutateSymbolEdits, previewSection, selectedKeyId, selectedKeys]);
+
+  /** 剪切 = 复制 + 删除源（源库图形删不掉，那就只复制、不删）。 */
+  const cutSelection = useCallback((): boolean => {
+    if (!copySelection()) {
+      return false;
+    }
+    deleteSelectedElements();
+    return true;
+  }, [copySelection, deleteSelectedElements]);
 
   /** 编辑模式下点画布空白处 = 取消选中当前元素。 */
   const clearSymbolSelection = useCallback((): void => {
@@ -1650,14 +1934,102 @@ const ConverterPage = ({
               return writeElementHeight(rawSection, edits, key, value);
             case "textHeight":
               return writeTextHeight(rawSection, edits, key, value);
-            default:
+            case "rotation":
               return writeTextRotation(rawSection, edits, key, value);
+            case "radius":
+              // 圆半径（用户 2026-11-11）：采样点与 primitive 一起改，写库才跟着变
+              return writeCircleRadius(rawSection, edits, key, value);
+            case "lineX1":
+            case "lineY1":
+            case "lineX2":
+            case "lineY2":
+              return writeLineEndpoint(rawSection, edits, key, field, value);
+            case "pinLength":
+              // 引脚长度：连接端不动，只缩本体端（外端是电气连接点）
+              return writePinLength(rawSection, edits, key, value);
+            default:
+              return edits;
           }
         },
         false,
       );
     },
     [mutateSymbolEdits, rawSection, selectedKeyId, selectedKeys],
+  );
+
+  /** 描边样式（线宽/线型）：单选与多选共用一条入口，批量改时逐项下发。 */
+  const commitElementStroke = useCallback(
+    (patch: { readonly lineWidth?: number; readonly lineStyle?: number }): void => {
+      if (selectedKeyId === null || rawSection === null || selectedKeys.length === 0) {
+        return;
+      }
+      mutateSymbolEdits(
+        selectedKeyId,
+        (edits) => writeSelectionStroke(rawSection, edits, selectedKeys, patch),
+        false,
+      );
+    },
+    [mutateSymbolEdits, rawSection, selectedKeyId, selectedKeys],
+  );
+
+  /** 文本粗体/斜体（写 TextFont 的 weight/italic）。 */
+  const commitTextStyle = useCallback(
+    (patch: { readonly bold?: boolean; readonly italic?: boolean }): void => {
+      if (selectedKeyId === null || rawSection === null || selectedKeys.length !== 1) {
+        return;
+      }
+      const key = selectedKeys[0];
+      mutateSymbolEdits(
+        selectedKeyId,
+        (edits) => writeTextStyle(rawSection, edits, key, patch),
+        false,
+      );
+    },
+    [mutateSymbolEdits, rawSection, selectedKeyId, selectedKeys],
+  );
+
+  /** 引脚电气类型。 */
+  const commitPinType = useCallback(
+    (type: SymbolPinType): void => {
+      if (selectedKeyId === null || rawSection === null || selectedKeys.length !== 1) {
+        return;
+      }
+      const key = selectedKeys[0];
+      mutateSymbolEdits(
+        selectedKeyId,
+        (edits) => writePinType(rawSection, edits, key, type),
+        false,
+      );
+    },
+    [mutateSymbolEdits, rawSection, selectedKeyId, selectedKeys],
+  );
+
+  /** 引脚朝向（连接端不动，本体端换边）。 */
+  const commitPinSide = useCallback(
+    (side: PinSide): void => {
+      if (selectedKeyId === null || rawSection === null || selectedKeys.length !== 1) {
+        return;
+      }
+      const key = selectedKeys[0];
+      mutateSymbolEdits(
+        selectedKeyId,
+        (edits) => writePinSide(rawSection, edits, key, side),
+        false,
+      );
+    },
+    [mutateSymbolEdits, rawSection, selectedKeyId, selectedKeys],
+  );
+
+  /** 属性面板里改文本内容（多行，失焦或 Ctrl+Enter 提交）。 */
+  const commitTextContent = useCallback(
+    (text: string): void => {
+      if (selectedKeyId === null || selectedKeys.length !== 1) {
+        return;
+      }
+      const key = selectedKeys[0];
+      mutateSymbolEdits(selectedKeyId, (edits) => setTextContent(edits, key, text), false);
+    },
+    [mutateSymbolEdits, selectedKeyId, selectedKeys],
   );
 
   /** 旋转一个文本（90° 步进）。单次操作：每按一次一个撤销点。 */
@@ -1677,8 +2049,10 @@ const ConverterPage = ({
    *   空格 / R  文本旋转 90°（仅单选一个文本时）
    *   [ / -    文本字号缩小（仅单选一个文本时）
    *   ] / =    文本字号放大（仅单选一个文本时）
+   *   Ctrl+C / X / V / D  复制 / 剪切 / 粘贴 / 再制（用户 2026-11-11）
+   *   Delete    删除选中的文本与手画图形（软删除，可 Ctrl+Z 退回）
    *   Ctrl+Z / Ctrl+Shift+Z  退回 / 前进（见下面那条 effect）
-   *   Esc      取消选择
+   *   Esc      取消选择 / 退出绘图工具
    * 只在「编辑」开着、且已选中元素时接管按键；输入框聚焦时不抢。
    */
   useEffect(() => {
@@ -1699,6 +2073,25 @@ const ConverterPage = ({
       ) {
         return;
       }
+      if (event.key === "Escape") {
+        setSelectedKeys([]);
+        setDrawTool(null);
+        return;
+      }
+      /* 剪贴板快捷键（用户 2026-11-11）：多选也要能用，所以排在"单选"判断之前。
+       * 没有可复制内容时**不拦截** —— 留给浏览器/系统的默认行为。 */
+      if (event.ctrlKey || event.metaKey) {
+        const key = event.key.toLowerCase();
+        if (key === "c" || key === "x" || key === "d") {
+          const handled =
+            key === "c" ? copySelection() : key === "x" ? cutSelection() : duplicateSelection();
+          if (handled) {
+            event.preventDefault();
+          }
+          return;
+        }
+        return; // 其它 Ctrl 组合交回给各自的 effect
+      }
       const step = arrowStep(snapState, { shift: event.shiftKey, alt: event.altKey });
       const deltas: Record<string, readonly [number, number]> = {
         ArrowLeft: [-step, 0],
@@ -1711,6 +2104,13 @@ const ConverterPage = ({
         const [dx, dy] = deltas[event.key];
         // 方向键动的是**全部选中**的元素（框选出来的那一批一起微调）
         moveSelectedElements(selectedKeys, dx, dy);
+        return;
+      }
+      /** Delete / Backspace：删掉选中的文本与用户手画的图形（引脚/本体不参与） */
+      if (event.key === "Delete" || event.key === "Backspace") {
+        if (deleteSelectedElements()) {
+          event.preventDefault();
+        }
         return;
       }
       if (selectedShapeKey === null) {
@@ -1734,22 +2134,6 @@ const ConverterPage = ({
         scaleSymbolText(selected.id, selectedShapeKey, 1.15);
         return;
       }
-      // Delete / Backspace：删除选中的注释文本（引脚/本体不参与，避免误删）
-      if (event.key === "Delete" || event.key === "Backspace") {
-        const index = Number(selectedShapeKey.split(":")[1] ?? -1);
-        const shape = selectedShapeKey.startsWith("p")
-          ? undefined
-          : previewSection?.shapes[index];
-        if (shape !== undefined && shape.kind === "text" && shape.hidden !== true) {
-          event.preventDefault();
-          hideSymbolText(selected.id, selectedShapeKey);
-          setSelectedKeys([]);
-          return;
-        }
-      }
-      if (event.key === "Escape") {
-        setSelectedKeys([]);
-      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -1766,20 +2150,24 @@ const ConverterPage = ({
     snapState,
     previewSection,
     hideSymbolText,
+    copySelection,
+    cutSelection,
+    duplicateSelection,
+    deleteSelectedElements,
   ]);
 
   /**
-   * Ctrl/Cmd+A 全选（用户 2026-10-20）：语义与框选一致 —— 引脚 + 非 rect 图形。
-   * 单独一条 effect：不要求"已经选中了什么"（上面那条在空选时直接 return）。
+   * 全局编辑快捷键（不要求已经选中东西）：
+   *   Ctrl/Cmd+A  全选（语义与框选一致 —— 引脚 + 非本体图形）
+   *   Ctrl/Cmd+V  粘贴（用户 2026-11-11）
+   *   T           加文本      L 线段   B 矩形   O 圆（再按一次退出该工具）
+   *   Esc         退出绘图工具
    */
   useEffect(() => {
     if (!editMode || previewTab !== "sch" || previewSection === null) {
       return;
     }
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "a") {
-        return;
-      }
       const target = event.target;
       if (
         target instanceof HTMLElement &&
@@ -1787,12 +2175,47 @@ const ConverterPage = ({
       ) {
         return;
       }
-      event.preventDefault();
-      setSelectedKeys(symbolSelectableKeys(previewSection, sectionIndex));
+      const key = event.key.toLowerCase();
+      if (event.ctrlKey || event.metaKey) {
+        if (key === "a") {
+          event.preventDefault();
+          setSelectedKeys(symbolSelectableKeys(previewSection, sectionIndex));
+          return;
+        }
+        if (key === "v" && pasteClipboard()) {
+          event.preventDefault();
+        }
+        return;
+      }
+      if (event.key === "Escape") {
+        setDrawTool(null);
+        return;
+      }
+      if (event.altKey) {
+        return;
+      }
+      if (key === "t") {
+        event.preventDefault();
+        addDeviceText();
+        return;
+      }
+      const toolByKey: Record<string, SymbolDrawTool> = { l: "line", b: "rect", o: "circle" };
+      const tool = toolByKey[key];
+      if (tool !== undefined) {
+        event.preventDefault();
+        setDrawTool((current) => (current === tool ? null : tool));
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [editMode, previewTab, previewSection, sectionIndex]);
+  }, [
+    editMode,
+    previewTab,
+    previewSection,
+    sectionIndex,
+    pasteClipboard,
+    addDeviceText,
+  ]);
 
   /**
    * 撤销 / 重做快捷键（用户 2026-10-16 要求"编辑支持退回步骤 + 添加快捷键"）：
@@ -2702,6 +3125,7 @@ const ConverterPage = ({
                 onClick={() => {
                   setEditMode((current) => !current);
                   setSelectedKeys([]);
+                  setDrawTool(null);
                 }}
                 title={
                   editMode
@@ -2785,11 +3209,45 @@ const ConverterPage = ({
                 type="button"
                 className="symbol-tool"
                 onClick={addDeviceText}
-                title="添加文本（放在本体中心，可拖动、双击改字）"
+                title="添加文本（放在本体中心，可拖动、双击改字）· T"
                 aria-label="添加文本"
                 data-testid="add-text"
               >
                 <Type size={15} />
+              </button>
+              {/* 绘图工具（用户 2026-11-11）：拖一笔落一个图形，工具保持激活可连续画 */}
+              <button
+                type="button"
+                className={`symbol-tool ${drawTool === "line" ? "on" : ""}`}
+                onClick={() => setDrawTool((current) => (current === "line" ? null : "line"))}
+                title="画线段（拖动起止点，Shift 锁水平/竖直/45°）· L"
+                aria-label="画线段"
+                aria-pressed={drawTool === "line"}
+                data-testid="draw-line"
+              >
+                <Minus size={15} />
+              </button>
+              <button
+                type="button"
+                className={`symbol-tool ${drawTool === "rect" ? "on" : ""}`}
+                onClick={() => setDrawTool((current) => (current === "rect" ? null : "rect"))}
+                title="画矩形（拖动对角，Shift 锁正方形）· B"
+                aria-label="画矩形"
+                aria-pressed={drawTool === "rect"}
+                data-testid="draw-rect"
+              >
+                <Square size={15} />
+              </button>
+              <button
+                type="button"
+                className={`symbol-tool ${drawTool === "circle" ? "on" : ""}`}
+                onClick={() => setDrawTool((current) => (current === "circle" ? null : "circle"))}
+                title="画圆（按下为圆心，拖出半径）· O"
+                aria-label="画圆"
+                aria-pressed={drawTool === "circle"}
+                data-testid="draw-circle"
+              >
+                <CircleIcon size={15} />
               </button>
               <select
                 className="symbol-tool-select"
@@ -2836,23 +3294,8 @@ const ConverterPage = ({
               </button>
             </div>
           ) : null}
-          {previewTab === "sch" && editMode && elementProps !== null ? (
-            <SymbolProperties
-              element={elementProps}
-              snap={snapState}
-              onField={commitElementField}
-              position={settings.ui.symbolPropsPosition}
-              onMove={(next) => onUiChange({ symbolPropsPosition: next })}
-              onDelete={
-                elementProps.kind === "text" && selected !== null
-                  ? () => {
-                      hideSymbolText(selected.id, elementProps.key);
-                      setSelectedKeys([]);
-                    }
-                  : undefined
-              }
-            />
-          ) : null}
+          {/* 属性编辑已迁到右侧「属性编辑」tab（用户 2026-11-11）：
+              固定位置、不挡画布、按选中类型显示字段；画布上不再叠浮动面板。 */}
           {previewTab === "sch" && editedSymbol !== null && previewSection !== null ? (
             <PanZoom
               ref={symbolPanRef}
@@ -2889,7 +3332,6 @@ const ConverterPage = ({
                     symbol={editedSymbol}
                     sectionIndex={Math.min(sectionIndex, editedSymbol.sections.length - 1)}
                     scale={scale}
-                    edits={selectedEdit.symbolEdits}
                     editing={editMode}
                     selectedKeys={effectiveSelectedKeys}
                     onSelectKeys={(keys, mode) =>
@@ -2902,6 +3344,9 @@ const ConverterPage = ({
                     onPinTextEdit={editPinText}
                     textEditRequest={textEditRequest}
                     snap={snapState}
+                    drawTool={drawTool}
+                    view={{ tx, ty, width, height, scale }}
+                    onDrawShape={addDrawnShape}
                   />
                 </>
               )}
@@ -2945,26 +3390,19 @@ const ConverterPage = ({
               <span><i className="legend-pad" />引脚</span>
               <span>
                 {editMode
-                  ? `编辑中：拖元素移动 · 双击文本/引脚标签改字 · T 加文本 · Delete 删文本 · 框选/Shift 追加/Ctrl 切换 · Ctrl+A 全选 · 拖框线改大小 · ←↑→↓ 一格（Shift 精调/Alt 粗调） · 空格 旋转文本 · [ ] 字号 · Ctrl+Z 退回 · Esc 取消 · 网格 ${gridMil(snapGrid)} mil${snapEnabled ? " 吸附开" : " 吸附关（写库按实际坐标）"}`
+                  ? `编辑中：拖元素移动 · 右侧「属性编辑」改内容/尺寸/线宽线型 · 双击改字 · T 文本 / L 线段 / B 矩形 / O 圆 · Ctrl+C X V D 复制剪切粘贴再制 · Delete 删除 · 框选（Shift 追加 / Ctrl 切换） · Ctrl+A 全选 · 拖框线改大小 · ←↑→↓ 一格（Shift 精调 / Alt 粗调） · 空格 旋转文本 · [ ] 字号 · Ctrl+Z 退回 · Esc 取消 · 网格 ${gridMil(snapGrid)} mil${snapEnabled ? " 吸附开" : " 吸附关（写库按实际坐标）"}`
                   : "点「编辑」后按住鼠标左键拖动文字、图形与引脚（滚轮缩放照常可用）"}
-                {hasSymbolEdits(selectedEdit.symbolEdits) ? (
+                {hasSymbolEdits(selectedEdit.symbolEdits) ||
+                (selectedEdit.addedItems?.length ?? 0) > 0 ? (
                   <button
                     type="button"
                     className="legend-reset"
                     onClick={() => {
                       if (selected !== null) {
-                        // 走统一入口：重置也是一步，可以 Ctrl+Z 退回来
-                        mutateSymbolEdits(selected.id, () => EMPTY_SYMBOL_EDITS, false);
+                        // 新增元素与符号编辑一起清掉，且只算一步 —— Ctrl+Z 一次全退回来
+                        resetSymbolEdits(selected.id);
                         setSelectedKeys([]);
                         setTextEditRequest(null);
-                        // 追加的文本没有对应的 SymbolEdit，重置时一并移除
-                        setDeviceEdits((current) => ({
-                          ...current,
-                          [selected.id]: {
-                            ...(current[selected.id] ?? EMPTY_DEVICE_EDIT),
-                            addedTexts: undefined,
-                          },
-                        }));
                       }
                     }}
                   >
@@ -3033,7 +3471,33 @@ const ConverterPage = ({
       </section>
 
       <aside className="right-rail">
-        <div className="inspector-header"><h2>检查结果</h2><span>{selectedPlan === null ? "等待数据" : `${selectedPlan.checks.filter((item) => item.severity === "pass").length} 通过`}</span></div>
+        {/* 属性编辑（用户 2026-11-11）：右侧栏第一块 ——
+            只生成 .olb（没勾 PCB）或器件没有封装时，这里照样能用。
+            字段随选中类型切换；颜色不在其中，.olb 的 XSD 没有 color 属性。
+            顶部的"检查结果 / N 通过"标题条已按用户要求删除（2026-11-11）：
+            右栏现在是通用属性面板，不再需要一个总标题占掉一行高度。 */}
+        <InspectorSection id="props" title="属性编辑" collapsed={collapsedSections.includes("props")} onToggle={toggleSection}>
+          {previewTab !== "sch" || rawSection === null ? (
+            <p className="inspector-hint">
+              切到「原理图元件」页后，选中文本 / 线段 / 圆 / 矩形 / 引脚即可在这里改内容、尺寸与线宽线型。
+            </p>
+          ) : (
+            <SymbolInspector
+              section={rawSection}
+              edits={selectedEdit.symbolEdits}
+              selectedKeys={selectedKeys}
+              snap={snapState}
+              editable={editMode}
+              onField={commitElementField}
+              onStroke={commitElementStroke}
+              onTextStyle={commitTextStyle}
+              onPinType={commitPinType}
+              onPinSide={commitPinSide}
+              onTextContent={commitTextContent}
+              onDelete={deleteSelectedElements}
+            />
+          )}
+        </InspectorSection>
         {selectedPlan === null || selected?.footprint === null ? (
           <div className="empty-state detail-empty"><Sparkles size={28} /><strong>等待器件数据</strong><span>读取完成后会列出检查结果</span></div>
         ) : (

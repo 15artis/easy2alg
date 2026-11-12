@@ -187,6 +187,10 @@ describe("label de-overlap", () => {
   it("nudges a region label that would land on a pin name", () => {
     // 合成：一个 3 字符区域标注压在一个 6 字符引脚名（`SIGNAL`，含窄字符 I）的尾端。Capture 的引脚名字宽比
     // 立创EDA 大，源符号里"刚好不挨着"的标注会压上去（用户截图里的 JTAG）。
+    //
+    // 锚点 = 文字**基线的左端**，占位盒围的是字墨（`at.y - 0.64×字高` 到 `at.y`，
+    // 见 symbol-labels 的实测依据）：标注 `at.y = 46` 的盒是 38~46，引脚名占 36~44，
+    // 两者 y 向相交、x 向只咬住 2 单位（30~32）—— 正是"刚好压到名字末尾"的那种情况。
     const section: NormalizedSymbolSection = {
       name: "SEC",
       bounds: { minX: -10, minY: 0, maxX: 210, maxY: 100 },
@@ -194,7 +198,7 @@ describe("label de-overlap", () => {
         { kind: "rect", min: { x: 0, y: 0 }, max: { x: 200, y: 100 }, cornerRadius: 0, filled: false },
         { kind: "text", text: "TAG", at: { x: 30, y: 46 }, rotation: 0, height: 12 },
       ],
-      pins: [pin("SIGNAL", "1", { x: -10, y: 50 }, { x: 0, y: 50 })],
+      pins: [pin("SIGNAL", "1", { x: -10, y: 40 }, { x: 0, y: 40 })],
     };
     expect(boxesOverlap(commentTextBox(section.shapes[1] as never), pinNameBox(section.pins[0], bodyBoxOf(section)))).toBe(true);
 

@@ -54,7 +54,6 @@ const renderTexts = (): readonly string[] => {
       symbol={symbol}
       sectionIndex={0}
       scale={1}
-      edits={{}}
       editing
       selectedKeys={new Set<string>()}
       onSelectKeys={() => {
@@ -92,7 +91,6 @@ describe("pin labels", () => {
         symbol={symbol}
         sectionIndex={0}
         scale={1}
-        edits={{}}
         editing
         selectedKeys={new Set<string>()}
         onSelectKeys={() => {
@@ -153,7 +151,6 @@ describe("整段关掉引脚名", () => {
         symbol={target}
         sectionIndex={0}
         scale={1}
-        edits={{}}
         editing
         selectedKeys={new Set<string>()}
         onSelectKeys={() => {
@@ -192,7 +189,6 @@ describe("整段关掉引脚名", () => {
         symbol={target}
         sectionIndex={0}
         scale={1}
-        edits={{}}
         editing
         selectedKeys={new Set<string>()}
         onSelectKeys={() => {

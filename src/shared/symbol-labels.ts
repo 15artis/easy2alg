@@ -229,7 +229,9 @@ export const bodyShapeOf = (
   section: NormalizedSymbolSection,
 ): SymbolBodyShape | undefined => {
   const rects = section.shapes.filter(
-    (shape): shape is Extract<NormalizedSymbolShape, { kind: "rect" }> => shape.kind === "rect",
+    (shape): shape is Extract<NormalizedSymbolShape, { kind: "rect" }> =>
+      // 用户自己画的框不是本体（否则"引脚压在哪只矩形上"会把随手画的框选成本体）
+      shape.kind === "rect" && shape.added !== true && shape.hidden !== true,
   );
   if (rects.length === 1) {
     return rects[0];
@@ -570,18 +572,31 @@ export const anchorLabelBox = (
 };
 
 /**
+ * 字墨高度占字高的比例 —— Capture 把整行字贴着 CommentText 框的**最小角**画。
+ *
+ * 实测（2026-11-11，XUTS-2201-042 的截图逐条比对，用 24 个引脚标定像素映射）：
+ * 16 条 CommentText 的墨迹上沿都落在 `y1`（偏差 ≤0.3 单位），墨迹高 = 0.64×字高。
+ * 所以框里那条基线在 `y1 + 0.64×字高`，与预览的 `at.y` 对齐时要先把框往上挪这么多。
+ */
+export const SYMBOL_TEXT_CAP_RATIO = 0.64;
+
+/** 字墨高度（与写库的 `capHeight` 同一份口径）。 */
+export const symbolCapHeight = (height: number): number =>
+  Math.round(symbolFontHeight(height) * SYMBOL_TEXT_CAP_RATIO);
+
+/**
  * 注释文字（CommentText）的占位矩形。
  *
- * 说明：Capture 把它按 `locX/locY + 字号` 排，纵向基准与 x1/x2/y1/y2 的语义
- * 没有官方文档，这里取"左上角起算、高度 = 字号"的保守近似 —— 只用来判断
- * "挪一下会不会压到引脚标签"，宁大勿小。
- */
-/**
- * CommentText 的占位盒（含旋转）。
+ * `at` 是**文字基线的左端**（与预览里的 SVG `<text x y>`、写库时的 loc 同一个点）。
+ * 框按 Capture 的真实画法反推：字墨贴着框的最小角，基线在 `最小角 + cap`，
+ * 于是横排时 `minY = at.y - cap`；90° 时框绕锚点刚性旋转，字墨方向转到 -x，
+ * `minX = at.x - cap`。180°/270° 的基线本来就落在最小角，不偏移。
  *
- * 竖排（rotation 90/270）时**不能按横排算** —— 宽 = 字高、高 = 文本长度，否则
- * 避让会拿一条横着扫过去的长条去判冲突（实测会误报"Hot Plug/Multfunction pins
- * 压在引脚名上"）。锚点约定与写库一致：`at` 是文字起点，框沿阅读方向铺开。
+ * 与 `capture-olb.ts` 的 `commentTextBox` 完全同口径 —— 否则避让算的是 A 处、
+ * 画出来的是 B 处。
+ *
+ * 竖排（90/270）时**不能按横排算** —— 宽 = 字高、高 = 文本长度，否则避让会拿一条
+ * 横着扫过去的长条去判冲突（实测会误报"Hot Plug/Multfunction pins 压在引脚名上"）。
  */
 export const commentTextBox = (shape: {
   readonly at: { readonly x: number; readonly y: number };
@@ -592,24 +607,34 @@ export const commentTextBox = (shape: {
   const height = symbolFontHeight(shape.height);
   const width = estimateCommentWidth(shape.text, height);
   const quarter = Math.round((shape.rotation ?? 0) / 90) % 4;
+  const cap = symbolCapHeight(height);
   /**
-   * 多行文本沿"阅读方向的垂直方向"叠行（用户 2026-11-09）。Capture 里一行占
+   * 多行文本沿"阅读方向的垂直方向"叠行（用户 2026-11-09）。Capture 里每行占
    * `round(height × 1.556)`，与写入 OLB 时逐行下移的步长保持同一份口径。
+   *
+   * 占位盒只围**字墨**（首行从字顶到基线 `cap`，其余每行再加一个行距），不围
+   * Capture 那个 `1.556×字高` 的整行选择框 —— 后者在字下面空着大半格，拿它判
+   * 冲突会把"看起来没挨着"的标注判成重叠，避让白跑一趟。
    */
   const lineStep = Math.round(height * 1.556);
-  const lines = symbolTextLines(shape.text).length;
-  const depth = height + lineStep * (lines - 1);
-  if (quarter === 1 || quarter === 3) {
-    // 90°：文字自下而上，框向上铺；270°：自上而下，框向下铺
-    return quarter === 1
-      ? { minX: shape.at.x, maxX: shape.at.x + depth, minY: shape.at.y - width, maxY: shape.at.y }
-      : { minX: shape.at.x, maxX: shape.at.x + depth, minY: shape.at.y, maxY: shape.at.y + width };
+  const depth = cap + lineStep * (symbolTextLines(shape.text).length - 1);
+  if (quarter === 1) {
+    // 90°：文字自下而上读，字墨方向 = -x，文本长度方向 = -y
+    return { minX: shape.at.x - cap, maxX: shape.at.x - cap + depth, minY: shape.at.y - width, maxY: shape.at.y };
+  }
+  if (quarter === 3) {
+    // 270°：自上而下读，基线落在最小角
+    return { minX: shape.at.x, maxX: shape.at.x + depth, minY: shape.at.y, maxY: shape.at.y + width };
+  }
+  if (quarter === 2) {
+    // 180°：基线落在最小角，字墨朝 +y
+    return { minX: shape.at.x - width, maxX: shape.at.x, minY: shape.at.y, maxY: shape.at.y + depth };
   }
   return {
     minX: shape.at.x,
-    minY: shape.at.y,
+    minY: shape.at.y - cap,
     maxX: shape.at.x + width,
-    maxY: shape.at.y + depth,
+    maxY: shape.at.y - cap + depth,
   };
 };
 
@@ -731,7 +756,7 @@ export const symbolElementBox = (
     );
   }
   const shape = section.shapes[index];
-  if (shape === undefined) {
+  if (shape === undefined || shape.hidden === true) {
     return null;
   }
   switch (shape.kind) {
@@ -740,12 +765,9 @@ export const symbolElementBox = (
     case "polyline":
       return boxOfPoints(shape.points);
     default:
-      // 已删除（隐藏）的文本不参与框选/命中
-      if (shape.hidden === true) {
-        return null;
-      }
-      // 文字用**预览画出来的占位**（基线在 at.y，字形向上长），而不是写库模型的
-      // commentTextBox（基线向下）—— 框选要跟着眼睛看到的走，两者差整整一个字高。
+      // 文字的框选命中盒：跟着**预览画出来的字形**走（基线 at.y，字形向上长一个
+      // 字号），比 `commentTextBox` 的字墨带（0.64×字高）略高、还往下多留 0.25 字号，
+      // 故意放宽一点 —— 框选/点选要"碰到就算"，太紧反而点不到。
       // 多行时按最长一行取宽、按行数往下加高（用户 2026-11-09）。
       return normalize({
         minX: shape.at.x,
@@ -756,6 +778,48 @@ export const symbolElementBox = (
           shape.height * 0.25 +
           shape.height * SYMBOL_TEXT_LINE_STEP * (symbolTextLines(shape.text).length - 1),
       });
+  }
+};
+
+/**
+ * 元素的**定位锚点** —— 拖动时用它算"落点吸附到格线"的基准（用户 2026-11-11）。
+ *
+ * 只量化位移的话，源数据里 `at.x = 143` 这种半格起点永远落不到格线上，
+ * 拖起来就是"有时一格有时两格"。挑一个语义上"就是它位置"的点：
+ * 文本用基线左端、矩形用左上角、折线用首点、引脚用连接端、标签用它的锚点。
+ */
+export const symbolElementAnchor = (
+  section: NormalizedSymbolSection,
+  key: string,
+): { readonly x: number; readonly y: number } | null => {
+  const label = parseSymbolPinLabelKey(key);
+  if (label !== null) {
+    const pin = section.pins[label.pinIndex];
+    if (pin === undefined) {
+      return null;
+    }
+    const anchor = pin.labelAnchor;
+    if (anchor !== undefined) {
+      return label.kind === "name" ? anchor.name : anchor.number;
+    }
+    const placement = pinLabelPlacement(pin, label.kind, bodyBoxOf(section));
+    return { x: placement.x, y: placement.y };
+  }
+  if (isSymbolPinKey(key)) {
+    const pin = section.pins[parseSymbolEditKey(key).index];
+    return pin === undefined ? null : pin.connection;
+  }
+  const shape = section.shapes[parseSymbolEditKey(key).index];
+  if (shape === undefined) {
+    return null;
+  }
+  switch (shape.kind) {
+    case "rect":
+      return { x: Math.min(shape.min.x, shape.max.x), y: Math.min(shape.min.y, shape.max.y) };
+    case "polyline":
+      return shape.points[0] ?? null;
+    default:
+      return shape.at;
   }
 };
 
@@ -783,7 +847,11 @@ export const symbolKeysInBox = (
 ): readonly string[] => {
   const keys: string[] = [];
   section.shapes.forEach((shape, index) => {
-    if (shape.kind === "rect") {
+    // 本体框不参与框选；但**用户自己画的**矩形是普通图元，要能框到
+    if (shape.kind === "rect" && shape.added !== true) {
+      return;
+    }
+    if (shape.hidden === true) {
       return;
     }
     const key = symbolShapeKey(sectionIndex, index);
@@ -812,7 +880,9 @@ export const symbolSelectableKeys = (
   sectionIndex: number,
 ): readonly string[] => [
   ...section.shapes.flatMap((shape, index) =>
-    shape.kind === "rect" ? [] : [symbolShapeKey(sectionIndex, index)],
+    (shape.kind === "rect" && shape.added !== true) || shape.hidden === true
+      ? []
+      : [symbolShapeKey(sectionIndex, index)],
   ),
   ...section.pins.map((_pin, index) => symbolPinKey(sectionIndex, index)),
 ];

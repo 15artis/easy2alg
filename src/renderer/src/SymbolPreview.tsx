@@ -9,8 +9,13 @@ import {
   type ReactElement,
   type RefObject,
 } from "react";
-import type { NormalizedSymbol, NormalizedSymbolPin } from "../../shared/schemas";
+import type {
+  NormalizedSymbol,
+  NormalizedSymbolPin,
+  NormalizedSymbolSection,
+} from "../../shared/schemas";
 import {
+  constrainDrawPoint,
   dragDelta,
   isSymbolPinKey,
   parseSymbolEditKey,
@@ -18,16 +23,20 @@ import {
   symbolPinKey,
   symbolPinLabelKey,
   symbolShapeKey,
+  type AddedShape,
+  type SymbolDrawTool,
   type SymbolPinPoints,
   type RectEdges,
-  type SymbolEdits,
   type SymbolShapeBounds,
 } from "../../shared/symbol-edit";
 import { SYMBOL_PIN_GRID } from "../../shared/symbol-layout";
 import { reorientPin, type DragBias } from "../../shared/symbol-pin";
 import {
-  snapDragDelta,
+  snapDragDeltaFromOrigin,
   snapRectBounds,
+  snapValue,
+  worldRectOf,
+  type CanvasView,
   type SnapState,
 } from "../../shared/symbol-snap";
 import type { SelectionMode } from "./selection";
@@ -41,6 +50,7 @@ import {
   pinLabelWidth,
   pinNamesSuppressed,
   pinSideOf,
+  symbolElementAnchor,
   symbolFontHeight,
   symbolTextLines,
   SYMBOL_TEXT_LINE_STEP,
@@ -75,6 +85,51 @@ const PIN_TEXT_MIN_SCALE = 0.12;
 const PIN_FONT = 9;
 /** 拖框线时判定"抓住了哪条边"的容差（屏幕像素，按缩放换算成世界单位）。 */
 const EDGE_TOLERANCE_PX = 14;
+
+/**
+ * 描边样式（用户 2026-11-11：属性编辑里的线宽/线型）。
+ *
+ * 预览是矢量缩放，不能直接用世界单位的线宽（缩到 5% 就看不见了），
+ * 所以按"档位 → 屏幕像素"映射：0 档 1.6px，每升一档 +0.9px，选中时再补一圈。
+ * 线型按 OLB 的枚举画成虚线；具体图案不必与 Capture 逐段一致，能一眼区分即可。
+ */
+const strokePixels = (lineWidth: number | undefined, active: boolean): number =>
+  (lineWidth ?? 0) * 0.9 + (active ? 3 : 1.6);
+
+const strokeDash = (lineStyle: number | undefined): string | undefined => {
+  switch (lineStyle) {
+    case 1:
+      return "7 4";
+    case 2:
+      return "2 4";
+    case 3:
+      return "7 4 2 4";
+    case 4:
+      return "7 4 2 4 2 4";
+    case 5:
+      return "12 5";
+    default:
+      return undefined;
+  }
+};
+
+/**
+ * 虚线间隔按当前缩放折算。
+ *
+ * `vector-effect="non-scaling-stroke"` 只把**线宽**从变换里摘出来，`stroke-dasharray`
+ * 仍按用户单位走 —— 不折算的话，放大到 400% 时虚线段会长得看不出是虚线。
+ */
+const strokeDashOf = (lineStyle: number | undefined, scale: number): string | undefined => {
+  const base = strokeDash(lineStyle);
+  if (base === undefined) {
+    return undefined;
+  }
+  const safe = scale > 0 ? scale : 1;
+  return base
+    .split(" ")
+    .map((value) => String(Math.round((Number(value) / safe) * 100) / 100))
+    .join(" ");
+};
 
 /** 文字锚点与书写方向 —— 与 shared/symbol-labels.ts 的盒模型一一对应。 */
 type LabelPlacement = {
@@ -133,6 +188,14 @@ type DragState =
       readonly startY: number;
       lastX: number;
       lastY: number;
+      /**
+       * 按下点的**世界坐标**（`getScreenCTM()` 求逆）。后续每一帧都用"当前世界点 −
+       * 这个点"直接得到位移，不再拿像素差除以 scale —— 少一处手算就少一处倍数错误
+       * （用户 2026-11-11 报"拖动跳两个网格"）。
+       */
+      readonly startWorld: { readonly x: number; readonly y: number } | null;
+      /** 主元素锚点：位置吸附的基准，保证松手落点压在格线上 */
+      readonly origin: { readonly x: number; readonly y: number } | null;
       /** 累计位移（世界单位，未吸附） */
       rawX: number;
       rawY: number;
@@ -227,6 +290,10 @@ const useInlineEditorFocus = (
  * **必须用元素自己的 getScreenCTM()**（含祖先 `<g>` 的 translate+scale），
  * 用 `ownerSVGElement.getScreenCTM()` 拿到的是 svg 根坐标系（像素），
  * 判边全错 —— 实测拖右边线会被判成拖下边线，宽度纹丝不动。
+ *
+ * 这里手算 `inverse()` 的 a/b/c/d/e/f 而不用 `DOMPoint.matrixTransform`：
+ * 少一个全局构造函数依赖（jsdom 没有 DOMPoint，测试环境直接抛错），
+ * 公式与 SVG 的 2D 仿射矩阵一致。
  */
 const worldPoint = (
   event: ReactPointerEvent<SVGElement>,
@@ -236,8 +303,16 @@ const worldPoint = (
   if (matrix == null) {
     return null;
   }
-  const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix.inverse());
-  return { x: point.x, y: point.y };
+  let inverse: { readonly a: number; readonly b: number; readonly c: number; readonly d: number; readonly e: number; readonly f: number };
+  try {
+    inverse = matrix.inverse();
+  } catch {
+    return null; // 缩放为 0 等奇异矩阵
+  }
+  return {
+    x: inverse.a * event.clientX + inverse.c * event.clientY + inverse.e,
+    y: inverse.b * event.clientX + inverse.d * event.clientY + inverse.f,
+  };
 };
 
 /** 按容差判断抓住了哪几条边；都没命中就取最近的那条。 */
@@ -291,8 +366,15 @@ const useElementDrag = (
     key: string,
     point: { readonly x: number; readonly y: number } | null,
   ) => boolean,
+  /**
+   * 元素的定位锚点（位置吸附的基准）。按下瞬间取一次，之后不随元素移动重算 ——
+   * 否则每帧拿"已经挪过的位置"再吸附，会自己追着自己跑。
+   */
+  anchorOf?: (key: string) => { readonly x: number; readonly y: number } | null,
 ) => {
   const dragRef = useRef<DragState | null>(null);
+  const anchorOfRef = useRef(anchorOf);
+  anchorOfRef.current = anchorOf;
   /** 松手回调（引脚换边重定向）走 ref：capture 监听只挂一次，不能因回调换引用重装。 */
   const onMoveEndRef = useRef(onMoveEnd);
   onMoveEndRef.current = onMoveEnd;
@@ -391,6 +473,9 @@ const useElementDrag = (
         startY: event.clientY,
         lastX: event.clientX,
         lastY: event.clientY,
+        startWorld: worldPoint(event),
+        // 多选时用"第一个非引脚标签元素"的锚点：组内共用同一增量，相对间距不变
+        origin: anchorOfRef.current?.(keys[0]) ?? null,
         rawX: 0,
         rawY: 0,
         appliedX: 0,
@@ -450,21 +535,32 @@ const useElementDrag = (
         if (event.clientX === drag.lastX && event.clientY === drag.lastY) {
           return;
         }
-        const { dx: stepDx, dy: stepDy } = dragDelta(
-          event.clientX - drag.lastX,
-          event.clientY - drag.lastY,
-          scale,
-        );
+        /**
+         * 位移优先用世界坐标相减（`getScreenCTM()` 已含祖先的 translate+scale），
+         * jsdom 里没有 CTM 时退回"像素差 ÷ scale"。
+         */
+        const point = worldPoint(event);
+        if (point !== null && drag.startWorld !== null) {
+          drag.rawX = point.x - drag.startWorld.x;
+          drag.rawY = point.y - drag.startWorld.y;
+        } else {
+          const { dx: stepDx, dy: stepDy } = dragDelta(
+            event.clientX - drag.lastX,
+            event.clientY - drag.lastY,
+            scale,
+          );
+          drag.rawX += stepDx;
+          drag.rawY += stepDy;
+        }
         drag.lastX = event.clientX;
         drag.lastY = event.clientY;
         // 整组按同一份位移量化（引脚、文本、图形、本体一视同仁）。
         // 只量化引脚会让文本留在原处，反而把标签与引脚拉出间距 —— 所以组内一致。
-        drag.rawX += stepDx;
-        drag.rawY += stepDy;
-        const delta = snapDragDelta(
+        const delta = snapDragDeltaFromOrigin(
           { dx: drag.rawX, dy: drag.rawY },
           { dx: drag.appliedX, dy: drag.appliedY },
           drag.snap,
+          drag.origin,
         );
         drag.appliedX = delta.appliedX;
         drag.appliedY = delta.appliedY;
@@ -543,6 +639,7 @@ const useElementDrag = (
  */
 const SymbolPins = memo(
   ({
+    section,
     sectionIndex,
     pins,
     body,
@@ -559,6 +656,7 @@ const SymbolPins = memo(
     onEditPinLabel,
     namesSuppressed,
   }: {
+    readonly section: NormalizedSymbolSection;
     readonly sectionIndex: number;
     readonly pins: readonly NormalizedSymbolPin[];
     readonly body: SymbolBox;
@@ -598,6 +696,7 @@ const SymbolPins = memo(
       snap,
       onMoveEnd,
       onDoubleTap,
+      (key) => symbolElementAnchor(section, key),
     );
 
     /**
@@ -747,7 +846,6 @@ export const SymbolPreview = ({
   symbol,
   sectionIndex,
   scale,
-  edits,
   editing,
   selectedKeys,
   onSelectKeys,
@@ -757,13 +855,22 @@ export const SymbolPreview = ({
   onTextEdit,
   textEditRequest,
   onPinTextEdit,
+  drawTool = null,
+  view = null,
+  onDrawShape,
   snap = { enabled: true, grid: SYMBOL_PIN_GRID },
 }: {
   readonly symbol: NormalizedSymbol;
   readonly sectionIndex: number;
   readonly scale: number;
-  readonly edits: SymbolEdits;
-  /** 编辑模式：按住左键拖动元素 / 拖框线改大小；浏览模式交给 PanZoom */
+  /**
+   * **传进来的必须是套完编辑的符号**（App 的 `editedSymbol`）。
+   *
+   * 早先这里还收一份 `edits` 并给每个元素叠 `translate(offset)`，而 `symbol` 同样
+   * 是套过 `applySymbolEdits` 的 —— 位移与本体 bounds 被**应用两次**：拖动时元素跑
+   * 两倍距离，对齐/分布之后预览比实际写入 .olb 的坐标摊得更开（用户 2026-11-11
+   * 报的「与预览图存在差异，文本显示的位置不对」）。预览与写库只能有一份几何。
+   */
   readonly editing: boolean;
   readonly selectedKeys: ReadonlySet<string>;
   readonly onSelectKeys: (keys: readonly string[], mode?: SelectionMode) => void;
@@ -791,6 +898,19 @@ export const SymbolPreview = ({
     kind: "name" | "number",
     text: string,
   ) => void;
+  /**
+   * 绘图工具（用户 2026-11-11）：线段 / 矩形 / 圆。非空时画布进入绘制态 ——
+   * 元素层 `pointer-events: none`，由一层铺满可视区的透明矩形接手势。
+   */
+  readonly drawTool?: SymbolDrawTool | null;
+  /** 可视世界矩形（绘制层铺满它；缺省时不渲染绘制层，测试无需准备 CTM） */
+  readonly view?: CanvasView | null;
+  /** 画完一笔。坐标已按网格吸附（Shift 约束已在内部处理） */
+  readonly onDrawShape?: (shape: {
+    readonly kind: SymbolDrawTool;
+    readonly from: { readonly x: number; readonly y: number };
+    readonly to: { readonly x: number; readonly y: number };
+  }) => void;
 }): ReactElement => {
   const section = symbol.sections[Math.min(sectionIndex, symbol.sections.length - 1)];
 
@@ -902,6 +1022,7 @@ export const SymbolPreview = ({
     snap,
     finishMove,
     onDoubleTap,
+    (key) => symbolElementAnchor(section, key),
   );
 
   /** 双击文本的行内编辑（用户 2026-10-21）。foreignObject 里放 textarea，随世界坐标缩放。 */
@@ -983,34 +1104,132 @@ export const SymbolPreview = ({
         }
       : {};
 
+  /**
+   * 绘图工具（用户 2026-11-11）：一条手势 = 一笔。
+   *
+   * 起点/当前点同时存在 ref 与 state：ref 给事件用（pointerup 里读到的必须是最新值，
+   * state 还没 flush 时会拿到上一帧），state 只负责画橡皮筋。
+   */
+  const drawing = editing && drawTool !== null && view !== null && onDrawShape !== undefined;
+  const drawDraftRef = useRef<{
+    readonly from: { readonly x: number; readonly y: number };
+    readonly to: { readonly x: number; readonly y: number };
+  } | null>(null);
+  const [drawDraft, setDrawDraft] = useState<{
+    readonly from: { readonly x: number; readonly y: number };
+    readonly to: { readonly x: number; readonly y: number };
+  } | null>(null);
+  const updateDraft = useCallback(
+    (next: { readonly from: { readonly x: number; readonly y: number }; readonly to: { readonly x: number; readonly y: number } } | null): void => {
+      drawDraftRef.current = next;
+      setDrawDraft(next);
+    },
+    [],
+  );
+  useEffect(() => {
+    if (!drawing) {
+      drawDraftRef.current = null;
+      setDrawDraft(null);
+    }
+  }, [drawing]);
+
+  /** 绘制点一律先落格（吸附关时保留原始坐标） */
+  const snapDrawPoint = useCallback(
+    (point: { readonly x: number; readonly y: number }): { readonly x: number; readonly y: number } =>
+      snap.enabled && snap.grid > 0
+        ? { x: snapValue(point.x, snap.grid), y: snapValue(point.y, snap.grid) }
+        : point,
+    [snap.enabled, snap.grid],
+  );
+
+  const startDraw = useCallback(
+    (event: ReactPointerEvent<SVGElement>): void => {
+      if (!drawing || event.button !== 0) {
+        return;
+      }
+      event.stopPropagation();
+      const point = worldPoint(event);
+      if (point === null) {
+        return;
+      }
+      const snapped = snapDrawPoint(point);
+      updateDraft({ from: snapped, to: snapped });
+      event.currentTarget.setPointerCapture(event.pointerId);
+    },
+    [drawing, snapDrawPoint, updateDraft],
+  );
+
+  const moveDraw = useCallback(
+    (event: ReactPointerEvent<SVGElement>): void => {
+      const draft = drawDraftRef.current;
+      if (draft === null || drawTool === null || event.buttons === 0) {
+        return;
+      }
+      const point = worldPoint(event);
+      if (point === null) {
+        return;
+      }
+      event.stopPropagation();
+      updateDraft({
+        from: draft.from,
+        to: constrainDrawPoint(drawTool, draft.from, snapDrawPoint(point), event.shiftKey),
+      });
+    },
+    [drawTool, snapDrawPoint, updateDraft],
+  );
+
+  const endDraw = useCallback(
+    (event: ReactPointerEvent<SVGElement>): void => {
+      const draft = drawDraftRef.current;
+      updateDraft(null);
+      if (event.currentTarget.hasPointerCapture?.(event.pointerId) === true) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      if (draft === null || drawTool === null || onDrawShape === undefined) {
+        return;
+      }
+      // 一点就松手（或缩得太小）不算画了一笔
+      const length = Math.hypot(draft.to.x - draft.from.x, draft.to.y - draft.from.y);
+      if (length < 1) {
+        return;
+      }
+      onDrawShape({ kind: drawTool, from: draft.from, to: draft.to });
+    },
+    [drawTool, onDrawShape, updateDraft],
+  );
+
   const showPinText = scale >= PIN_TEXT_MIN_SCALE;
   const body = bodyBoxOf(section);
 
   return (
-    <g className="symbol-preview">
-      {section.shapes.map((shape, shapeIndex) => {
+    <>
+      {/* 绘制态下元素层整体不接指针：否则落点压在本体/引脚/文本上会被它们吃掉 */}
+      <g className="symbol-preview" pointerEvents={drawing ? "none" : undefined}>
+        {section.shapes.map((shape, shapeIndex) => {
         const key = symbolShapeKey(sectionIndex, shapeIndex);
-        if (shape.kind === "text" && shape.hidden === true) {
-          return null; // 用户删除的注释文本：保留下标、不画
+        // 软删除（文本、用户画的图形都走同一个标记）：保留下标、不画
+        if (shape.hidden === true) {
+          return null;
         }
         const active = selectedKeys.has(key);
-        const edit = edits[key];
-        const offset = edit?.offset;
-        const translate =
-          offset !== undefined && (offset.dx !== 0 || offset.dy !== 0)
-            ? `translate(${offset.dx} ${offset.dy})`
-            : undefined;
         const stroke = active ? ACTIVE : EDGE;
+        /** 属性编辑里的线宽/线型（文本没有这两个字段，取到 undefined 即默认样式） */
+        const strokeWidth = shape.kind === "text" ? undefined : strokePixels(shape.lineWidth, active);
+        const dashArray = shape.kind === "text" ? undefined : strokeDashOf(shape.lineStyle, scale);
         if (shape.kind === "rect") {
-          // 本体四边：编辑记录里的 bounds 优先（框线拖动改过大小）
-          const stored = edit?.bounds;
-          const minX = Math.min(stored?.min.x ?? shape.min.x, stored?.max.x ?? shape.max.x);
-          const minY = Math.min(stored?.min.y ?? shape.min.y, stored?.max.y ?? shape.max.y);
-          const width = Math.abs((stored?.max.x ?? shape.max.x) - (stored?.min.x ?? shape.min.x));
-          const height = Math.abs((stored?.max.y ?? shape.max.y) - (stored?.min.y ?? shape.min.y));
+          // 本体四边：`symbol` 已套过编辑，shape 里的角点就是拖过之后的最终值
+          const minX = Math.min(shape.min.x, shape.max.x);
+          const minY = Math.min(shape.min.y, shape.max.y);
+          const width = Math.abs(shape.max.x - shape.min.x);
+          const height = Math.abs(shape.max.y - shape.min.y);
           const bounds: RectBounds = { minX, minY, maxX: minX + width, maxY: minY + height };
+          /**
+           * 用户自己画的矩形（`added`）**拖整体移动**，不是改大小 ——
+           * 只有源库本体才允许拖框线改四边（改大小会牵动引脚贴边，那是本体的特权）。
+           */
+          const resizable = shape.added !== true;
           return (
-            <g key={key} transform={translate} {...moveProps(key)}>
+            <g key={key} {...moveProps(key)}>
               <rect
                 x={minX}
                 y={minY}
@@ -1019,7 +1238,8 @@ export const SymbolPreview = ({
                 rx={shape.cornerRadius}
                 fill={shape.filled ? BODY_FILL : "none"}
                 stroke={stroke}
-                strokeWidth={active ? 3 : 2}
+                strokeWidth={strokeWidth}
+                strokeDasharray={dashArray}
                 vectorEffect="non-scaling-stroke"
                 /* 可见的填充面**不参与命中**（用户 2026-10-21）：框内空白按下左键
                  * 要交给 PanZoom 去框选里面的引脚/文本，而不是把整个本体拖走。
@@ -1027,41 +1247,90 @@ export const SymbolPreview = ({
                 pointerEvents="none"
               />
               {editing ? (
-                /* 命中区只覆盖**框线**：框内部空白不参与命中，免得把里面元素的点击全吃掉
-                 * （用户 2026-10-16 要求）；抓住框线拖动 = 改本体大小。 */
-                <rect
-                  data-hit="stroke"
-                  x={minX}
-                  y={minY}
-                  width={width}
-                  height={height}
-                  rx={shape.cornerRadius}
-                  fill="none"
-                  stroke="transparent"
-                  strokeWidth={9}
-                  vectorEffect="non-scaling-stroke"
-                  onPointerDown={drag.startResize(key, bounds)}
-                  onPointerMove={drag.strokePointerMove(key, bounds)}
-                  onPointerUp={drag.end}
-                  onPointerCancel={drag.end}
-                  onLostPointerCapture={drag.end}
-                />
+                resizable ? (
+                  /* 命中区只覆盖**框线**：框内部空白不参与命中，免得把里面元素的点击全吃掉
+                   * （用户 2026-10-16 要求）；抓住框线拖动 = 改本体大小。 */
+                  <rect
+                    data-hit="stroke"
+                    x={minX}
+                    y={minY}
+                    width={width}
+                    height={height}
+                    rx={shape.cornerRadius}
+                    fill="none"
+                    stroke="transparent"
+                    strokeWidth={9}
+                    vectorEffect="non-scaling-stroke"
+                    onPointerDown={drag.startResize(key, bounds)}
+                    onPointerMove={drag.strokePointerMove(key, bounds)}
+                    onPointerUp={drag.end}
+                    onPointerCancel={drag.end}
+                    onLostPointerCapture={drag.end}
+                  />
+                ) : (
+                  /* 自己画的框：整条线都能按住拖走 */
+                  <rect
+                    x={minX}
+                    y={minY}
+                    width={width}
+                    height={height}
+                    rx={shape.cornerRadius}
+                    fill="none"
+                    stroke="transparent"
+                    strokeWidth={9}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                )
               ) : null}
             </g>
           );
         }
         if (shape.kind === "polyline") {
+          /* 用户画的圆：展开成折线 + `primitive` 椭圆参数（写库出原生 <Ellipse>）。
+           * 预览按参数画真圆 —— 采样点只用于框选/兜底，直接照点画会在小半径时
+           * 露出多边形棱角，与 Capture 里的样子对不上。 */
+          const ellipse = shape.primitive?.type === "ellipse" ? shape.primitive : null;
+          if (ellipse !== null) {
+            return (
+              <g key={key} {...moveProps(key)}>
+                <ellipse
+                  cx={ellipse.center.x}
+                  cy={ellipse.center.y}
+                  rx={ellipse.rx}
+                  ry={ellipse.ry}
+                  fill="none"
+                  stroke={stroke}
+                  strokeWidth={strokeWidth}
+                  strokeDasharray={dashArray}
+                  vectorEffect="non-scaling-stroke"
+                />
+                {editing ? (
+                  <ellipse
+                    cx={ellipse.center.x}
+                    cy={ellipse.center.y}
+                    rx={ellipse.rx}
+                    ry={ellipse.ry}
+                    fill="none"
+                    stroke="transparent"
+                    strokeWidth={9}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ) : null}
+              </g>
+            );
+          }
           const points = shape.points.map((point) => `${point.x},${point.y}`).join(" ");
           const closed = shape.closed
             ? `${points} ${shape.points[0].x},${shape.points[0].y}`
             : points;
           return (
-            <g key={key} transform={translate} {...moveProps(key)}>
+            <g key={key} {...moveProps(key)}>
               <polyline
                 points={closed}
                 fill="none"
                 stroke={stroke}
-                strokeWidth={active ? 3 : 2}
+                strokeWidth={strokeWidth}
+                strokeDasharray={dashArray}
                 vectorEffect="non-scaling-stroke"
               />
               {editing ? (
@@ -1105,7 +1374,7 @@ export const SymbolPreview = ({
           const draftWidth =
             estimateMultilineWidth(textDraft) * (fontHeight / PIN_FONT) * 1.35 + 24;
           return (
-            <g key={key} transform={translate}>
+            <g key={key}>
               <g
                 transform={
                   shape.rotation === 0
@@ -1175,7 +1444,7 @@ export const SymbolPreview = ({
           );
         }
         return (
-          <g key={key} transform={translate} {...moveProps(key)}>
+          <g key={key} {...moveProps(key)}>
             <g
               transform={
                 shape.rotation === 0
@@ -1198,6 +1467,9 @@ export const SymbolPreview = ({
                 y={shape.at.y}
                 fontSize={fontHeight}
                 fill={active ? ACTIVE : TEXT}
+                /* 属性编辑里的粗体/斜体：与写库的 TextFont weight/italic 同义 */
+                fontWeight={shape.bold === true ? 700 : undefined}
+                fontStyle={shape.italic === true ? "italic" : undefined}
               >
                 {/* 多行：一行一个 tspan，dy 按行距递进（用户 2026-11-09） */}
                 {lines.map((line, lineIndex) => (
@@ -1212,6 +1484,7 @@ export const SymbolPreview = ({
       })}
 
       <SymbolPins
+        section={section}
         sectionIndex={sectionIndex}
         pins={section.pins}
         body={body}
@@ -1296,6 +1569,70 @@ export const SymbolPreview = ({
             );
           })()
         : null}
-    </g>
+      </g>
+
+      {/* 绘制层（用户 2026-11-11）：铺满可视区接手势，橡皮筋实时预览。
+       * 必须在元素层**之后**画 —— 后画的在上层，落点压在任何元素上都能起笔。 */}
+      {drawing && view !== null ? (
+        <g className="symbol-draw-layer">
+          {(() => {
+            const world = worldRectOf(view);
+            return (
+              <rect
+                data-testid="symbol-draw-layer"
+                x={world.minX}
+                y={world.minY}
+                width={world.maxX - world.minX}
+                height={world.maxY - world.minY}
+                fill="transparent"
+                style={{ cursor: "crosshair" }}
+                onPointerDown={startDraw}
+                onPointerMove={moveDraw}
+                onPointerUp={endDraw}
+                onPointerCancel={endDraw}
+                onLostPointerCapture={endDraw}
+              />
+            );
+          })()}
+          {drawDraft !== null && drawTool !== null
+            ? (() => {
+                const from = drawDraft.from;
+                const to = drawDraft.to;
+                /** 屏幕上恒定的线宽/虚线节奏（世界单位要除以缩放） */
+                const unit = 1 / (scale > 0 ? scale : 1);
+                const common = {
+                  fill: "none",
+                  stroke: ACTIVE,
+                  strokeWidth: 1.6 * unit,
+                  strokeDasharray: `${6 * unit} ${4 * unit}`,
+                  pointerEvents: "none" as const,
+                };
+                if (drawTool === "line") {
+                  return <line {...common} x1={from.x} y1={from.y} x2={to.x} y2={to.y} />;
+                }
+                if (drawTool === "circle") {
+                  return (
+                    <circle
+                      {...common}
+                      cx={from.x}
+                      cy={from.y}
+                      r={Math.hypot(to.x - from.x, to.y - from.y)}
+                    />
+                  );
+                }
+                return (
+                  <rect
+                    {...common}
+                    x={Math.min(from.x, to.x)}
+                    y={Math.min(from.y, to.y)}
+                    width={Math.abs(to.x - from.x)}
+                    height={Math.abs(to.y - from.y)}
+                  />
+                );
+              })()
+            : null}
+        </g>
+      ) : null}
+    </>
   );
 };

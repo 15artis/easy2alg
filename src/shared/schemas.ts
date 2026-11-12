@@ -336,6 +336,23 @@ export const SymbolShapePrimitiveSchema = z.discriminatedUnion("type", [
 ]);
 export type SymbolShapePrimitive = z.infer<typeof SymbolShapePrimitiveSchema>;
 
+/**
+ * 描边样式（用户 2026-11-11：属性编辑要能改线宽/线型）。
+ *
+ * 取值直接是 Capture OLB 里的枚举，不做"mil 换算"：
+ *  - `lineWidth` 0..3（Capture Line Width 档位，0 = 默认细线）；
+ *  - `lineStyle` 0..4（0 = 实线，其余为虚线/点线/点划线/双点划线）。
+ * 省略 = 用默认（0/0），老数据不会因此变异。
+ *
+ * **没有颜色**：`.olb` 的 XSD 里 Rect/Line/Ellipse 只有 lineStyle/lineWidth/fillStyle/hatchStyle，
+ * 写 `color="..."` 会被 XMATIC 直接拒绝（实测：`attribute 'color' is not declared for element 'Defn'`）。
+ * Capture 里的颜色来自设计主题调色板，库里不存。
+ */
+export const ShapeStrokeSchema = {
+  lineWidth: z.number().int().min(0).max(3).optional(),
+  lineStyle: z.number().int().min(0).max(5).optional(),
+} as const;
+
 export const NormalizedSymbolShapeSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("rect"),
@@ -343,13 +360,27 @@ export const NormalizedSymbolShapeSchema = z.discriminatedUnion("kind", [
     max: PointSchema,
     cornerRadius: z.number().nonnegative(),
     filled: z.boolean(),
+    ...ShapeStrokeSchema,
+    /**
+     * 用户在预览里画出来的图形（矩形/圆/线段），不是源库图元。
+     *
+     * 打这个标是为了让「本体判定」跳过它们 —— `bodyShapeOf` 靠"引脚压在哪只矩形上"
+     * 挑本体，用户随手画个框就有可能被误认成本体，之后引脚贴边、标签避让全跟着错。
+     */
+    added: z.literal(true).optional(),
+    /** 软删除（保留数组下标，编辑键不会错位；见 SymbolEdit.hidden） */
+    hidden: z.boolean().optional(),
   }),
   z.object({
     kind: z.literal("polyline"),
     points: z.array(PointSchema).min(2),
     closed: z.boolean(),
+    ...ShapeStrokeSchema,
     /** 这条折线是不是某条椭圆/圆弧的采样结果（见 SymbolShapePrimitiveSchema） */
     primitive: SymbolShapePrimitiveSchema.optional(),
+    /** 用户新画的线段 / 圆（见上） */
+    added: z.literal(true).optional(),
+    hidden: z.boolean().optional(),
     /**
      * 由「本体矩形」转换来的折线（多矩形符号全部转线段时打标，见 rectsToSegments）。
      * 只用于布局（标签落点、加宽判断）；写库仍是普通闭合折线。
@@ -363,8 +394,17 @@ export const NormalizedSymbolShapeSchema = z.discriminatedUnion("kind", [
     at: PointSchema,
     rotation: z.number().finite(),
     height: z.number().positive(),
+    /**
+     * 文本字重/斜体（用户 2026-11-11）。写库落到 `<TextFont>` 的 `weight` / `italic`：
+     * 真实库中 400 = 常规、700 = 粗体，italic 0/1。这是 CommentText **唯一**能表达的
+     * 字形属性 —— 没有颜色、没有字体家族之外的样式。
+     */
+    bold: z.boolean().optional(),
+    italic: z.boolean().optional(),
     /** 用户在预览里删除了这条注释文本（用户 2026-10-22）。隐藏但保留下标，避免编辑键错位 */
     hidden: z.boolean().optional(),
+    /** 用户新加的文本（见上：本体判定要跳过用户图元） */
+    added: z.literal(true).optional(),
   }),
 ]);
 export type NormalizedSymbolShape = z.infer<typeof NormalizedSymbolShapeSchema>;

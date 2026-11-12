@@ -169,24 +169,11 @@ describe("真实器件：引脚两端都落在 100 mil 网格", () => {
     expect(right?.connection.x).toBeGreaterThan(body.maxX);
   });
 
-  it("SMA-KWE：两个矩形都转线段，本体打 body 标记", () => {
+  it("SMA-KWE：源里有几个矩形就保留几个（不做转换）", () => {
     const [section] = parse("C7498154").sections;
-    // 用户 2026-11-10：「出现了两个矩形图应该都使用线段，不要使用矩形」——
-    // 一只 RECT 就是 Capture 的「本体」，会把框内的引脚裁掉（5 号脚实体被裁成空白）
-    expect(section.shapes.filter((shape) => shape.kind === "rect")).toHaveLength(0);
-    const closed = section.shapes.filter(
-      (shape): shape is Extract<typeof shape, { kind: "polyline" }> =>
-        shape.kind === "polyline" && shape.closed && shape.points.length === 4,
-    );
-    expect(closed).toHaveLength(2);
-    // 外壳（源 340..377×290..310，归一化后 -50..-13）也是四段闭合折线
-    const shell = closed.find(
-      (shape) => Math.min(...shape.points.map((point) => point.x)) === -50,
-    );
-    expect(shell).toBeDefined();
-    // 本体（引脚本体端压得最多的那只）带标记，布局据此算标签落点
-    const body = closed.find((shape) => shape.kind === "polyline" && shape.body === true);
-    expect(body).toBeDefined();
+    // 用户 2026-11-10 16:42：「跟保留一个矩形没有关系……恢复有几个矩形还是显示几个矩形」
+    // 转线段不是解法，矩形原样保留；要改形状靠在编辑器里手动画。
+    expect(section.shapes.filter((shape) => shape.kind === "rect")).toHaveLength(2);
   });
 
   it("引脚按脚号排序：立创数组顺序不按号排（SMA-KWE 是 5,4,3,2,1）", () => {

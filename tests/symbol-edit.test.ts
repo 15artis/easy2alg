@@ -5,7 +5,11 @@ import {
   accumulateLabelShift,
   accumulateOffset,
   accumulateRotation,
+  addedItemToShape,
+  appendAddedItems,
+  appendAddedTexts,
   applySymbolEdits,
+  constrainDrawPoint,
   dragDelta,
   EMPTY_SYMBOL_EDITS,
   hasSymbolEdits,
@@ -13,7 +17,7 @@ import {
   isSymbolPinLabelKey,
   parseSymbolEditKey,
   parseSymbolPinLabelKey,
-  appendAddedTexts,
+  selectionToAddedItems,
   setPinText,
   setRectBounds,
   setTextHidden,
@@ -21,6 +25,7 @@ import {
   symbolPinKey,
   symbolPinLabelKey,
   symbolShapeKey,
+  translateAddedItem,
   translateSymbolShape,
 } from "../src/shared/symbol-edit";
 import { sanitizeLibraryName } from "../src/shared/naming";
@@ -334,7 +339,7 @@ describe("text content edit (user 2026-10-21)", () => {
 describe("append added texts (user 2026-10-21)", () => {
   it("追加到指定段末尾，编辑键按新下标生效", () => {
     const withAdded = appendAddedTexts(symbol(), [
-      { id: "t1", section: 0, text: "文本", at: { x: 50, y: 50 }, height: 7 },
+      { kind: "text", id: "t1", section: 0, text: "文本", at: { x: 50, y: 50 }, height: 7 },
     ]);
     const shapes = withAdded.sections[0].shapes;
     expect(shapes).toHaveLength(4);
@@ -489,5 +494,210 @@ describe("independent pin label move", () => {
     expect(parseSymbolPinLabelKey(labelKey)).toEqual({ section: 2, pinIndex: 5, kind: "number" });
     // 属性面板/命中盒按引脚取元素：标签键解出的 index 就是引脚序号
     expect(parseSymbolEditKey(labelKey)).toEqual({ section: 2, index: 5 });
+  });
+});
+
+/**
+ * 用户 2026-11-11：「再添加啊支持线段，圆，矩形 任意画线」。
+ * 三种图形共用 from/to 两点表达，展开成普通图形后预览与写库走同一条路径。
+ */
+describe("drawn shapes (user 2026-11-11)", () => {
+  it("线段展开成两点折线", () => {
+    const shape = addedItemToShape({
+      kind: "line",
+      id: "d1",
+      section: 0,
+      from: { x: 10, y: 20 },
+      to: { x: 60, y: 40 },
+    });
+    expect(shape.kind).toBe("polyline");
+    if (shape.kind !== "polyline") {
+      return;
+    }
+    expect(shape.points).toEqual([
+      { x: 10, y: 20 },
+      { x: 60, y: 40 },
+    ]);
+    expect(shape.closed).toBe(false);
+    expect(shape.added).toBe(true);
+  });
+
+  it("矩形归一化对角点（从右下往左上拖也一样）", () => {
+    const shape = addedItemToShape({
+      kind: "rect",
+      id: "d2",
+      section: 0,
+      from: { x: 60, y: 40 },
+      to: { x: 10, y: 20 },
+    });
+    expect(shape).toMatchObject({
+      kind: "rect",
+      min: { x: 10, y: 20 },
+      max: { x: 60, y: 40 },
+      filled: false,
+      added: true,
+    });
+  });
+
+  /**
+   * 圆必须带 `primitive`：写库靠它出原生 `<Ellipse>`，
+   * 靠采样点的话半径 3 的小圆会被整数取整成八边形（见 symbol-labels 的注释）。
+   */
+  it("圆展开成闭合折线 + 椭圆参数", () => {
+    const shape = addedItemToShape({
+      kind: "circle",
+      id: "d3",
+      section: 0,
+      from: { x: 30, y: 30 },
+      to: { x: 40, y: 30 },
+    });
+    expect(shape.kind).toBe("polyline");
+    if (shape.kind !== "polyline") {
+      return;
+    }
+    expect(shape.closed).toBe(true);
+    expect(shape.points).toHaveLength(64);
+    expect(shape.primitive).toEqual({
+      type: "ellipse",
+      center: { x: 30, y: 30 },
+      rx: 10,
+      ry: 10,
+    });
+    // 采样点确实是半径 10 的圆
+    for (const point of shape.points) {
+      expect(Math.hypot(point.x - 30, point.y - 30)).toBeCloseTo(10, 6);
+    }
+  });
+
+  it("按加入顺序追加到段末尾：文本与图形混排也不打乱下标", () => {
+    const withAdded = appendAddedItems(symbol(), [
+      { kind: "text", id: "t1", section: 0, text: "A", at: { x: 1, y: 1 }, height: 7 },
+      { kind: "line", id: "d1", section: 0, from: { x: 2, y: 2 }, to: { x: 3, y: 3 } },
+      { kind: "text", id: "t2", section: 0, text: "B", at: { x: 4, y: 4 }, height: 7 },
+    ]);
+    const shapes = withAdded.sections[0].shapes;
+    const tail = shapes.slice(shapes.length - 3);
+    expect(tail.map((shape) => shape.kind)).toEqual(["text", "polyline", "text"]);
+    expect(tail.map((shape) => shape.added)).toEqual([true, true, true]);
+  });
+
+  it("平移同时挪 from 与 to", () => {
+    const moved = translateAddedItem(
+      { kind: "circle", id: "d3", section: 0, from: { x: 30, y: 30 }, to: { x: 40, y: 30 } },
+      10,
+      -5,
+    );
+    expect(moved.kind).toBe("circle");
+    if (moved.kind === "text") {
+      return;
+    }
+    expect(moved.from).toEqual({ x: 40, y: 25 });
+    expect(moved.to).toEqual({ x: 50, y: 25 });
+  });
+
+  it("Shift 约束：线段锁水平/竖直/45°，矩形锁正方形", () => {
+    const from = { x: 0, y: 0 };
+    // 明显偏水平的位移 → 锁水平
+    expect(constrainDrawPoint("line", from, { x: 100, y: 8 }, true)).toEqual({ x: 100, y: 0 });
+    // 明显偏竖直 → 锁竖直
+    expect(constrainDrawPoint("line", from, { x: 6, y: 90 }, true)).toEqual({ x: 0, y: 90 });
+    // 差不多 → 45°
+    expect(constrainDrawPoint("line", from, { x: 40, y: 44 }, true)).toEqual({ x: 42, y: 42 });
+    // 矩形取长边做正方形，两条边同长、方向跟着拖
+    expect(constrainDrawPoint("rect", from, { x: 80, y: 20 }, true)).toEqual({ x: 80, y: 80 });
+    expect(constrainDrawPoint("rect", from, { x: 20, y: 80 }, true)).toEqual({ x: 80, y: 80 });
+    // 不按 Shift 原样返回
+    expect(constrainDrawPoint("rect", from, { x: 80, y: 20 }, false)).toEqual({ x: 80, y: 20 });
+  });
+
+  it("软删除的图形保留在下标里，但不再参与包围盒/框选", () => {
+    const withAdded = appendAddedItems(symbol(), [
+      { kind: "rect", id: "d1", section: 0, from: { x: 10, y: 10 }, to: { x: 20, y: 20 } },
+    ]);
+    const index = withAdded.sections[0].shapes.length - 1;
+    const hidden = applySymbolEdits(withAdded, { [symbolShapeKey(0, index)]: { hidden: true } });
+    expect(hidden.sections[0].shapes[index].hidden).toBe(true);
+  });
+});
+
+/** 用户 2026-11-11：「文本支持复制粘贴」—— 复制/再制取的是"屏幕上看到的那一份"。 */
+describe("selectionToAddedItems (copy & paste)", () => {
+  const makeId = (prefix: string): string => `${prefix}1`;
+
+  const withDrawn = (): NormalizedSymbol =>
+    appendAddedItems(symbol(), [
+      { kind: "circle", id: "d1", section: 0, from: { x: 30, y: 30 }, to: { x: 40, y: 30 } },
+      { kind: "line", id: "d2", section: 0, from: { x: 5, y: 5 }, to: { x: 15, y: 9 } },
+    ]);
+
+  it("复制文本：内容、位置、字号、旋转原样带过来", () => {
+    const section = symbol().sections[0];
+    const textIndex = section.shapes.findIndex((shape) => shape.kind === "text");
+    const items = selectionToAddedItems(section, 0, [symbolShapeKey(0, textIndex)], makeId);
+    expect(items).toHaveLength(1);
+    const item = items[0];
+    expect(item.kind).toBe("text");
+    if (item.kind !== "text") {
+      return;
+    }
+    expect(item.text).toBe(section.shapes[textIndex].kind === "text" ? section.shapes[textIndex].text : "");
+    expect(item.at).toEqual({ x: 10, y: 20 });
+    expect(item.rotation).toBe(0);
+  });
+
+  it("引脚与引脚标签都不参与复制（会凭空多脚）", () => {
+    const section = symbol().sections[0];
+    expect(
+      selectionToAddedItems(
+        section,
+        0,
+        [symbolPinKey(0, 0), symbolPinLabelKey(0, 0, "name"), symbolPinLabelKey(0, 0, "number")],
+        makeId,
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("源库图形不复制（多段折线压成线段会失真）", () => {
+    const section = symbol().sections[0];
+    const rectIndex = section.shapes.findIndex((shape) => shape.kind === "rect");
+    expect(selectionToAddedItems(section, 0, [symbolShapeKey(0, rectIndex)], makeId)).toHaveLength(0);
+  });
+
+  it("复制用户画的圆：从 primitive 反推圆心与半径", () => {
+    const section = withDrawn().sections[0];
+    const circleIndex = section.shapes.length - 2;
+    const items = selectionToAddedItems(section, 0, [symbolShapeKey(0, circleIndex)], makeId);
+    expect(items).toHaveLength(1);
+    const item = items[0];
+    expect(item.kind).toBe("circle");
+    if (item.kind !== "circle") {
+      return;
+    }
+    expect(item.from).toEqual({ x: 30, y: 30 });
+    expect(item.to).toEqual({ x: 40, y: 30 });
+  });
+
+  it("复制用户画的线段：取首末点", () => {
+    const section = withDrawn().sections[0];
+    const lineIndex = section.shapes.length - 1;
+    const items = selectionToAddedItems(section, 0, [symbolShapeKey(0, lineIndex)], makeId);
+    expect(items[0]).toMatchObject({
+      kind: "line",
+      from: { x: 5, y: 5 },
+      to: { x: 15, y: 9 },
+    });
+  });
+
+  it("已删除（hidden）的文本不再被复制", () => {
+    const base = symbol();
+    const section = base.sections[0];
+    const textIndex = section.shapes.findIndex((shape) => shape.kind === "text");
+    const hiddenSection = {
+      ...section,
+      shapes: section.shapes.map((shape, index) =>
+        index === textIndex ? { ...shape, hidden: true } : shape,
+      ),
+    };
+    expect(selectionToAddedItems(hiddenSection, 0, [symbolShapeKey(0, textIndex)], makeId)).toHaveLength(0);
   });
 });

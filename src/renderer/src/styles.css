@@ -1224,7 +1224,6 @@ select:focus,
 }
 
 .rail-header,
-.inspector-header,
 .stage-heading {
   /* 三栏：标题 | tabs | 操作。tabs 用 auto 列 + 两侧等宽 1fr 列实现**真正居中**
    * （用户 2026-10-23：PCB 页没有右侧操作时，flex 的 space-between 会把 tabs 顶到最右）。 */
@@ -1253,7 +1252,6 @@ select:focus,
 }
 
 .rail-header h2,
-.inspector-header h2,
 .stage-heading h2 {
   margin: 0;
   color: #172033;
@@ -1267,8 +1265,7 @@ select:focus,
 }
 
 .rail-header span,
-.stage-heading span,
-.inspector-header span {
+.stage-heading span {
   color: #8791a2;
   font-size: 11px;
 }
@@ -1744,12 +1741,16 @@ select:focus,
   height: 42px;
 }
 
-.inspector-header span {
-  color: #13856b;
-}
-
 .inspector-scroll {
   flex: 1;
+  overflow: auto;
+}
+
+/* 属性编辑是右栏第一块（2026-11-11）：不参与 flex 收缩，
+ * 但最多占 46% 高 —— 字段多时自己滚动，别把下面的检查结果挤没。 */
+.right-rail > .inspector-section {
+  flex: 0 0 auto;
+  max-height: 46vh;
   overflow: auto;
 }
 
@@ -2788,6 +2789,108 @@ select:focus,
 
 .symbol-props-delete:hover {
   background: #ffe9e7;
+}
+
+/* ── 右侧「属性编辑」tab（用户 2026-11-11）─────────────────────────
+ * 从画布浮动面板改成固定的右栏内容：宽度由 .inspector-scroll 决定，
+ * 字段两列排布，长文本与只读派生值单独占一行。 */
+.symbol-inspector {
+  display: grid;
+  gap: 8px;
+  padding: 2px 2px 4px;
+}
+
+/* 没进编辑模式：只读展示当前值，避免"没打算改却改了" */
+.symbol-inspector.is-readonly {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.symbol-prop-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  color: #172033;
+  font-size: 11px;
+}
+
+.symbol-prop-head em {
+  color: #8791a2;
+  font-size: 10px;
+  font-style: normal;
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+}
+
+.symbol-prop-wide {
+  grid-column: 1 / -1;
+}
+
+.symbol-prop-wide textarea {
+  width: 100%;
+  padding: 5px 6px;
+  color: #172033;
+  background: white;
+  border: 1px solid #d7dfea;
+  border-radius: 5px;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.45;
+  resize: vertical;
+}
+
+.symbol-prop-wide textarea:focus {
+  outline: 2px solid rgb(36 89 211 / 35%);
+  outline-offset: 0;
+}
+
+/* 只读派生值（线段长度/角度、折线点数）：与输入框同高，但不可编辑 */
+.symbol-prop-readonly b {
+  display: flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 6px;
+  color: #5f6b7d;
+  background: #f4f6fa;
+  border: 1px solid #e3e8f0;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.symbol-prop-row {
+  display: flex;
+  gap: 6px;
+}
+
+/* B / I 开关：与 Write 的加粗/斜体同义，状态直接来自 TextFont */
+.symbol-chip {
+  width: 30px;
+  height: 24px;
+  color: #172033;
+  background: white;
+  border: 1px solid #d7dfea;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.symbol-chip-italic {
+  font-style: italic;
+  font-weight: 500;
+}
+
+.symbol-chip.is-on {
+  color: #0b4bd0;
+  background: #e8efff;
+  border-color: #9bb6f0;
+}
+
+.inspector-hint {
+  margin: 0;
+  color: #8791a2;
+  font-size: 10px;
+  line-height: 1.5;
 }
 
 /* 属性面板标题即拖动把手（用户 2026-10-22：面板可移动并持久化）。
